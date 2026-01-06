@@ -23,6 +23,15 @@ const (
 	Shadowsocks = "shadowsocks"
 )
 
+// extractIDFromEmail extracts the ID part from an email in the format "id.username"
+// If no dot is found, returns the full email string
+func extractIDFromEmail(email string) string {
+	if idx := strings.Index(email, "."); idx != -1 {
+		return email[:idx]
+	}
+	return email
+}
+
 type Config struct {
 	LogConfig        *conf.LogConfig        `json:"log"`
 	RouterConfig     *conf.RouterConfig     `json:"routing"`
@@ -68,19 +77,23 @@ func (i *Inbound) syncUsers(users []*common.User) {
 	switch i.Protocol {
 	case Vmess:
 		clients := make([]*api.VmessAccount, 0, len(users))
-
 		for _, user := range users {
 			if user.GetProxies().GetVmess() == nil {
 				continue
 			}
-			account, err := api.NewVmessAccount(user)
-			if err != nil {
-				log.Println("error for user", user.GetEmail(), ":", err)
-			}
 			if slices.Contains(user.Inbounds, i.Tag) {
+				account, err := api.NewVmessAccount(user)
+				if err != nil {
+					log.Println("error for user", user.GetEmail(), ":", err)
+					continue
+				}
 				clients = append(clients, account)
 			}
 		}
+		// Keep sorted by ID (part before dot in email) for binary search
+		slices.SortFunc(clients, func(a, b *api.VmessAccount) int {
+			return strings.Compare(extractIDFromEmail(a.Email), extractIDFromEmail(b.Email))
+		})
 		i.Settings["clients"] = clients
 
 	case Vless:
@@ -89,15 +102,20 @@ func (i *Inbound) syncUsers(users []*common.User) {
 			if user.GetProxies().GetVless() == nil {
 				continue
 			}
-			account, err := api.NewVlessAccount(user)
-			if err != nil {
-				log.Println("error for user", user.GetEmail(), ":", err)
-			}
 			if slices.Contains(user.Inbounds, i.Tag) {
+				account, err := api.NewVlessAccount(user)
+				if err != nil {
+					log.Println("error for user", user.GetEmail(), ":", err)
+					continue
+				}
 				newAccount := checkVless(i, *account)
 				clients = append(clients, &newAccount)
 			}
 		}
+		// Keep sorted by ID (part before dot in email) for binary search
+		slices.SortFunc(clients, func(a, b *api.VlessAccount) int {
+			return strings.Compare(extractIDFromEmail(a.Email), extractIDFromEmail(b.Email))
+		})
 		i.Settings["clients"] = clients
 
 	case Trojan:
@@ -110,6 +128,10 @@ func (i *Inbound) syncUsers(users []*common.User) {
 				clients = append(clients, api.NewTrojanAccount(user))
 			}
 		}
+		// Keep sorted by ID (part before dot in email) for binary search
+		slices.SortFunc(clients, func(a, b *api.TrojanAccount) int {
+			return strings.Compare(extractIDFromEmail(a.Email), extractIDFromEmail(b.Email))
+		})
 		i.Settings["clients"] = clients
 
 	case Shadowsocks:
@@ -126,8 +148,11 @@ func (i *Inbound) syncUsers(users []*common.User) {
 					clients = append(clients, &newAccount)
 				}
 			}
+			// Keep sorted by ID (part before dot in email) for binary search
+			slices.SortFunc(clients, func(a, b *api.ShadowsocksAccount) int {
+				return strings.Compare(extractIDFromEmail(a.Email), extractIDFromEmail(b.Email))
+			})
 			i.Settings["clients"] = clients
-
 		} else {
 			clients := make([]*api.ShadowsocksTcpAccount, 0, len(users))
 			for _, user := range users {
@@ -138,6 +163,10 @@ func (i *Inbound) syncUsers(users []*common.User) {
 					clients = append(clients, api.NewShadowsocksTcpAccount(user))
 				}
 			}
+			// Keep sorted by ID (part before dot in email) for binary search
+			slices.SortFunc(clients, func(a, b *api.ShadowsocksTcpAccount) int {
+				return strings.Compare(extractIDFromEmail(a.Email), extractIDFromEmail(b.Email))
+			})
 			i.Settings["clients"] = clients
 		}
 	}
@@ -148,86 +177,90 @@ func (i *Inbound) updateUser(account api.Account) {
 	defer i.mu.Unlock()
 
 	email := account.GetEmail()
-	switch account.(type) {
+	searchID := extractIDFromEmail(email)
+	switch a := account.(type) {
 	case *api.VmessAccount:
-		clients, ok := i.Settings["clients"].([]*api.VmessAccount)
-		if !ok {
-			clients = []*api.VmessAccount{}
+		clients, _ := i.Settings["clients"].([]*api.VmessAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.VmessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.VmessAccount))
+		insertIdx, _ := slices.BinarySearchFunc(clients, searchID, func(c *api.VmessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		})
+		clients = append(clients, nil)
+		copy(clients[insertIdx+1:], clients[insertIdx:])
+		clients[insertIdx] = a
+		i.Settings["clients"] = clients
 
 	case *api.VlessAccount:
-		clients, ok := i.Settings["clients"].([]*api.VlessAccount)
-		if !ok {
-			clients = []*api.VlessAccount{}
+		clients, _ := i.Settings["clients"].([]*api.VlessAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.VlessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.VlessAccount))
+		insertIdx, _ := slices.BinarySearchFunc(clients, searchID, func(c *api.VlessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		})
+		clients = append(clients, nil)
+		copy(clients[insertIdx+1:], clients[insertIdx:])
+		clients[insertIdx] = a
+		i.Settings["clients"] = clients
 
 	case *api.TrojanAccount:
-		clients, ok := i.Settings["clients"].([]*api.TrojanAccount)
-		if !ok {
-			clients = []*api.TrojanAccount{}
+		clients, _ := i.Settings["clients"].([]*api.TrojanAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.TrojanAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.TrojanAccount))
+		insertIdx, _ := slices.BinarySearchFunc(clients, searchID, func(c *api.TrojanAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		})
+		clients = append(clients, nil)
+		copy(clients[insertIdx+1:], clients[insertIdx:])
+		clients[insertIdx] = a
+		i.Settings["clients"] = clients
 
 	case *api.ShadowsocksTcpAccount:
-		clients, ok := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
-		if !ok {
-			clients = []*api.ShadowsocksTcpAccount{}
+		clients, _ := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksTcpAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.ShadowsocksTcpAccount))
+		insertIdx, _ := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksTcpAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		})
+		clients = append(clients, nil)
+		copy(clients[insertIdx+1:], clients[insertIdx:])
+		clients[insertIdx] = a
+		i.Settings["clients"] = clients
 
 	case *api.ShadowsocksAccount:
-		clients, ok := i.Settings["clients"].([]*api.ShadowsocksAccount)
-		if !ok {
-			clients = []*api.ShadowsocksAccount{}
+		clients, _ := i.Settings["clients"].([]*api.ShadowsocksAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
+		method, ok := i.Settings["method"].(string)
+		var newAccount *api.ShadowsocksAccount
+		if ok {
+			na := checkShadowsocks2022(method, *a)
+			newAccount = &na
+		} else {
+			newAccount = a
 		}
-
-		method := i.Settings["method"].(string)
-		newAccount := checkShadowsocks2022(method, *account.(*api.ShadowsocksAccount))
-		i.Settings["clients"] = append(clients, &newAccount)
-
-	default:
-		return
+		insertIdx, _ := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		})
+		clients = append(clients, nil)
+		copy(clients[insertIdx+1:], clients[insertIdx:])
+		clients[insertIdx] = newAccount
+		i.Settings["clients"] = clients
 	}
 }
 
@@ -235,93 +268,72 @@ func (i *Inbound) removeUser(email string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	searchID := extractIDFromEmail(email)
 	switch Protocol(i.Protocol) {
 	case Vmess:
-		clients, ok := i.Settings["clients"].([]*api.VmessAccount)
-		if !ok {
-			clients = []*api.VmessAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
+		clients, _ := i.Settings["clients"].([]*api.VmessAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.VmessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
 		i.Settings["clients"] = clients
 
 	case Vless:
-		clients, ok := i.Settings["clients"].([]*api.VlessAccount)
-		if !ok {
-			clients = []*api.VlessAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
+		clients, _ := i.Settings["clients"].([]*api.VlessAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.VlessAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
 		i.Settings["clients"] = clients
 
 	case Trojan:
-		clients, ok := i.Settings["clients"].([]*api.TrojanAccount)
-		if !ok {
-			clients = []*api.TrojanAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
+		clients, _ := i.Settings["clients"].([]*api.TrojanAccount)
+		if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.TrojanAccount, id string) int {
+			return strings.Compare(extractIDFromEmail(c.Email), id)
+		}); found {
+			clients = append(clients[:idx], clients[idx+1:]...)
 		}
 		i.Settings["clients"] = clients
 
 	case Shadowsocks:
 		method, methodOk := i.Settings["method"].(string)
 		if methodOk && strings.HasPrefix(method, "2022-blake3") {
-			clients, ok := i.Settings["clients"].([]*api.ShadowsocksAccount)
-			if !ok {
-				clients = []*api.ShadowsocksAccount{}
-			}
-
-			for x, client := range clients {
-				if client.Email == email {
-					clients = append(clients[:x], clients[x+1:]...)
-					break
-				}
+			clients, _ := i.Settings["clients"].([]*api.ShadowsocksAccount)
+			if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksAccount, id string) int {
+				return strings.Compare(extractIDFromEmail(c.Email), id)
+			}); found {
+				clients = append(clients[:idx], clients[idx+1:]...)
 			}
 			i.Settings["clients"] = clients
-
 		} else {
-			clients, ok := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
-			if !ok {
-				clients = []*api.ShadowsocksTcpAccount{}
-			}
-
-			for x, client := range clients {
-				if client.Email == email {
-					clients = append(clients[:x], clients[x+1:]...)
-					break
-				}
+			clients, _ := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
+			if idx, found := slices.BinarySearchFunc(clients, searchID, func(c *api.ShadowsocksTcpAccount, id string) int {
+				return strings.Compare(extractIDFromEmail(c.Email), id)
+			}); found {
+				clients = append(clients[:idx], clients[idx+1:]...)
 			}
 			i.Settings["clients"] = clients
 		}
-	default:
-		return
 	}
 }
 
 type Stats struct{}
 
 func (c *Config) ToBytes() ([]byte, error) {
+	// Acquire read locks for all inbounds
 	for _, i := range c.InboundConfigs {
 		i.mu.RLock()
-		defer i.mu.RUnlock()
 	}
 
 	b, err := json.Marshal(c)
+
+	// Release all locks
+	for _, i := range c.InboundConfigs {
+		i.mu.RUnlock()
+	}
+
 	if err != nil {
 		return nil, err
 	}
