@@ -250,7 +250,7 @@ func TestREST_GetBackendStats(t *testing.T) {
 	if err := sharedTestCtx.createAuthenticatedRequest("GET", "/stats/backend", &common.Empty{}, &backendStats); err != nil {
 		t.Fatalf("Failed to get backend stats: %v", err)
 	}
-	fmt.Println(backendStats)
+	fmt.Println(backendStats.String())
 }
 
 func TestREST_SyncUser(t *testing.T) {
