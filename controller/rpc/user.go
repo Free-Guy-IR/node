@@ -72,8 +72,16 @@ func (s *Service) SyncUsersChunked(stream grpc.ClientStreamingServer[common.User
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if err := s.Backend().SyncUsers(stream.Context(), users); err != nil {
-		return status.Errorf(codes.Internal, "failed to sync users: %v", err)
+	// Large chunk: update in-memory then restart (no API calls).
+	if len(users) > 500 {
+		if err := s.Backend().UpdateUsersAndRestart(stream.Context(), users); err != nil {
+			return status.Errorf(codes.Internal, "failed to update users: %v", err)
+		}
+	} else {
+		// Small chunk: update via API without restart.
+		if err := s.Backend().UpdateUsers(stream.Context(), users); err != nil {
+			return status.Errorf(codes.Internal, "failed to update users: %v", err)
+		}
 	}
 
 	return stream.SendAndClose(&common.Empty{})

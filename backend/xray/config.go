@@ -62,6 +62,58 @@ func (c *Config) syncUsers(users []*common.User) {
 	}
 }
 
+type inboundUpdate struct {
+	accounts       []api.Account
+	removeEmailSet map[string]struct{}
+}
+
+func (c *Config) buildInboundUpdates(users []*common.User) (map[string]*Inbound, map[string]*inboundUpdate) {
+	inboundByTag := make(map[string]*Inbound)
+	for _, inbound := range c.InboundConfigs {
+		if inbound.exclude {
+			continue
+		}
+		inboundByTag[inbound.Tag] = inbound
+	}
+
+	updates := make(map[string]*inboundUpdate, len(inboundByTag))
+	for tag := range inboundByTag {
+		updates[tag] = &inboundUpdate{
+			removeEmailSet: make(map[string]struct{}),
+		}
+	}
+
+	for _, user := range users {
+		settings, _ := setupUserAccount(user)
+		userInbounds := user.GetInbounds()
+		userEmail := user.GetEmail()
+
+		for tag, inbound := range inboundByTag {
+			account, isActive := isActiveInbound(inbound, userInbounds, settings)
+			update := updates[tag]
+			if isActive {
+				update.accounts = append(update.accounts, account)
+			} else {
+				update.removeEmailSet[userEmail] = struct{}{}
+			}
+		}
+	}
+
+	return inboundByTag, updates
+}
+
+func (c *Config) updateUsers(users []*common.User) {
+	inboundByTag, updates := c.buildInboundUpdates(users)
+	for tag, inbound := range inboundByTag {
+		update := updates[tag]
+		removeEmails := make([]string, 0, len(update.removeEmailSet))
+		for email := range update.removeEmailSet {
+			removeEmails = append(removeEmails, email)
+		}
+		inbound.updateUsers(update.accounts, removeEmails)
+	}
+}
+
 func (i *Inbound) syncUsers(users []*common.User) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -171,7 +223,7 @@ func (i *Inbound) updateUser(account api.Account) {
 	}
 }
 
-func (i *Inbound) updateUsers(accounts []api.Account) {
+func (i *Inbound) updateUsers(accounts []api.Account, removeEmails []string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
@@ -218,6 +270,10 @@ func (i *Inbound) updateUsers(accounts []api.Account) {
 				}
 			}
 		}
+	}
+
+	for _, email := range removeEmails {
+		delete(i.clients, email)
 	}
 }
 

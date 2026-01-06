@@ -58,7 +58,20 @@ func NewXray(ctx context.Context, port int, cfg *config.Config) (*Xray, error) {
 	}
 
 	users := ctx.Value(backend.UsersKey{}).([]*common.User)
-	xrayConfig.syncUsers(users)
+	if len(users) > 0 {
+		log.Printf("syncing %d users on startup", len(users))
+		xrayConfig.syncUsers(users)
+		// Verify users were synced by counting clients in all inbounds
+		totalClients := 0
+		for _, inbound := range xrayConfig.InboundConfigs {
+			if !inbound.exclude && inbound.clients != nil {
+				totalClients += len(inbound.clients)
+			}
+		}
+		log.Printf("synced %d users on startup, total clients in config: %d", len(users), totalClients)
+	} else {
+		log.Println("no users provided on startup")
+	}
 
 	xray.config = xrayConfig
 

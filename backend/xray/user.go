@@ -173,3 +173,48 @@ func (x *Xray) SyncUsers(_ context.Context, users []*common.User) error {
 	}
 	return nil
 }
+
+func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
+	handler := x.handler
+	inboundByTag, updates := x.config.buildInboundUpdates(users)
+	var errMessage string
+
+	for tag, update := range updates {
+		removeEmails := make([]string, 0, len(update.removeEmailSet))
+		for email := range update.removeEmailSet {
+			removeEmails = append(removeEmails, email)
+		}
+
+		inbound := inboundByTag[tag]
+		inbound.updateUsers(update.accounts, removeEmails)
+
+		for _, email := range removeEmails {
+			handler.RemoveInboundUser(ctx, tag, email)
+		}
+
+		for _, account := range update.accounts {
+			_ = handler.RemoveInboundUser(ctx, tag, account.GetEmail())
+			if err := handler.AddInboundUser(ctx, tag, account); err != nil {
+				log.Println(err)
+				errMessage += "\n" + err.Error()
+			}
+		}
+	}
+
+	if errMessage != "" {
+		return errors.New("failed to update users:" + errMessage)
+	}
+
+	return nil
+}
+
+func (x *Xray) UpdateUsersAndRestart(_ context.Context, users []*common.User) error {
+	x.config.updateUsers(users)
+	if err := x.Restart(); err != nil {
+		return err
+	}
+	if err := x.checkXrayStatus(); err != nil {
+		return err
+	}
+	return nil
+}
