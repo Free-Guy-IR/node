@@ -1,11 +1,11 @@
 package rest
 
 import (
-	"fmt"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"log"
 	"net/http"
+
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 )
 
 func (s *Service) validateApiKey(next http.Handler) http.Handler {
@@ -53,11 +53,11 @@ func LogRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
-		log.Println(fmt.Sprintf("[API] New request from %s, %s, %s", r.RemoteAddr, r.Method, r.URL.Path))
+		log.Printf("[API] New request from %s, %s, %s\n", r.RemoteAddr, r.Method, r.URL.Path)
 
 		next.ServeHTTP(ww, r)
 
-		log.Println(fmt.Sprintf("[API] %s, %s, %s, %d", r.RemoteAddr, r.Method, r.URL.Path, ww.Status()))
+		log.Printf("[API] %s, %s, %s, %d\n", r.RemoteAddr, r.Method, r.URL.Path, ww.Status())
 	})
 }
 

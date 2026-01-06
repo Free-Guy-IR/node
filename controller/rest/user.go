@@ -29,8 +29,8 @@ func (s *Service) SyncUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if user == nil {
-		http.Error(w, "no user received", http.StatusBadRequest)
+	if user.GetEmail() == "" {
+		http.Error(w, "email is required", http.StatusBadRequest)
 		return
 	}
 
