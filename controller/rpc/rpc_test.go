@@ -64,8 +64,14 @@ func TestMain(m *testing.M) {
 	}
 
 	creds := credentials.NewClientTLSFromCert(certPool, "")
+	// Set max message size to 64MB to match server configuration
+	const maxMsgSize = 64 * 1024 * 1024 // 64MB
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(maxMsgSize),
+			grpc.MaxCallSendMsgSize(maxMsgSize),
+		),
 	}
 
 	conn, err := grpc.NewClient(addr, opts...)

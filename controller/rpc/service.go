@@ -4,13 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
+	"net"
+
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
 	"github.com/pasarguard/node/controller"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"log"
-	"net"
 )
 
 type Service struct {
@@ -30,8 +31,12 @@ func StartGRPCListener(tlsConfig *tls.Config, addr string, cfg *config.Config) (
 	creds := credentials.NewTLS(tlsConfig)
 
 	// Create the gRPC server with conditional middleware
+	// Set max message size to 64MB to handle large configs and user data
+	const maxMsgSize = 64 * 1024 * 1024 // 64MB
 	grpcServer := grpc.NewServer(
 		grpc.Creds(creds),
+		grpc.MaxRecvMsgSize(maxMsgSize),
+		grpc.MaxSendMsgSize(maxMsgSize),
 		grpc.UnaryInterceptor(ConditionalMiddleware(s)),
 		grpc.StreamInterceptor(ConditionalStreamMiddleware(s)),
 	)
