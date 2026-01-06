@@ -61,53 +61,44 @@ func (c *Config) syncUsers(users []*common.User) {
 	}
 }
 
-func (i *Inbound) syncUsers(users []*common.User) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
+// convertClientsMapToSlice converts the internal map-based client storage to a slice
+// for JSON serialization. This is called only during ToBytes().
+func (i *Inbound) convertClientsMapToSlice() {
+	clientsMap, ok := i.Settings["clients"].(map[string]api.Account)
+	if !ok {
+		// Already a slice or doesn't exist, no conversion needed
+		return
+	}
+
+	if len(clientsMap) == 0 {
+		i.Settings["clients"] = []interface{}{}
+		return
+	}
 
 	switch i.Protocol {
 	case Vmess:
-		clients := make([]*api.VmessAccount, 0, len(users))
-
-		for _, user := range users {
-			if user.GetProxies().GetVmess() == nil {
-				continue
-			}
-			account, err := api.NewVmessAccount(user)
-			if err != nil {
-				log.Println("error for user", user.GetEmail(), ":", err)
-			}
-			if slices.Contains(user.Inbounds, i.Tag) {
-				clients = append(clients, account)
+		clients := make([]*api.VmessAccount, 0, len(clientsMap))
+		for _, account := range clientsMap {
+			if vmessAccount, ok := account.(*api.VmessAccount); ok {
+				clients = append(clients, vmessAccount)
 			}
 		}
 		i.Settings["clients"] = clients
 
 	case Vless:
-		clients := make([]*api.VlessAccount, 0, len(users))
-		for _, user := range users {
-			if user.GetProxies().GetVless() == nil {
-				continue
-			}
-			account, err := api.NewVlessAccount(user)
-			if err != nil {
-				log.Println("error for user", user.GetEmail(), ":", err)
-			}
-			if slices.Contains(user.Inbounds, i.Tag) {
-				newAccount := checkVless(i, *account)
-				clients = append(clients, &newAccount)
+		clients := make([]*api.VlessAccount, 0, len(clientsMap))
+		for _, account := range clientsMap {
+			if vlessAccount, ok := account.(*api.VlessAccount); ok {
+				clients = append(clients, vlessAccount)
 			}
 		}
 		i.Settings["clients"] = clients
 
 	case Trojan:
-		clients := make([]*api.TrojanAccount, 0, len(users))
-		for _, user := range users {
-			if user.GetProxies().GetTrojan() == nil {
-				continue
-			}
-			if slices.Contains(user.Inbounds, i.Tag) {
-				clients = append(clients, api.NewTrojanAccount(user))
+		clients := make([]*api.TrojanAccount, 0, len(clientsMap))
+		for _, account := range clientsMap {
+			if trojanAccount, ok := account.(*api.TrojanAccount); ok {
+				clients = append(clients, trojanAccount)
 			}
 		}
 		i.Settings["clients"] = clients
@@ -115,7 +106,157 @@ func (i *Inbound) syncUsers(users []*common.User) {
 	case Shadowsocks:
 		method, methodOk := i.Settings["method"].(string)
 		if methodOk && strings.HasPrefix(method, "2022-blake3") {
-			clients := make([]*api.ShadowsocksAccount, 0, len(users))
+			clients := make([]*api.ShadowsocksAccount, 0, len(clientsMap))
+			for _, account := range clientsMap {
+				if ssAccount, ok := account.(*api.ShadowsocksAccount); ok {
+					clients = append(clients, ssAccount)
+				}
+			}
+			i.Settings["clients"] = clients
+		} else {
+			clients := make([]*api.ShadowsocksTcpAccount, 0, len(clientsMap))
+			for _, account := range clientsMap {
+				if ssTcpAccount, ok := account.(*api.ShadowsocksTcpAccount); ok {
+					clients = append(clients, ssTcpAccount)
+				}
+			}
+			i.Settings["clients"] = clients
+		}
+	}
+}
+
+// convertClientsSliceToMap converts a slice-based client storage (from JSON) to a map
+// for efficient O(1) lookups. This is called during initialization.
+func (i *Inbound) convertClientsSliceToMap() {
+	clientsMap := make(map[string]api.Account)
+	hasClients := false
+
+	switch i.Protocol {
+	case Vmess:
+		if clients, ok := i.Settings["clients"].([]*api.VmessAccount); ok {
+			hasClients = true
+			for _, account := range clients {
+				if account != nil {
+					clientsMap[account.Email] = account
+				}
+			}
+		}
+
+	case Vless:
+		if clients, ok := i.Settings["clients"].([]*api.VlessAccount); ok {
+			hasClients = true
+			for _, account := range clients {
+				if account != nil {
+					clientsMap[account.Email] = account
+				}
+			}
+		}
+
+	case Trojan:
+		if clients, ok := i.Settings["clients"].([]*api.TrojanAccount); ok {
+			hasClients = true
+			for _, account := range clients {
+				if account != nil {
+					clientsMap[account.Email] = account
+				}
+			}
+		}
+
+	case Shadowsocks:
+		method, methodOk := i.Settings["method"].(string)
+		if methodOk && strings.HasPrefix(method, "2022-blake3") {
+			if clients, ok := i.Settings["clients"].([]*api.ShadowsocksAccount); ok {
+				hasClients = true
+				for _, account := range clients {
+					if account != nil {
+						clientsMap[account.Email] = account
+					}
+				}
+			}
+		} else {
+			if clients, ok := i.Settings["clients"].([]*api.ShadowsocksTcpAccount); ok {
+				hasClients = true
+				for _, account := range clients {
+					if account != nil {
+						clientsMap[account.Email] = account
+					}
+				}
+			}
+		}
+	}
+
+	// Always set the map, even if empty, to ensure consistent internal representation
+	if hasClients {
+		i.Settings["clients"] = clientsMap
+	}
+}
+
+func (i *Inbound) syncUsers(users []*common.User) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	// Initialize clients map if it doesn't exist or is still a slice
+	if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+		i.convertClientsSliceToMap()
+		if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+			i.Settings["clients"] = make(map[string]api.Account)
+		}
+	}
+
+	switch i.Protocol {
+	case Vmess:
+		// Clear existing clients for this inbound
+		newMap := make(map[string]api.Account)
+		for _, user := range users {
+			if user.GetProxies().GetVmess() == nil {
+				continue
+			}
+			if slices.Contains(user.Inbounds, i.Tag) {
+				account, err := api.NewVmessAccount(user)
+				if err != nil {
+					log.Println("error for user", user.GetEmail(), ":", err)
+					continue
+				}
+				newMap[account.Email] = account
+			}
+		}
+		i.Settings["clients"] = newMap
+
+	case Vless:
+		newMap := make(map[string]api.Account)
+		for _, user := range users {
+			if user.GetProxies().GetVless() == nil {
+				continue
+			}
+			if slices.Contains(user.Inbounds, i.Tag) {
+				account, err := api.NewVlessAccount(user)
+				if err != nil {
+					log.Println("error for user", user.GetEmail(), ":", err)
+					continue
+				}
+				newAccount := checkVless(i, *account)
+				newMap[newAccount.Email] = &newAccount
+			}
+		}
+		i.Settings["clients"] = newMap
+
+	case Trojan:
+		newMap := make(map[string]api.Account)
+		for _, user := range users {
+			if user.GetProxies().GetTrojan() == nil {
+				continue
+			}
+			if slices.Contains(user.Inbounds, i.Tag) {
+				account := api.NewTrojanAccount(user)
+				newMap[account.Email] = account
+			}
+		}
+		i.Settings["clients"] = newMap
+
+	case Shadowsocks:
+		method, methodOk := i.Settings["method"].(string)
+		if methodOk && strings.HasPrefix(method, "2022-blake3") {
+			newMap := make(map[string]api.Account)
 			for _, user := range users {
 				if user.GetProxies().GetShadowsocks() == nil {
 					continue
@@ -123,22 +264,22 @@ func (i *Inbound) syncUsers(users []*common.User) {
 				if slices.Contains(user.Inbounds, i.Tag) {
 					account := api.NewShadowsocksAccount(user)
 					newAccount := checkShadowsocks2022(method, *account)
-					clients = append(clients, &newAccount)
+					newMap[newAccount.Email] = &newAccount
 				}
 			}
-			i.Settings["clients"] = clients
-
+			i.Settings["clients"] = newMap
 		} else {
-			clients := make([]*api.ShadowsocksTcpAccount, 0, len(users))
+			newMap := make(map[string]api.Account)
 			for _, user := range users {
 				if user.GetProxies().GetShadowsocks() == nil {
 					continue
 				}
 				if slices.Contains(user.Inbounds, i.Tag) {
-					clients = append(clients, api.NewShadowsocksTcpAccount(user))
+					account := api.NewShadowsocksTcpAccount(user)
+					newMap[account.Email] = account
 				}
 			}
-			i.Settings["clients"] = clients
+			i.Settings["clients"] = newMap
 		}
 	}
 }
@@ -147,84 +288,38 @@ func (i *Inbound) updateUser(account api.Account) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Ensure clients is a map
+	if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+		i.convertClientsSliceToMap()
+		if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+			i.Settings["clients"] = make(map[string]api.Account)
+		}
+	}
+
+	clientsMap := i.Settings["clients"].(map[string]api.Account)
 	email := account.GetEmail()
+
 	switch account.(type) {
 	case *api.VmessAccount:
-		clients, ok := i.Settings["clients"].([]*api.VmessAccount)
-		if !ok {
-			clients = []*api.VmessAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.VmessAccount))
+		clientsMap[email] = account.(*api.VmessAccount)
 
 	case *api.VlessAccount:
-		clients, ok := i.Settings["clients"].([]*api.VlessAccount)
-		if !ok {
-			clients = []*api.VlessAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.VlessAccount))
+		clientsMap[email] = account.(*api.VlessAccount)
 
 	case *api.TrojanAccount:
-		clients, ok := i.Settings["clients"].([]*api.TrojanAccount)
-		if !ok {
-			clients = []*api.TrojanAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.TrojanAccount))
+		clientsMap[email] = account.(*api.TrojanAccount)
 
 	case *api.ShadowsocksTcpAccount:
-		clients, ok := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
-		if !ok {
-			clients = []*api.ShadowsocksTcpAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		i.Settings["clients"] = append(clients, account.(*api.ShadowsocksTcpAccount))
+		clientsMap[email] = account.(*api.ShadowsocksTcpAccount)
 
 	case *api.ShadowsocksAccount:
-		clients, ok := i.Settings["clients"].([]*api.ShadowsocksAccount)
-		if !ok {
-			clients = []*api.ShadowsocksAccount{}
+		method, ok := i.Settings["method"].(string)
+		if ok {
+			newAccount := checkShadowsocks2022(method, *account.(*api.ShadowsocksAccount))
+			clientsMap[email] = &newAccount
+		} else {
+			clientsMap[email] = account.(*api.ShadowsocksAccount)
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-
-		method := i.Settings["method"].(string)
-		newAccount := checkShadowsocks2022(method, *account.(*api.ShadowsocksAccount))
-		i.Settings["clients"] = append(clients, &newAccount)
 
 	default:
 		return
@@ -235,96 +330,45 @@ func (i *Inbound) removeUser(email string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	switch Protocol(i.Protocol) {
-	case Vmess:
-		clients, ok := i.Settings["clients"].([]*api.VmessAccount)
-		if !ok {
-			clients = []*api.VmessAccount{}
+	// Ensure clients is a map
+	if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+		i.convertClientsSliceToMap()
+		if _, ok := i.Settings["clients"].(map[string]api.Account); !ok {
+			return // No clients to remove
 		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-		i.Settings["clients"] = clients
-
-	case Vless:
-		clients, ok := i.Settings["clients"].([]*api.VlessAccount)
-		if !ok {
-			clients = []*api.VlessAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-		i.Settings["clients"] = clients
-
-	case Trojan:
-		clients, ok := i.Settings["clients"].([]*api.TrojanAccount)
-		if !ok {
-			clients = []*api.TrojanAccount{}
-		}
-
-		for x, client := range clients {
-			if client.Email == email {
-				clients = append(clients[:x], clients[x+1:]...)
-				break
-			}
-		}
-		i.Settings["clients"] = clients
-
-	case Shadowsocks:
-		method, methodOk := i.Settings["method"].(string)
-		if methodOk && strings.HasPrefix(method, "2022-blake3") {
-			clients, ok := i.Settings["clients"].([]*api.ShadowsocksAccount)
-			if !ok {
-				clients = []*api.ShadowsocksAccount{}
-			}
-
-			for x, client := range clients {
-				if client.Email == email {
-					clients = append(clients[:x], clients[x+1:]...)
-					break
-				}
-			}
-			i.Settings["clients"] = clients
-
-		} else {
-			clients, ok := i.Settings["clients"].([]*api.ShadowsocksTcpAccount)
-			if !ok {
-				clients = []*api.ShadowsocksTcpAccount{}
-			}
-
-			for x, client := range clients {
-				if client.Email == email {
-					clients = append(clients[:x], clients[x+1:]...)
-					break
-				}
-			}
-			i.Settings["clients"] = clients
-		}
-	default:
-		return
 	}
+
+	clientsMap := i.Settings["clients"].(map[string]api.Account)
+	delete(clientsMap, email)
 }
 
 type Stats struct{}
 
 func (c *Config) ToBytes() ([]byte, error) {
+	// Convert all inbound client maps to slices for JSON serialization
+	// and acquire locks
 	for _, i := range c.InboundConfigs {
-		i.mu.RLock()
-		defer i.mu.RUnlock()
+		i.mu.Lock()
+		i.convertClientsMapToSlice()
 	}
 
+	// Marshal while holding locks
 	b, err := json.Marshal(c)
 	if err != nil {
+		// Unlock all on error
+		for _, i := range c.InboundConfigs {
+			i.mu.Unlock()
+		}
 		return nil, err
 	}
+
+	// Convert back to maps after serialization for efficient future operations
+	// and unlock
+	for _, i := range c.InboundConfigs {
+		i.convertClientsSliceToMap()
+		i.mu.Unlock()
+	}
+
 	return b, nil
 }
 
@@ -457,6 +501,11 @@ func NewXRayConfig(config string, exclude []string) (*Config, error) {
 		if slices.Contains(exclude, i.Tag) {
 			i.mu.Lock()
 			i.exclude = true
+			i.mu.Unlock()
+		} else {
+			// Convert slices to maps for efficient O(1) operations
+			i.mu.Lock()
+			i.convertClientsSliceToMap()
 			i.mu.Unlock()
 		}
 	}
