@@ -296,6 +296,10 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 	// Build slices from maps for serialization
 	for _, i := range c.InboundConfigs {
+		if i.Settings == nil {
+			i.Settings = make(map[string]interface{})
+		}
+
 		if i.exclude || i.clients == nil || len(i.clients) == 0 {
 			i.Settings["clients"] = []interface{}{}
 			continue
