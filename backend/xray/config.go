@@ -24,30 +24,30 @@ const (
 )
 
 type Config struct {
-	LogConfig        *conf.LogConfig        `json:"log"`
-	RouterConfig     *conf.RouterConfig     `json:"routing"`
-	DNSConfig        map[string]interface{} `json:"dns"`
-	InboundConfigs   []*Inbound             `json:"inbounds"`
-	OutboundConfigs  interface{}            `json:"outbounds"`
-	Policy           *conf.PolicyConfig     `json:"policy"`
-	API              *conf.APIConfig        `json:"api"`
-	Metrics          map[string]interface{} `json:"metrics,omitempty"`
-	Stats            Stats                  `json:"stats"`
-	Reverse          map[string]interface{} `json:"reverse,omitempty"`
-	FakeDNS          map[string]interface{} `json:"fakeDns,omitempty"`
-	Observatory      map[string]interface{} `json:"observatory,omitempty"`
-	BurstObservatory map[string]interface{} `json:"burstObservatory,omitempty"`
+	LogConfig        *conf.LogConfig    `json:"log"`
+	RouterConfig     *conf.RouterConfig `json:"routing"`
+	DNSConfig        map[string]any     `json:"dns"`
+	InboundConfigs   []*Inbound         `json:"inbounds"`
+	OutboundConfigs  any                `json:"outbounds"`
+	Policy           *conf.PolicyConfig `json:"policy"`
+	API              *conf.APIConfig    `json:"api"`
+	Metrics          map[string]any     `json:"metrics,omitempty"`
+	Stats            Stats              `json:"stats"`
+	Reverse          map[string]any     `json:"reverse,omitempty"`
+	FakeDNS          map[string]any     `json:"fakeDns,omitempty"`
+	Observatory      map[string]any     `json:"observatory,omitempty"`
+	BurstObservatory map[string]any     `json:"burstObservatory,omitempty"`
 }
 
 type Inbound struct {
-	Tag            string                 `json:"tag"`
-	Listen         string                 `json:"listen,omitempty"`
-	Port           interface{}            `json:"port,omitempty"`
-	Protocol       string                 `json:"protocol"`
-	Settings       map[string]interface{} `json:"settings"`
-	StreamSettings map[string]interface{} `json:"streamSettings,omitempty"`
-	Sniffing       interface{}            `json:"sniffing,omitempty"`
-	Allocation     map[string]interface{} `json:"allocate,omitempty"`
+	Tag            string         `json:"tag"`
+	Listen         string         `json:"listen,omitempty"`
+	Port           any            `json:"port,omitempty"`
+	Protocol       string         `json:"protocol"`
+	Settings       map[string]any `json:"settings"`
+	StreamSettings map[string]any `json:"streamSettings,omitempty"`
+	Sniffing       any            `json:"sniffing,omitempty"`
+	Allocation     map[string]any `json:"allocate,omitempty"`
 	mu             sync.RWMutex
 	exclude        bool
 	clients        map[string]api.Account // Runtime-only map: email -> account (never serialized)
@@ -296,12 +296,16 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 	// Build slices from maps for serialization
 	for _, i := range c.InboundConfigs {
-		if i.Settings == nil {
-			i.Settings = make(map[string]interface{})
+		if i.exclude {
+			continue
 		}
 
-		if i.exclude || i.clients == nil || len(i.clients) == 0 {
-			i.Settings["clients"] = []interface{}{}
+		if i.Settings == nil {
+			i.Settings = make(map[string]any)
+		}
+
+		if len(i.clients) == 0 {
+			i.Settings["clients"] = []any{}
 			continue
 		}
 
@@ -375,7 +379,7 @@ func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, err
 
 	filtered := make([]json.RawMessage, 0, len(rules))
 	for _, raw := range rules {
-		var obj map[string]interface{}
+		var obj map[string]any
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			return nil, fmt.Errorf("invalid JSON in rule: %w", err)
 		}
@@ -419,14 +423,14 @@ func (c *Config) ApplyAPI(apiPort int) (err error) {
 		Listen:   "127.0.0.1",
 		Port:     apiPort,
 		Protocol: "dokodemo-door",
-		Settings: map[string]interface{}{"address": "127.0.0.1"},
+		Settings: map[string]any{"address": "127.0.0.1"},
 		Tag:      "API_INBOUND",
 		clients:  make(map[string]api.Account),
 	}
 
 	c.InboundConfigs = append([]*Inbound{inbound}, c.InboundConfigs...)
 
-	rule := map[string]interface{}{
+	rule := map[string]any{
 		"inboundTag":  []string{"API_INBOUND"},
 		"source":      []string{"127.0.0.1"},
 		"outboundTag": "API",
