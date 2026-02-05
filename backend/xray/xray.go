@@ -88,7 +88,7 @@ func NewXray(ctx context.Context, port int, cfg *config.Config) (*Xray, error) {
 
 	xray.core = core
 
-	if err = xray.checkXrayStatus(); err != nil {
+	if err = xray.checkXrayStatus(ctx); err != nil {
 		xray.Shutdown()
 		return nil, err
 	}

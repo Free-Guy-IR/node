@@ -3,55 +3,33 @@ package xray
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
-	"regexp"
-	"strings"
 	"time"
 )
 
-func (x *Xray) checkXrayStatus() error {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-
-	core := x.core
-	logChan := core.Logs()
-	version := core.Version()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	// Precompile regex for better performance
-	logRegex := regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[([^]]+)] (.+)$`)
+func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
+	consecutiveFailures := 0
+	maxFailures := 10 // Allow a few failures before restarting
 
 	for {
 		select {
-		case lastLog := <-logChan:
-			// Check for the actual "started" message - this is more reliable
-			// Xray outputs: [Warning] core: Xray {version} started
-			if strings.Contains(lastLog, "core:") &&
-				strings.Contains(lastLog, "Xray "+version) &&
-				strings.Contains(lastLog, "started") {
+		case <-baseCtx.Done():
+			return errors.New("canceled")
+		default:
+			ctx, cancel := context.WithTimeout(baseCtx, time.Second*1)
+			_, err := x.GetSysStats(ctx)
+			cancel()
+
+			if err == nil {
 				return nil
-			}
-
-			// Check for failure patterns
-			matches := logRegex.FindStringSubmatch(lastLog)
-			if len(matches) > 3 {
-				// Check both error level and message content
-				if matches[2] == "Error" || strings.Contains(matches[3], "Failed to start") {
-					return fmt.Errorf("failed to start xray: %s", matches[3])
-				}
 			} else {
-				// Fallback check if log format doesn't match
-				if strings.Contains(lastLog, "Failed to start") {
-					return fmt.Errorf("failed to start xray: %s", lastLog)
+				consecutiveFailures++
+				if consecutiveFailures >= maxFailures {
+					return err
 				}
 			}
-
-		case <-ctx.Done():
-			return errors.New("failed to start xray: context timeout")
 		}
+		time.Sleep(time.Millisecond * 500)
 	}
 }
 

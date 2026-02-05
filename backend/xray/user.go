@@ -163,12 +163,12 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 	return nil
 }
 
-func (x *Xray) SyncUsers(_ context.Context, users []*common.User) error {
+func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
 	x.config.syncUsers(users)
 	if err := x.Restart(); err != nil {
 		return err
 	}
-	if err := x.checkXrayStatus(); err != nil {
+	if err := x.checkXrayStatus(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -208,12 +208,12 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 	return nil
 }
 
-func (x *Xray) UpdateUsersAndRestart(_ context.Context, users []*common.User) error {
+func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
 	x.config.updateUsers(users)
 	if err := x.Restart(); err != nil {
 		return err
 	}
-	if err := x.checkXrayStatus(); err != nil {
+	if err := x.checkXrayStatus(ctx); err != nil {
 		return err
 	}
 	return nil
