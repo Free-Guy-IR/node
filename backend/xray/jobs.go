@@ -3,9 +3,27 @@ package xray
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 )
+
+func (x *Xray) extractError() error {
+	logChan := x.core.Logs()
+
+	var lastLog string
+	for {
+		select {
+		case lastLog := <-logChan:
+			if strings.Contains(lastLog, "Failed to start") {
+				return fmt.Errorf("failed to start xray: %s", lastLog)
+			}
+		default:
+			return errors.New(lastLog)
+		}
+	}
+}
 
 func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 	consecutiveFailures := 0
@@ -14,7 +32,7 @@ func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 	for {
 		select {
 		case <-baseCtx.Done():
-			return errors.New("canceled")
+			return x.extractError()
 		default:
 			ctx, cancel := context.WithTimeout(baseCtx, time.Second*1)
 			_, err := x.GetSysStats(ctx)
@@ -25,7 +43,7 @@ func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 			} else {
 				consecutiveFailures++
 				if consecutiveFailures >= maxFailures {
-					return err
+					return x.extractError()
 				}
 			}
 		}
