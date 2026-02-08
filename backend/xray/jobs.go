@@ -15,12 +15,15 @@ func (x *Xray) extractError() error {
 	var lastLog string
 	for {
 		select {
-		case lastLog := <-logChan:
+		case lastLog = <-logChan:
 			if strings.Contains(lastLog, "Failed to start") {
 				return fmt.Errorf("failed to start xray: %s", lastLog)
 			}
 		default:
-			return errors.New(lastLog)
+			if lastLog == "" {
+				return errors.New("xray process failed with no error logs")
+			}
+			return fmt.Errorf("xray process failed: %s", lastLog)
 		}
 	}
 }
@@ -34,7 +37,13 @@ func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 		case <-baseCtx.Done():
 			return x.extractError()
 		default:
-			ctx, cancel := context.WithTimeout(baseCtx, time.Second*1)
+			// Check if the xray process is still alive FIRST
+			// This provides immediate detection of process death
+			if !x.core.Started() {
+				return x.extractError()
+			}
+
+			ctx, cancel := context.WithTimeout(baseCtx, time.Millisecond*500)
 			_, err := x.GetSysStats(ctx)
 			cancel()
 
@@ -46,8 +55,8 @@ func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 					return x.extractError()
 				}
 			}
+			time.Sleep(800 * time.Millisecond)
 		}
-		time.Sleep(time.Millisecond * 500)
 	}
 }
 

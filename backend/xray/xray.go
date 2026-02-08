@@ -102,10 +102,7 @@ func NewXray(ctx context.Context, port int, cfg *config.Config) (*Xray, error) {
 
 	// Wait a bit for Xray to fully initialize before starting health checks
 	// This prevents false positives during startup
-	go func() {
-		time.Sleep(time.Second * 1) // Give Xray time to fully start
-		xray.checkXrayHealth(xCtx)
-	}()
+	go xray.checkXrayHealth(xCtx)
 
 	log.Println("xray started, Version:", xray.Version())
 
