@@ -359,7 +359,17 @@ func (c *Config) ToBytes() ([]byte, error) {
 		}
 	}
 
+	// Save Variables for next use
+	aLog := c.LogConfig.AccessLog
+	eLog := c.LogConfig.ErrorLog
+	c.LogConfig.AccessLog = ""
+	c.LogConfig.ErrorLog = ""
+
 	b, err := json.Marshal(c)
+
+	// Restore variables to prevent conflict on next run
+	c.LogConfig.AccessLog = aLog
+	c.LogConfig.ErrorLog = eLog
 
 	// Release all locks
 	for _, i := range c.InboundConfigs {
@@ -482,13 +492,14 @@ func (c *Config) checkPolicy() {
 	}
 }
 
-func (c *Config) RemoveLogFiles() (accessFile, errorFile string) {
-	accessFile = c.LogConfig.AccessLog
-	c.LogConfig.AccessLog = ""
-	errorFile = c.LogConfig.ErrorLog
-	c.LogConfig.ErrorLog = ""
+func (c *Config) GetLogFiles() (accessFile, errorFile string) {
+	if c.LogConfig == nil {
+		c.LogConfig = &conf.LogConfig{
+			LogLevel: "info",
+		}
+	}
 
-	return accessFile, errorFile
+	return c.LogConfig.AccessLog, c.LogConfig.ErrorLog
 }
 
 func NewXRayConfig(config string, exclude []string) (*Config, error) {

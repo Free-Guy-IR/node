@@ -49,7 +49,6 @@ func GetSystemStats() (*common.SystemStatsResponse, error) {
 // Loopback interface (lo) is excluded from the calculation.
 func getBandwidthSpeed() (uint64, uint64, error) {
 	// 1) First snapshot with timestamp
-	start := time.Now()
 	first, err := net.IOCounters(true)
 	if err != nil {
 		return 0, 0, err
@@ -63,15 +62,8 @@ func getBandwidthSpeed() (uint64, uint64, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	end := time.Now()
 
-	// 4) Calculate actual elapsed time (not assumed 1 second)
-	actualDuration := end.Sub(start).Seconds()
-	if actualDuration == 0 {
-		return 0, 0, nil // avoid division by zero
-	}
-
-	// 5) Build a map from interface name → first snapshot
+	// 4) Build a map from interface name → first snapshot
 	// Skip loopback interface
 	prev := make(map[string]net.IOCountersStat, len(first))
 	for _, c := range first {
@@ -82,7 +74,7 @@ func getBandwidthSpeed() (uint64, uint64, error) {
 		prev[c.Name] = c
 	}
 
-	// 6) Compute deltas and sum across all interfaces
+	// 5) Compute deltas and sum across all interfaces
 	// Skip loopback interface
 	var totalRxBytes, totalTxBytes uint64
 	for _, c := range second {
@@ -96,10 +88,6 @@ func getBandwidthSpeed() (uint64, uint64, error) {
 		}
 	}
 
-	// 7) Convert bytes to bytes per second using ACTUAL measured time
-	rxPerSecond := uint64(float64(totalRxBytes) / actualDuration)
-	txPerSecond := uint64(float64(totalTxBytes) / actualDuration)
-
-	// 8) Return the calculated rates (bytes per second)
-	return rxPerSecond, txPerSecond, nil
+	// 6) Return the calculated rates (bytes per second)
+	return totalRxBytes, totalTxBytes, nil
 }

@@ -29,9 +29,6 @@ func (x *Xray) extractError() error {
 }
 
 func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
-	consecutiveFailures := 0
-	maxFailures := 10 // Allow a few failures before restarting
-
 	for {
 		select {
 		case <-baseCtx.Done():
@@ -49,13 +46,8 @@ func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
 
 			if err == nil {
 				return nil
-			} else {
-				consecutiveFailures++
-				if consecutiveFailures >= maxFailures {
-					return x.extractError()
-				}
 			}
-			time.Sleep(800 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }

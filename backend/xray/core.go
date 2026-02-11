@@ -105,17 +105,7 @@ func (c *Core) Started() bool {
 }
 
 func (c *Core) Start(xConfig *Config, debugMode bool) error {
-	logConfig := xConfig.LogConfig
-	if logConfig == nil {
-		return errors.New("log config is empty")
-	}
-
-	logLevel := logConfig.LogLevel
-	if logLevel == "none" || logLevel == "error" {
-		xConfig.LogConfig.LogLevel = "warning"
-	}
-
-	accessFile, errorFile := xConfig.RemoveLogFiles()
+	accessFile, errorFile := xConfig.GetLogFiles()
 
 	bytesConfig, err := xConfig.ToBytes()
 	if debugMode {
