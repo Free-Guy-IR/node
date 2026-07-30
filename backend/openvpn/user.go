@@ -31,6 +31,14 @@ import (
 type authEntry struct {
 	password string
 	email    string
+	// maxConcurrent caps how many simultaneous OpenVPN sessions this user may
+	// hold across all instances at once, checked against ManagementClient's
+	// live m.online session count on every fresh CLIENT:CONNECT (not REAUTH -
+	// a renegotiation of an already-ESTABLISHED session does not add a new
+	// concurrent session, so it must never be rejected against its own count).
+	// Reuses the panel-wide User.hwid_limit field's numeric value - 0 means
+	// unlimited, matching the panel-side convention (see app/node/user.py).
+	maxConcurrent uint32
 }
 
 // authStore is the in-memory, per-instance username -> credential map that
@@ -76,15 +84,15 @@ func (s *authStore) contains(username string) bool {
 
 // authenticate validates a username/password pair presented over the
 // management socket, returning the user's email on success.
-func (s *authStore) authenticate(username, password string) (string, bool) {
+func (s *authStore) authenticate(username, password string) (string, uint32, bool) {
 	s.mu.RLock()
 	entry, ok := s.users[username]
 	s.mu.RUnlock()
 
 	if !ok || password == "" || entry.password != password {
-		return "", false
+		return "", 0, false
 	}
-	return entry.email, true
+	return entry.email, entry.maxConcurrent, true
 }
 
 // openVPNCredential extracts the (username, password) pair an OpenVpnUser
@@ -95,16 +103,16 @@ func (s *authStore) authenticate(username, password string) (string, bool) {
 // only shrinking Inbounds to signal the revocation (mirrors the same
 // requirement singbox's SyncUser/updateUsers place on Hysteria2 users - see
 // backend/singbox/user.go and its tests).
-func openVPNCredential(user *common.User) (username, password string, ok bool) {
+func openVPNCredential(user *common.User) (username, password string, maxConcurrent uint32, ok bool) {
 	proxy := user.GetProxies().GetOpenVpn()
 	if proxy == nil {
-		return "", "", false
+		return "", "", 0, false
 	}
 	username = proxy.GetUsername()
 	if username == "" {
-		return "", "", false
+		return "", "", 0, false
 	}
-	return username, proxy.GetPassword(), true
+	return username, proxy.GetPassword(), proxy.GetMaxConcurrentConnections(), true
 }
 
 // syncAllUsers fully replaces the authorized-user set on every instance, and
@@ -118,14 +126,14 @@ func (b *Backend) syncAllUsers(users []*common.User) {
 	}
 
 	for _, user := range users {
-		username, password, ok := openVPNCredential(user)
+		username, password, maxConcurrent, ok := openVPNCredential(user)
 		if !ok {
 			continue
 		}
 		email := user.GetEmail()
 		for _, tag := range user.GetInbounds() {
 			if m, exists := perInstance[tag]; exists {
-				m[username] = authEntry{password: password, email: email}
+				m[username] = authEntry{password: password, email: email, maxConcurrent: maxConcurrent}
 			}
 		}
 	}
@@ -146,7 +154,7 @@ func (b *Backend) updateUsers(users []*common.User) {
 	touched := make(map[string]struct{}, len(b.instances))
 
 	for _, user := range users {
-		username, password, hasCredential := openVPNCredential(user)
+		username, password, maxConcurrent, hasCredential := openVPNCredential(user)
 		if !hasCredential {
 			continue
 		}
@@ -159,7 +167,7 @@ func (b *Backend) updateUsers(users []*common.User) {
 		email := user.GetEmail()
 		for tag, instance := range b.instances {
 			if _, active := activeTags[tag]; active {
-				instance.auth.upsert(username, authEntry{password: password, email: email})
+				instance.auth.upsert(username, authEntry{password: password, email: email, maxConcurrent: maxConcurrent})
 			} else {
 				instance.auth.remove(username)
 			}

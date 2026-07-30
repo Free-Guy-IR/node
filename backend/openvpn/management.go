@@ -46,9 +46,10 @@ type ManagementClient struct {
 	socketPath string
 
 	// authFn validates a username/password pair from a CLIENT:CONNECT/REAUTH
-	// env block, returning the user's email on success. Bound to an
-	// instance's authStore.authenticate (see user.go).
-	authFn func(username, password string) (email string, ok bool)
+	// env block, returning the user's email and per-user concurrent-session
+	// cap (0 = unlimited) on success. Bound to an instance's
+	// authStore.authenticate (see user.go).
+	authFn func(username, password string) (email string, maxConcurrent uint32, ok bool)
 
 	stopCh  chan struct{}
 	doneCh  chan struct{}
@@ -105,7 +106,7 @@ type pendingCmd struct {
 	done  chan struct{}
 }
 
-func newManagementClient(tag, socketPath string, authFn func(username, password string) (string, bool)) *ManagementClient {
+func newManagementClient(tag, socketPath string, authFn func(username, password string) (string, uint32, bool)) *ManagementClient {
 	return &ManagementClient{
 		tag:          tag,
 		socketPath:   socketPath,
@@ -400,9 +401,10 @@ func (m *ManagementClient) handleAuthRequest(ev *clientEvent) {
 	password := ev.env["password"]
 
 	var email string
+	var maxConcurrent uint32
 	var ok bool
 	if m.authFn != nil {
-		email, ok = m.authFn(username, password)
+		email, maxConcurrent, ok = m.authFn(username, password)
 	}
 
 	if !ok {
@@ -411,6 +413,21 @@ func (m *ManagementClient) handleAuthRequest(ev *clientEvent) {
 			log.Printf("openvpn[%s]: failed to send client-deny for cid=%s: %v", m.tag, ev.cid, err)
 		}
 		return
+	}
+
+	// Concurrent-session cap only applies to a brand-new CONNECT, never to a
+	// REAUTH: the reauthenticating cid is already present in m.online (added
+	// at its own CLIENT:ESTABLISHED) and does not represent an additional
+	// session, so counting it here would let a single already-connected user
+	// at exactly their own cap get denied on their next TLS renegotiation.
+	if ev.kind == "CONNECT" && maxConcurrent > 0 {
+		if current := m.OnlineUserCount(email); current >= int(maxConcurrent) {
+			log.Printf("openvpn[%s]: denying cid=%s username=%q (concurrent-session cap reached: %d/%d)", m.tag, ev.cid, username, current, maxConcurrent)
+			if err := m.writeLine(fmt.Sprintf("client-deny %s %s %q", ev.cid, ev.kid, "too many concurrent connections")); err != nil {
+				log.Printf("openvpn[%s]: failed to send client-deny for cid=%s: %v", m.tag, ev.cid, err)
+			}
+			return
+		}
 	}
 
 	m.stateMu.Lock()

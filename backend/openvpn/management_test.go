@@ -73,11 +73,11 @@ func listenUnix(t *testing.T) (*net.UnixListener, string) {
 func TestManagementClient_Protocol(t *testing.T) {
 	ln, sockPath := listenUnix(t)
 
-	mgmt := newManagementClient("test", sockPath, func(username, password string) (string, bool) {
+	mgmt := newManagementClient("test", sockPath, func(username, password string) (string, uint32, bool) {
 		if username == "alice" && password == "secret" {
-			return "alice@example.com", true
+			return "alice@example.com", 0, true
 		}
-		return "", false
+		return "", 0, false
 	})
 
 	serverErrCh := make(chan error, 1)
@@ -219,8 +219,8 @@ func TestManagementClient_Protocol(t *testing.T) {
 func TestManagementClient_EnforceAuthorized(t *testing.T) {
 	ln, sockPath := listenUnix(t)
 
-	mgmt := newManagementClient("test", sockPath, func(username, password string) (string, bool) {
-		return "bob@example.com", true
+	mgmt := newManagementClient("test", sockPath, func(username, password string) (string, uint32, bool) {
+		return "bob@example.com", 0, true
 	})
 
 	killCh := make(chan string, 1)
@@ -292,6 +292,142 @@ func TestManagementClient_EnforceAuthorized(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for client-kill command")
+	}
+
+	mgmt.Close()
+	close(finish)
+}
+
+
+// TestManagementClient_ConcurrentSessionCap checks the per-user
+// concurrent-connection cap enforced in handleAuthRequest: a second CONNECT
+// for a user already at their cap must be denied, but a REAUTH on an
+// already-ESTABLISHED session must never be denied against its own count -
+// see the doc comment on that check in management.go for why.
+func TestManagementClient_ConcurrentSessionCap(t *testing.T) {
+	ln, sockPath := listenUnix(t)
+
+	mgmt := newManagementClient("test", sockPath, func(username, password string) (string, uint32, bool) {
+		if username == "carol" && password == "secret" {
+			return "carol@example.com", 1, true
+		}
+		return "", 0, false
+	})
+
+	replyCh := make(chan string, 4)
+	serverErrCh := make(chan error, 1)
+	proceed := make(chan struct{})
+	finish := make(chan struct{})
+
+	go func() {
+		serverConn, err := ln.Accept()
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer serverConn.Close()
+		r := bufio.NewReader(serverConn)
+
+		for range 2 {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				serverErrCh <- err
+				return
+			}
+			fmt.Fprintf(serverConn, "SUCCESS: %s\r\n", strings.TrimSpace(line))
+		}
+
+		// First CONNECT for carol (cid=1): should be allowed (0 concurrent so far).
+		fmt.Fprint(serverConn, ">CLIENT:CONNECT,1,0\r\n>CLIENT:ENV,username=carol\r\n>CLIENT:ENV,password=secret\r\n>CLIENT:ENV,END\r\n")
+		l1, err := r.ReadString('\n')
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		l2, err := r.ReadString('\n')
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		replyCh <- strings.TrimSpace(l1) + "|" + strings.TrimSpace(l2)
+
+		// Establish cid=1 so OnlineUserCount(carol@example.com) becomes 1.
+		fmt.Fprint(serverConn, ">CLIENT:ESTABLISHED,1\r\n>CLIENT:ENV,trusted_ip=1.2.3.4\r\n>CLIENT:ENV,END\r\n")
+
+		<-proceed // wait for the test to observe OnlineCount()==1
+
+		// Second CONNECT for carol (cid=2, a distinct session): must be denied,
+		// cap is 1 and one session is already established.
+		fmt.Fprint(serverConn, ">CLIENT:CONNECT,2,0\r\n>CLIENT:ENV,username=carol\r\n>CLIENT:ENV,password=secret\r\n>CLIENT:ENV,END\r\n")
+		l3, err := r.ReadString('\n')
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		replyCh <- strings.TrimSpace(l3)
+
+		// REAUTH on the already-established cid=1: must NOT be denied even
+		// though OnlineUserCount is still 1 - this is the same session
+		// renegotiating, not a new one.
+		fmt.Fprint(serverConn, ">CLIENT:REAUTH,1,1\r\n>CLIENT:ENV,username=carol\r\n>CLIENT:ENV,password=secret\r\n>CLIENT:ENV,END\r\n")
+		l4, err := r.ReadString('\n')
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		l5, err := r.ReadString('\n')
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		replyCh <- strings.TrimSpace(l4) + "|" + strings.TrimSpace(l5)
+
+		<-finish
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mgmt.Connect(ctx); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	select {
+	case err := <-serverErrCh:
+		t.Fatalf("fake server error: %v", err)
+	case got := <-replyCh:
+		want := "client-auth 1 0|END"
+		if got != want {
+			t.Fatalf("first CONNECT: expected %q, got %q", want, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first client-auth reply")
+	}
+
+	waitForCondition(t, time.Second, func() bool { return mgmt.OnlineUserCount("carol@example.com") == 1 })
+	close(proceed)
+
+	select {
+	case err := <-serverErrCh:
+		t.Fatalf("fake server error: %v", err)
+	case got := <-replyCh:
+		want := `client-deny 2 0 "too many concurrent connections"`
+		if got != want {
+			t.Fatalf("second CONNECT (over cap): expected %q, got %q", want, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for client-deny reply on over-cap CONNECT")
+	}
+
+	select {
+	case err := <-serverErrCh:
+		t.Fatalf("fake server error: %v", err)
+	case got := <-replyCh:
+		want := "client-auth 1 1|END"
+		if got != want {
+			t.Fatalf("REAUTH of already-established session: expected %q (must not be capped against its own count), got %q", want, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for client-auth reply on REAUTH")
 	}
 
 	mgmt.Close()

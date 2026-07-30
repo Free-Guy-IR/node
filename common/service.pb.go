@@ -1353,11 +1353,18 @@ func (x *Hysteria2) GetPassword() string {
 // (no per-user client certificate) - username plus password is the full
 // per-user credential, matching every other password-based protocol here.
 type OpenVpnUser struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
-	Password      string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Username string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`
+	Password string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// Max concurrent OpenVPN sessions allowed for this user, reusing the
+	// panel-wide User.hwid_limit field's numeric value (0 or unset = unlimited).
+	// This is a concurrent-connection cap, distinct from hwid_limit”'s original
+	// meaning for Xray (a cap on distinct device fingerprints ever seen) - OpenVPN
+	// has no comparable device-fingerprint concept, so the same admin-facing number
+	// is reinterpreted here as a live-session cap instead.
+	MaxConcurrentConnections uint32 `protobuf:"varint,3,opt,name=max_concurrent_connections,json=maxConcurrentConnections,proto3" json:"max_concurrent_connections,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *OpenVpnUser) Reset() {
@@ -1402,6 +1409,13 @@ func (x *OpenVpnUser) GetPassword() string {
 		return x.Password
 	}
 	return ""
+}
+
+func (x *OpenVpnUser) GetMaxConcurrentConnections() uint32 {
+	if x != nil {
+		return x.MaxConcurrentConnections
+	}
+	return 0
 }
 
 type Proxy struct {
@@ -1757,10 +1771,11 @@ const file_common_service_proto_rawDesc = "" +
 	"\bHysteria\x12\x12\n" +
 	"\x04auth\x18\x01 \x01(\tR\x04auth\"'\n" +
 	"\tHysteria2\x12\x1a\n" +
-	"\bpassword\x18\x01 \x01(\tR\bpassword\"E\n" +
+	"\bpassword\x18\x01 \x01(\tR\bpassword\"\x83\x01\n" +
 	"\vOpenVpnUser\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"\xf8\x02\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12<\n" +
+	"\x1amax_concurrent_connections\x18\x03 \x01(\rR\x18maxConcurrentConnections\"\xf8\x02\n" +
 	"\x05Proxy\x12$\n" +
 	"\x05vmess\x18\x01 \x01(\v2\x0e.service.VmessR\x05vmess\x12$\n" +
 	"\x05vless\x18\x02 \x01(\v2\x0e.service.VlessR\x05vless\x12'\n" +
