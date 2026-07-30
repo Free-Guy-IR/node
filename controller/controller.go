@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pasarguard/node/backend"
+	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
@@ -161,6 +162,22 @@ func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) 
 			config,
 			backend.GetUsers(),
 			c.apiPort,
+			c.cfg,
+		)
+		if err != nil {
+			return err
+		}
+		c.backend = newBackend
+
+	case common.BackendType_OPEN_VPN:
+		config, err := openvpn.NewConfig(backend.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err := openvpn.New(
+			ctx,
+			config,
+			backend.GetUsers(),
 			c.cfg,
 		)
 		if err != nil {
