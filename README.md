@@ -23,7 +23,7 @@ You can find a full guide in docs https://docs.pasarguard.org/en/node/
 The easiest way to install PasarGuard Node is using our automated installation script:
 
 ```bash
-sudo bash -c "$(curl -sL https://github.com/PasarGuard/scripts/raw/main/pg-node.sh)" @ install
+sudo bash -c "$(curl -sL https://github.com/Free-Guy-IR/scripts/raw/main/pg-node.sh)" @ install
 ```
 
 # Donation
