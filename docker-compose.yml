@@ -9,6 +9,11 @@ services:
       - NET_ADMIN
     # WireGuard in this image uses the Linux kernel interface.
     # The host must have WireGuard kernel support available (for example: modprobe wireguard).
+    devices:
+      # OpenVPN needs the /dev/net/tun character device to create tun interfaces
+      # (unlike WireGuard above, which uses the in-kernel WireGuard netdev type and
+      # never touches /dev/net/tun).
+      - "/dev/net/tun:/dev/net/tun"
 
     environment:
       SERVICE_PORT: 62050
