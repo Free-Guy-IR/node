@@ -14,6 +14,8 @@
     </a>
 </p>
 
+> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2) and OpenVPN backend support.
+
 # Documentation
 You can find a full guide in docs https://docs.pasarguard.org/en/node/
 
