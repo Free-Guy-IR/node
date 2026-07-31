@@ -14,7 +14,7 @@
     </a>
 </p>
 
-> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2) and OpenVPN backend support.
+> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2), OpenVPN, and MTProto (Telegram proxy) backend support.
 
 # Documentation
 You can find a full guide in docs https://docs.pasarguard.org/en/node/
@@ -25,6 +25,26 @@ The easiest way to install PasarGuard Node is using our automated installation s
 ```bash
 sudo bash -c "$(curl -sL https://github.com/Free-Guy-IR/scripts/raw/main/pg-node.sh)" @ install
 ```
+
+# Multiple Nodes on One Server
+
+If you want to run several nodes on the same server, install each node with a unique name:
+
+```bash
+sudo bash -c "$(curl -sL https://github.com/Free-Guy-IR/scripts/raw/main/pg-node.sh)" @ install --name node-eu-1
+```
+
+After installation, use that same name as the prefix for management commands:
+
+```bash
+node-eu-1 update
+node-eu-1 edit
+node-eu-1 edit-env
+```
+
+You can run any other subcommand for that same node with the same prefix (`node-eu-1 ...`).
+
+> ⚠️ **Important:** Never reuse ports between nodes. The connection port and every core's inbound/instance ports (Xray, sing-box, OpenVPN, MTProto, ...) attached to each node must be completely unique per node.
 
 # Donation
 You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
