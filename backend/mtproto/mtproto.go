@@ -2,6 +2,7 @@ package mtproto
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"github.com/9seconds/mtg/v2/network"
 	"github.com/yl2chen/cidranger"
 
+	"github.com/pasarguard/node/backend/mtproto/middleproxy"
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
 	"github.com/pasarguard/node/pkg/stats"
@@ -22,13 +24,18 @@ import (
 
 const version = "mtg-fork (Free-Guy-IR)"
 
-// proxyInstance is one running admin-configured listener: an mtglib.Proxy
-// plus the listener it Serve()s on and the accumulator its EventStream
-// writes per-user traffic into.
+// proxyInstance is one running admin-configured listener: EITHER an
+// mtglib.Proxy (the normal, direct-to-DC path) OR a middleproxy.Instance
+// (only when the instance has an ad_tag configured - see config.go), never
+// both. Either way it owns the listener it Serve()s on and the accumulator
+// its events write per-user traffic into, so Started/Restart/Shutdown below
+// can treat both kinds uniformly wherever they don't need to touch
+// proxy/mp-specific behavior.
 type proxyInstance struct {
 	tag         string
 	domain      string
 	proxy       *mtglib.Proxy
+	mp          *middleproxy.Instance
 	listener    net.Listener
 	accumulator *eventAccumulator
 }
@@ -111,6 +118,62 @@ func buildAllowAllList(logger mtglib.Logger) (mtglib.IPBlocklist, error) {
 	return allowlist, nil
 }
 
+// newMiddleProxyInstance builds and starts the ad-tag/middle-proxy path for
+// one instance (see config.go's InstanceConfig.AdTag and the middleproxy
+// package doc comment for why this is a materially different code path
+// from the normal mtglib one, not just a flag on it). Secrets are read live
+// from b.secretsByID on every connection attempt, exactly like the mtglib
+// path's UpdateSecrets - no restart needed when a user's MTProto
+// credential is added, changed, or removed.
+func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *eventAccumulator) (*proxyInstance, error) {
+	adTag, err := hex.DecodeString(inst.AdTag)
+	if err != nil {
+		return nil, fmt.Errorf("mtproto: instance %q has invalid ad_tag: %w", inst.Tag, err)
+	}
+
+	mp := middleproxy.New(middleproxy.Options{
+		Port:  inst.Port,
+		AdTag: adTag,
+		Secrets: func() []middleproxy.SecretEntry {
+			b.mu.RLock()
+			defer b.mu.RUnlock()
+
+			entries := make([]middleproxy.SecretEntry, 0, len(b.secretsByID))
+			for username, entry := range b.secretsByID {
+				entries = append(entries, middleproxy.SecretEntry{
+					Username: username,
+					Email:    entry.email,
+					Key:      entry.keyBytes[:],
+				})
+			}
+			return entries
+		},
+		OnAuth:    accumulator.authenticated,
+		OnTraffic: accumulator.traffic,
+		OnFinish:  accumulator.finished,
+		OnLog: func(msg string) {
+			b.recordLog(msg)
+		},
+	})
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: inst.Port})
+	if err != nil {
+		return nil, fmt.Errorf("mtproto: failed to listen on instance %q port %d: %w", inst.Tag, inst.Port, err)
+	}
+
+	pi := &proxyInstance{
+		tag:         inst.Tag,
+		domain:      inst.FakeTLSDomain,
+		mp:          mp,
+		listener:    listener,
+		accumulator: accumulator,
+	}
+
+	go mp.Serve(listener) //nolint: errcheck
+
+	return pi, nil
+}
+
 // New builds and starts one mtglib.Proxy per configured instance, seeded
 // with the initial user set before any listener starts accepting
 // connections (so no user has to reconnect after a fresh boot).
@@ -154,6 +217,17 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		}
 
 		accumulator := newEventAccumulator()
+
+		if inst.AdTag != "" {
+			pi, err := b.newMiddleProxyInstance(inst, accumulator)
+			if err != nil {
+				b.Shutdown()
+				return nil, err
+			}
+			b.instances[inst.Tag] = pi
+			b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (middle-proxy/ad-tag mode)", inst.Tag, inst.Port))
+			continue
+		}
 
 		opts := mtglib.ProxyOpts{
 			Logger:             instLogger,
@@ -253,7 +327,12 @@ func (b *Backend) Restart() error {
 		}
 
 		inst.listener = listener
-		go inst.proxy.Serve(listener) //nolint: errcheck
+
+		if inst.mp != nil {
+			go inst.mp.Serve(listener) //nolint: errcheck
+		} else {
+			go inst.proxy.Serve(listener) //nolint: errcheck
+		}
 	}
 
 	return errors.Join(errs...)
@@ -274,6 +353,9 @@ func (b *Backend) Shutdown() {
 		}
 		if inst.proxy != nil {
 			inst.proxy.Shutdown()
+		}
+		if inst.mp != nil {
+			inst.mp.Shutdown()
 		}
 	}
 

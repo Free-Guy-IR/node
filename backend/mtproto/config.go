@@ -17,6 +17,7 @@
 package mtproto
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 )
@@ -29,6 +30,15 @@ type InstanceConfig struct {
 	Tag           string `json:"tag"`
 	Port          int    `json:"port"`
 	FakeTLSDomain string `json:"fake_tls_domain"`
+
+	// AdTag is a hex-encoded Telegram middle-proxy "ad tag" (obtained from
+	// @MTProxybot), which activates sponsor-channel promotion for clients
+	// connecting to this instance. When set, this instance relays through
+	// Telegram's middle-proxy servers (see the middleproxy package) instead
+	// of straight to the DC - a materially different, higher-overhead code
+	// path than every other instance, so it stays opt-in per instance
+	// rather than a backend-wide setting.
+	AdTag string `json:"ad_tag,omitempty"`
 }
 
 type Config struct {
@@ -75,6 +85,16 @@ func validate(cfg *Config) error {
 
 		if inst.FakeTLSDomain == "" {
 			return fmt.Errorf("mtproto config: instance %q must set fake_tls_domain", inst.Tag)
+		}
+
+		if inst.AdTag != "" {
+			raw, err := hex.DecodeString(inst.AdTag)
+			if err != nil {
+				return fmt.Errorf("mtproto config: instance %q has invalid ad_tag: %w", inst.Tag, err)
+			}
+			if len(raw) == 0 || len(raw) > 255 {
+				return fmt.Errorf("mtproto config: instance %q ad_tag must decode to 1-255 bytes", inst.Tag)
+			}
 		}
 	}
 
