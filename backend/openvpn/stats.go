@@ -116,8 +116,18 @@ func (b *Backend) instancesStat(reset bool) *common.StatResponse {
 
 // GetStats maps this backend's data onto the shared StatType vocabulary:
 // instances play the role of "inbounds" (they are the listeners accepting
-// tunneled traffic), and there is no "outbound" concept at all (see
-// GetOutboundsLatency).
+// tunneled traffic). OpenVPN has no "outbound" concept of its own (see
+// GetOutboundsLatency), but the dashboard's node-level traffic total is
+// sourced from an Outbound/Outbounds query regardless of backend type (see
+// the panel's app/jobs/record_usages.py get_outbounds_stats) - so
+// Outbound/Outbounds here deliberately answers with the same per-instance
+// aggregate Inbound/Inbounds already reports, via instance.statsTracker (a
+// stats.InterfaceCountersTracker, a distinct tracker instance from
+// b.statsTracker above, which is what UserStat/UsersStat reads/resets).
+// Reusing it for the node-level total is safe specifically because it
+// never touches b.statsTracker's own reset cycle - the two trackers only
+// share their underlying data source (mgmt.AllUserStats()), which is
+// polled read-only, not consumed/reset at the source.
 func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
 	b.refreshUserStats()
 
@@ -130,8 +140,10 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 		return b.instanceStat(request.GetName(), request.GetReset_())
 	case common.StatType_Inbounds:
 		return b.instancesStat(request.GetReset_()), nil
-	case common.StatType_Outbound, common.StatType_Outbounds:
-		return nil, errors.New("outbound stats not applicable for openvpn")
+	case common.StatType_Outbound:
+		return b.instanceStat(request.GetName(), request.GetReset_())
+	case common.StatType_Outbounds:
+		return b.instancesStat(request.GetReset_()), nil
 	default:
 		return nil, errors.New("unsupported stat type")
 	}

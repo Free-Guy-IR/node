@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/9seconds/mtg/v2/mtglib"
@@ -40,14 +41,33 @@ type eventAccumulator struct {
 	cumulativeRx map[string]int64  // username -> cumulative bytes received (Telegram/front -> client)
 	cumulativeTx map[string]int64  // username -> cumulative bytes sent (client -> Telegram/front)
 	email        map[string]string // username -> email, refreshed on every auth
+
+	// outboundRx/outboundTx point at the owning Backend's node-wide totals
+	// (see Backend.outboundRx/outboundTx in mtproto.go). Every instance's
+	// accumulator is constructed with pointers to the SAME two counters, so
+	// traffic from every instance (mtglib and middleproxy relay paths alike
+	// - both funnel through this one traffic() method) folds into one
+	// backend-wide total. This is deliberately independent from
+	// cumulativeRx/cumulativeTx and b.statsTracker above: those exist to
+	// answer UserStat/UsersStat (per-user billing, reset on
+	// record_user_usages' own schedule); these two atomics exist solely to
+	// answer GetStats' Outbound/Outbounds case (node-level dashboard
+	// display, reset on record_node_usages' independent schedule) - see
+	// that case in GetStats below for why a genuinely separate counter was
+	// needed here (unlike OpenVPN/sing-box, MTProto has no pre-existing
+	// per-instance aggregate to repurpose).
+	outboundRx *atomic.Int64
+	outboundTx *atomic.Int64
 }
 
-func newEventAccumulator() *eventAccumulator {
+func newEventAccumulator(outboundRx, outboundTx *atomic.Int64) *eventAccumulator {
 	return &eventAccumulator{
 		streamUser:   make(map[string]string),
 		cumulativeRx: make(map[string]int64),
 		cumulativeTx: make(map[string]int64),
 		email:        make(map[string]string),
+		outboundRx:   outboundRx,
+		outboundTx:   outboundTx,
 	}
 }
 
@@ -61,6 +81,12 @@ func (a *eventAccumulator) authenticated(streamID, username, email string) {
 func (a *eventAccumulator) traffic(streamID string, n uint, isRead bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if isRead {
+		a.outboundRx.Add(int64(n))
+	} else {
+		a.outboundTx.Add(int64(n))
+	}
 
 	username, ok := a.streamUser[streamID]
 	if !ok {
@@ -200,10 +226,36 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 		// v2ray-less inbound would be: not applicable as a separate figure.
 		return &common.StatResponse{Stats: []*common.Stat{}}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
-		return nil, errors.New("outbound stats not applicable for mtproto")
+		return b.outboundStat(request.GetReset_()), nil
 	default:
 		return nil, errors.New("unsupported stat type")
 	}
+}
+
+// outboundStat answers Outbound/Outbounds from the dedicated
+// backend-wide atomics every instance's eventAccumulator.traffic() feeds
+// (see the eventAccumulator struct's outboundRx/outboundTx comment) -
+// entirely independent of b.statsTracker (per-user, reset by
+// record_user_usages) and of the per-instance cumulative maps used for
+// Inbound/Inbounds above. With reset=true (the only mode the panel's
+// record_node_usages job actually uses - see get_outbounds_stats) this
+// atomically reads-and-zeros via Swap so no traffic is double-counted or
+// dropped between polls; with reset=false it peeks via Load without
+// disturbing the running total. Reports one node-wide {tag: "mtproto"}
+// pair rather than a per-instance breakdown, because unlike OpenVPN's
+// per-listener sockets, every mtproto instance on this backend shares the
+// same authenticated-user set (see GetStats' Inbound/Inbounds case above),
+// so there is no meaningful sub-instance split to report here either.
+func (b *Backend) outboundStat(reset bool) *common.StatResponse {
+	var rx, tx int64
+	if reset {
+		rx = b.outboundRx.Swap(0)
+		tx = b.outboundTx.Swap(0)
+	} else {
+		rx = b.outboundRx.Load()
+		tx = b.outboundTx.Load()
+	}
+	return &common.StatResponse{Stats: stats.BuildInterfaceStats("mtproto", "mtproto", rx, tx)}
 }
 
 func (b *Backend) usernameForEmail(email string) (string, bool) {

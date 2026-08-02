@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/9seconds/mtg/v2/antireplay"
@@ -57,6 +58,15 @@ type Backend struct {
 	secretsByID map[string]secretEntry
 
 	cancelFunc context.CancelFunc
+
+	// outboundRx/outboundTx are the node-wide traffic totals GetStats'
+	// Outbound/Outbounds case reports (see stats.go's outboundStat) - every
+	// instance's eventAccumulator is constructed pointing at these same two
+	// counters (see the newEventAccumulator call below), so this aggregates
+	// across every instance regardless of which relay path (mtglib or
+	// middleproxy) served a given connection.
+	outboundRx atomic.Int64
+	outboundTx atomic.Int64
 }
 
 func logBufferSizeOrDefault(cfg *config.Config) int {
@@ -216,7 +226,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			return nil, err
 		}
 
-		accumulator := newEventAccumulator()
+		accumulator := newEventAccumulator(&b.outboundRx, &b.outboundTx)
 
 		if inst.AdTag != "" {
 			pi, err := b.newMiddleProxyInstance(inst, accumulator)

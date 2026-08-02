@@ -14,10 +14,21 @@ func (s *SingBox) GetSysStats(ctx context.Context) (*common.BackendStatsResponse
 func (s *SingBox) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
 	switch request.GetType() {
 
+	// This backend's generated Hysteria2 config has no traffic-bearing
+	// outbound to populate sing-box's "outbound>>>" counters (see
+	// GetOutboundsLatency below) - the panel's node-level traffic total is
+	// sourced from an Outbound/Outbounds query regardless of backend type
+	// (app/jobs/record_usages.py get_outbounds_stats), so this answers with
+	// the inbound listener's own counters instead, which is where
+	// Hysteria2's real byte counts actually land. GetInboundsStats/
+	// GetInboundStats query sing-box's independent "inbound>>>" counter
+	// namespace (see backend/singbox/api/stats.go's QueryStats), with its
+	// own reset cycle separate from "user>>>"'s - safe to reset here
+	// without affecting per-user billing accuracy.
 	case common.StatType_Outbounds:
-		return s.client.GetOutboundsStats(ctx, request.GetReset_())
+		return s.client.GetInboundsStats(ctx, request.GetReset_())
 	case common.StatType_Outbound:
-		return s.client.GetOutboundStats(ctx, request.GetName(), request.GetReset_())
+		return s.client.GetInboundStats(ctx, request.GetName(), request.GetReset_())
 
 	case common.StatType_Inbounds:
 		return s.client.GetInboundsStats(ctx, request.GetReset_())

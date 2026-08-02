@@ -168,12 +168,34 @@ func (c *Config) refreshAPILocked() error {
 		"listen": fmt.Sprintf("127.0.0.1:%d", c.apiPort),
 		"stats": map[string]any{
 			"enabled": true,
-			"users":   c.allUserEmailsLocked(),
+			// Without this, sing-box's v2ray_api.StatsService builds its
+			// inbounds map from an empty options.Inbounds list (see
+			// NewStatsService in sing-box's experimental/v2rayapi/stats.go),
+			// so RoutedConnection's countInbound check is always false and
+			// no per-inbound counter is ever created - GetInboundsStats/
+			// GetInboundStats (backend/singbox/api/stats.go) would then
+			// always return empty regardless of how much real traffic
+			// flows. Listing every hysteria2 tag here is what makes those
+			// two RPCs (which backend/singbox/stats.go's GetStats now
+			// delegates Outbound/Outbounds to, since this backend's
+			// minimal direct-outbound config has no traffic-bearing
+			// "outbound" of its own to track) return real, non-zero data.
+			"inbounds": c.allInboundTagsLocked(),
+			"users":    c.allUserEmailsLocked(),
 		},
 	}
 	c.root["experimental"] = experimental
 
 	return nil
+}
+
+func (c *Config) allInboundTagsLocked() []string {
+	tags := make([]string, 0, len(c.hy2))
+	for tag := range c.hy2 {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 func (c *Config) allUserEmailsLocked() []string {
