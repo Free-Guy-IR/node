@@ -93,7 +93,7 @@ func (b *Backend) instanceStat(name string, reset bool) (*common.StatResponse, e
 	}
 
 	rx, tx := instance.aggregateStats()
-	deltaRx, deltaTx := instance.statsTracker.Delta(rx, tx, reset)
+	deltaRx, deltaTx := instance.statsTracker.DeltaClamped(rx, tx, reset)
 	return &common.StatResponse{Stats: stats.BuildInterfaceStats(name, name, deltaRx, deltaTx)}, nil
 }
 
@@ -108,7 +108,7 @@ func (b *Backend) instancesStat(reset bool) *common.StatResponse {
 	out := &common.StatResponse{Stats: make([]*common.Stat, 0, len(instances)*2)}
 	for _, instance := range instances {
 		rx, tx := instance.aggregateStats()
-		deltaRx, deltaTx := instance.statsTracker.Delta(rx, tx, reset)
+		deltaRx, deltaTx := instance.statsTracker.DeltaClamped(rx, tx, reset)
 		out.Stats = append(out.Stats, stats.BuildInterfaceStats(instance.tag, instance.tag, deltaRx, deltaTx)...)
 	}
 	return out
