@@ -81,6 +81,16 @@ func (b *Backend) secretsForInstance(domain string) map[string]mtglib.Secret {
 // running mtglib.Proxy via UpdateSecrets - live, no restart, no dropped
 // connections (see mtglib.Proxy.UpdateSecrets's doc comment in the
 // Free-Guy-IR/mtg fork).
+//
+// Middle-proxy (ad-tag) instances are skipped here entirely: their Secrets
+// field (see newMiddleProxyInstance) is a closure that reads b.secretsByID
+// live on every connection attempt, so they never need - and never have -
+// a *mtglib.Proxy to push into (inst.proxy is nil for them by construction,
+// see the proxyInstance doc comment; calling UpdateSecrets on it panics
+// with a nil pointer dereference, which crashed the node backend on every
+// SyncUser call once any instance had an ad_tag configured - caught via a
+// concurrent-load test hitting SyncUser repeatedly against a real ad-tag
+// instance).
 func (b *Backend) pushSecretsToInstances() {
 	b.mu.RLock()
 	instances := make([]*proxyInstance, 0, len(b.instances))
@@ -90,6 +100,9 @@ func (b *Backend) pushSecretsToInstances() {
 	b.mu.RUnlock()
 
 	for _, inst := range instances {
+		if inst.proxy == nil {
+			continue
+		}
 		inst.proxy.UpdateSecrets(b.secretsForInstance(inst.domain))
 	}
 }
