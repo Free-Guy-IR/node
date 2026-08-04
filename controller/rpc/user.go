@@ -14,11 +14,31 @@ import (
 	"github.com/pasarguard/node/controller"
 )
 
+// nonBlockingUserSyncer is an optional capability a Backend can implement
+// when SyncUser would otherwise block this stream's read loop for longer
+// than users typically arrive apart on it. Without it, a backend whose
+// SyncUser blocks until some internal batching/debounce window flushes (see
+// singbox.SingBox.QueueUser's doc comment for why sing-box needs exactly
+// this) would stall stream.Recv() for that same duration - defeating the
+// batching by starving it of the very messages it's meant to coalesce,
+// since each message would only be read once the previous one's entire
+// wait is already over.
+//
+// Checked via a type assertion rather than added to the Backend interface
+// itself so every other backend (xray, wireguard, openvpn, mtproto) keeps
+// its existing, already-safe, strictly-sequential-per-message SyncUser
+// behavior on this RPC with zero code or behavior change.
+type nonBlockingUserSyncer interface {
+	QueueUser(ctx context.Context, user *common.User) error
+}
+
 func (s *Service) SyncUser(stream grpc.ClientStreamingServer[common.User, common.Empty]) error {
 	backend, err := s.backend()
 	if err != nil {
 		return err
 	}
+
+	queuer, canQueue := backend.(nonBlockingUserSyncer)
 
 	for {
 		user, err := stream.Recv()
@@ -31,6 +51,14 @@ func (s *Service) SyncUser(stream grpc.ClientStreamingServer[common.User, common
 		}
 
 		log.Printf("Got user: %v", user.GetEmail())
+
+		if canQueue {
+			if err = queuer.QueueUser(stream.Context(), user); err != nil {
+				log.Printf("Error queuing user: %v", err)
+				return status.Errorf(codes.Internal, "failed to update user: %v", err)
+			}
+			continue
+		}
 
 		if err = backend.SyncUser(stream.Context(), user); err != nil {
 			log.Printf("Error syncing user: %v", err)

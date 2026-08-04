@@ -150,3 +150,108 @@ func TestLiveSmoke_ConcurrentSyncUserCoalescesIntoOneRestart(t *testing.T) {
 		t.Errorf("expected generated config to still contain earlier-synced baseline user; got:\n%s", generated)
 	}
 }
+
+// TestQueueUser_TightSequentialCallsCoalesceIntoOneRestart is the regression
+// test for the real production call pattern this fix targets: the panel's
+// node bridge sends every pending user for a node over ONE client-streaming
+// SyncUser RPC, and controller/rpc's handler only reads the next message
+// once the previous one's backend call has returned - so a debounce window
+// built on a *blocking* SyncUser can never actually see more than one
+// message at a time, no matter how large the window is (confirmed
+// empirically against a real panel: 8 users synced back-to-back on one
+// stream still produced 7 restarts with the blocking version of this fix).
+//
+// QueueUser exists so that receive loop can dispatch a message and
+// immediately go back to reading the next one instead of blocking. This
+// test simulates that loop directly - tight sequential calls, no
+// goroutines, no delay, exactly how controller/rpc's SyncUser drains an
+// already-buffered stream - and asserts the batch still ends up with every
+// user and still costs exactly one restart's wait, not N of them.
+func TestQueueUser_TightSequentialCallsCoalesceIntoOneRestart(t *testing.T) {
+	bin := discoverSingBoxBinary(t)
+
+	dir := t.TempDir()
+	certPath, keyPath := writeSelfSignedCert(t, dir)
+
+	hyPort := freeUDPPort(t)
+	apiPort := freeTCPPort(t)
+
+	raw := fmt.Sprintf(`{
+		"log": {"level": "debug"},
+		"inbounds": [{
+			"type": "hysteria2",
+			"tag": "hy2-in",
+			"listen": "::",
+			"listen_port": %d,
+			"users": [],
+			"tls": {"enabled": true, "certificate_path": %q, "key_path": %q}
+		}],
+		"outbounds": [{"type": "direct"}]
+	}`, hyPort, certPath, keyPath)
+
+	sbConfig, err := NewConfig(raw)
+	if err != nil {
+		t.Fatalf("NewConfig() error = %v", err)
+	}
+
+	cfg := &config.Config{
+		SingBoxExecutablePath: bin,
+		GeneratedConfigPath:   dir,
+		LogBufferSize:         1000,
+		StartupLogTailSize:    200,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	sb, err := New(ctx, sbConfig, nil, apiPort, cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer sb.Shutdown()
+
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer syncCancel()
+
+	const n = 6
+	var b *singBoxPendingBatch
+	for i := 0; i < n; i++ {
+		u := &common.User{
+			Email:    fmt.Sprintf("queued%d@example.com", i),
+			Inbounds: []string{"hy2-in"},
+			Proxies:  &common.Proxy{Hysteria2: &common.Hysteria2{Password: fmt.Sprintf("qpass%d", i)}},
+		}
+		if err := sb.QueueUser(syncCtx, u); err != nil {
+			t.Fatalf("QueueUser[%d]() error = %v", i, err)
+		}
+		if i == 0 {
+			sb.batchMu.Lock()
+			b = sb.batch
+			sb.batchMu.Unlock()
+			if b == nil {
+				t.Fatal("expected a pending batch to exist right after the first QueueUser call")
+			}
+		}
+	}
+
+	select {
+	case <-b.done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("batch did not flush within 15s - QueueUser calls did not coalesce as expected")
+	}
+	if b.err != nil {
+		t.Fatalf("batch flush error = %v", b.err)
+	}
+
+	generatedBytes, err := os.ReadFile(filepath.Join(dir, "singbox.json"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	generated := string(generatedBytes)
+	for i := 0; i < n; i++ {
+		email := fmt.Sprintf("queued%d@example.com", i)
+		if !strings.Contains(generated, email) {
+			t.Errorf("expected generated config to contain queued user %q; got:\n%s", email, generated)
+		}
+	}
+}

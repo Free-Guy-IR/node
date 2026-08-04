@@ -88,23 +88,44 @@ func (c *Config) upsertUser(user *common.User) {
 	c.updateUsers([]*common.User{user})
 }
 
-// singBoxSyncDebounceWindow is how long enqueueSync waits after the first
-// call in a batch before flushing - long enough to catch a burst of nearly-
-// simultaneous syncs (confirmed live on a production node: three separate
-// SyncUser calls 1-4 seconds apart, each triggering its own full restart),
-// short enough that a single isolated sync still applies promptly.
-const singBoxSyncDebounceWindow = 1500 * time.Millisecond
+// singBoxSyncDebounceWindow is how long enqueueSync waits, after the most
+// recent call to join a batch, before flushing it - it slides forward on
+// every new call that joins an in-flight batch, so a trickle of syncs a
+// couple seconds apart keeps extending the wait instead of each one
+// triggering its own restart.
+//
+// singBoxSyncDebounceMaxWait caps that sliding window so sustained load
+// can't delay a batch indefinitely: once this much time has passed since
+// the batch's first call, it flushes regardless of how recently the last
+// one joined.
+//
+// Both values come from live production log analysis: restart gaps
+// (each one a separate SyncUser call, each disconnecting every Hysteria2
+// user on the node) ranged from ~1s to ~25s apart. A single fixed window
+// can only ever catch bursts tighter than itself - short windows miss
+// most of that spread, long ones needlessly delay genuinely isolated
+// syncs. The sliding window keeps genuinely close-together syncs merged
+// however long the burst runs, while the max-wait cap keeps that bound
+// well clear of the widely-spaced (13s, 25s) gaps that should just apply
+// on their own.
+const (
+	singBoxSyncDebounceWindow  = 2 * time.Second
+	singBoxSyncDebounceMaxWait = 8 * time.Second
+)
 
 // singBoxPendingBatch accumulates config mutators from every SyncUser/
 // SyncUsers/UpdateUsers call that arrives during one debounce window, so
 // they can all be applied with a single restart. done is closed (not sent
 // on) once the batch's restart has completed, waking every caller waiting
 // on it at once; err is only safe to read after that close happens-before
-// relationship.
+// relationship. mutators/lastActivity/deadline are only ever read or
+// written while holding the owning SingBox's batchMu.
 type singBoxPendingBatch struct {
-	mutators []func(*Config)
-	done     chan struct{}
-	err      error
+	mutators     []func(*Config)
+	done         chan struct{}
+	err          error
+	lastActivity time.Time
+	deadline     time.Time
 }
 
 // SyncUser applies a single user's Hysteria2 membership across all hysteria2
@@ -157,22 +178,101 @@ func (s *SingBox) UpdateUsersAndRestart(ctx context.Context, users []*common.Use
 // synchronous contract of SyncUser/SyncUsers/UpdateUsers - only the number of
 // underlying restarts changes, not the caller-visible semantics.
 func (s *SingBox) enqueueSync(mutate func(*Config)) error {
+	b := s.enqueue(mutate)
+	<-b.done
+	return b.err
+}
+
+// QueueUser adds user's Hysteria2 membership to the current (or a new)
+// pending batch and returns immediately, without waiting for that batch to
+// flush.
+//
+// Why this exists alongside enqueueSync/SyncUser: the panel's node bridge
+// sends a burst of individually-queued users to this node over ONE
+// client-streaming SyncUser RPC - the controller/rpc layer's loop calls
+// stream.Recv() for the next message only after backend.SyncUser() returns
+// for the current one. If SyncUser blocks until its batch flushes (as
+// enqueueSync does), that receive loop stalls for the same duration, so the
+// next already-in-flight message on the wire is never read in time to join
+// the same batch - every message ends up starting (and waiting out) its own
+// batch, and coalescing never actually happens despite the debounce logic
+// being "correct" in isolation. This was caught by burst-testing against a
+// real panel: 8 users synced back-to-back on one stream still produced 7
+// restarts.
+//
+// QueueUser breaks that stall: the controller/rpc layer calls this instead
+// of SyncUser when the backend supports it (see the nonBlockingUserSyncer
+// interface check in controller/rpc/user.go), so it can immediately go back
+// to stream.Recv() for the next message. Every message already sent by the
+// client lands in the same batch, and the whole stream's worth of users
+// restarts sing-box exactly once.
+//
+// Trade-off: the caller no longer learns whether the eventual restart
+// succeeds (the stream ack now just means "queued", not "applied"). A failed
+// flush is logged from flushBatch instead of returned to a waiter. This is
+// judged acceptable because a failing restart is an infrastructure problem
+// (bad generated config, sing-box binary/env issue) rather than something
+// retryable per-user, and it will surface again on the very next sync for
+// any of the same users.
+func (s *SingBox) QueueUser(ctx context.Context, user *common.User) error {
+	s.enqueue(func(c *Config) { c.upsertUser(user) })
+	return nil
+}
+
+// enqueue adds mutate to the current pending batch (starting a new one and
+// scheduling its flush check if none is pending) and returns that batch
+// without waiting on it - enqueueSync blocks on the returned batch's done
+// channel itself, QueueUser does not.
+func (s *SingBox) enqueue(mutate func(*Config)) *singBoxPendingBatch {
 	s.batchMu.Lock()
 	b := s.batch
 	isNew := b == nil
+	now := time.Now()
 	if isNew {
-		b = &singBoxPendingBatch{done: make(chan struct{})}
+		b = &singBoxPendingBatch{
+			done:     make(chan struct{}),
+			deadline: now.Add(singBoxSyncDebounceMaxWait),
+		}
 		s.batch = b
 	}
 	b.mutators = append(b.mutators, mutate)
+	b.lastActivity = now
 	s.batchMu.Unlock()
 
 	if isNew {
-		time.AfterFunc(singBoxSyncDebounceWindow, func() { s.flushBatch(b) })
+		s.scheduleFlushCheck(b)
 	}
 
-	<-b.done
-	return b.err
+	return b
+}
+
+// scheduleFlushCheck flushes b once singBoxSyncDebounceWindow has passed
+// with no further calls joining it, or once singBoxSyncDebounceMaxWait has
+// elapsed since it was created, whichever comes first. It re-schedules
+// itself with a fresh timer rather than resetting an existing one, which
+// sidesteps the well-known race between time.Timer.Reset and a timer that
+// may have already fired (see the time.Timer docs) at the cost of a few
+// harmless extra timer firings under sustained load. Because this chain
+// only ever calls flushBatch(b) once and then stops (it returns instead of
+// rescheduling right after), b.done can never be closed twice.
+func (s *SingBox) scheduleFlushCheck(b *singBoxPendingBatch) {
+	time.AfterFunc(singBoxSyncDebounceWindow, func() {
+		s.batchMu.Lock()
+		if s.batch != b {
+			// Already flushed.
+			s.batchMu.Unlock()
+			return
+		}
+		quiet := time.Since(b.lastActivity)
+		atDeadline := !time.Now().Before(b.deadline)
+		s.batchMu.Unlock()
+
+		if quiet >= singBoxSyncDebounceWindow || atDeadline {
+			s.flushBatch(b)
+			return
+		}
+		s.scheduleFlushCheck(b)
+	})
 }
 
 // flushBatch applies every mutator collected in b to a single cloned
@@ -199,6 +299,10 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err = s.applyConfigWithRestart(ctx, candidate)
 		cancel()
+	}
+
+	if err != nil {
+		log.Printf("sing-box: batched user sync failed (%d user(s) in batch): %v", len(mutators), err)
 	}
 
 	b.err = err
