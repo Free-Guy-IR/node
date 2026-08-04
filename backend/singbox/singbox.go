@@ -34,6 +34,9 @@ type SingBox struct {
 	cancelFunc context.CancelFunc
 	mu         sync.RWMutex
 	syncMu     sync.Mutex
+
+	batchMu sync.Mutex
+	batch   *singBoxPendingBatch
 }
 
 // New builds and starts a sing-box process from sbConfig, syncs the initial

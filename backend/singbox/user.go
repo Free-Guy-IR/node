@@ -88,6 +88,25 @@ func (c *Config) upsertUser(user *common.User) {
 	c.updateUsers([]*common.User{user})
 }
 
+// singBoxSyncDebounceWindow is how long enqueueSync waits after the first
+// call in a batch before flushing - long enough to catch a burst of nearly-
+// simultaneous syncs (confirmed live on a production node: three separate
+// SyncUser calls 1-4 seconds apart, each triggering its own full restart),
+// short enough that a single isolated sync still applies promptly.
+const singBoxSyncDebounceWindow = 1500 * time.Millisecond
+
+// singBoxPendingBatch accumulates config mutators from every SyncUser/
+// SyncUsers/UpdateUsers call that arrives during one debounce window, so
+// they can all be applied with a single restart. done is closed (not sent
+// on) once the batch's restart has completed, waking every caller waiting
+// on it at once; err is only safe to read after that close happens-before
+// relationship.
+type singBoxPendingBatch struct {
+	mutators []func(*Config)
+	done     chan struct{}
+	err      error
+}
+
 // SyncUser applies a single user's Hysteria2 membership across all hysteria2
 // inbounds and restarts sing-box with the resulting config.
 //
@@ -101,34 +120,16 @@ func (c *Config) upsertUser(user *common.User) {
 // UpdateUsersAndRestart must rewrite the config file and restart the process.
 // This means single-user syncs are far more disruptive here than on xray (brief
 // connection drop for all users on this node, not just the one being synced).
-// A follow-up could coalesce/debounce rapid successive single-user syncs to
-// reduce restart frequency; out of scope for this v1 pass.
+// enqueueSync (below) coalesces rapid successive calls into one restart to
+// keep that disruption as infrequent as possible.
 func (s *SingBox) SyncUser(ctx context.Context, user *common.User) error {
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
-
-	candidate, err := s.config.Clone()
-	if err != nil {
-		return err
-	}
-
-	candidate.upsertUser(user)
-	return s.applyConfigWithRestart(ctx, candidate)
+	return s.enqueueSync(func(c *Config) { c.upsertUser(user) })
 }
 
 // SyncUsers fully replaces the user list on every hysteria2 inbound and
 // restarts sing-box.
 func (s *SingBox) SyncUsers(ctx context.Context, users []*common.User) error {
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
-
-	candidate, err := s.config.Clone()
-	if err != nil {
-		return err
-	}
-
-	candidate.syncUsers(users)
-	return s.applyConfigWithRestart(ctx, candidate)
+	return s.enqueueSync(func(c *Config) { c.syncUsers(users) })
 }
 
 // UpdateUsers incrementally merges the given users and restarts sing-box.
@@ -140,22 +141,68 @@ func (s *SingBox) SyncUsers(ctx context.Context, users []*common.User) error {
 // interface's semantics/call sites and in case a future sing-box version adds a
 // hot-update API.
 func (s *SingBox) UpdateUsers(ctx context.Context, users []*common.User) error {
-	s.syncMu.Lock()
-	defer s.syncMu.Unlock()
-
-	candidate, err := s.config.Clone()
-	if err != nil {
-		return err
-	}
-
-	candidate.updateUsers(users)
-	return s.applyConfigWithRestart(ctx, candidate)
+	return s.enqueueSync(func(c *Config) { c.updateUsers(users) })
 }
 
 // UpdateUsersAndRestart behaves identically to UpdateUsers on this backend -
 // see UpdateUsers's doc comment.
 func (s *SingBox) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
 	return s.UpdateUsers(ctx, users)
+}
+
+// enqueueSync merges concurrent/rapid-succession user-sync requests into a
+// single restart instead of one restart per call. Every caller that lands in
+// the same batch still blocks until that batch's restart is confirmed applied
+// (or failed) and gets that exact result back, preserving the original
+// synchronous contract of SyncUser/SyncUsers/UpdateUsers - only the number of
+// underlying restarts changes, not the caller-visible semantics.
+func (s *SingBox) enqueueSync(mutate func(*Config)) error {
+	s.batchMu.Lock()
+	b := s.batch
+	isNew := b == nil
+	if isNew {
+		b = &singBoxPendingBatch{done: make(chan struct{})}
+		s.batch = b
+	}
+	b.mutators = append(b.mutators, mutate)
+	s.batchMu.Unlock()
+
+	if isNew {
+		time.AfterFunc(singBoxSyncDebounceWindow, func() { s.flushBatch(b) })
+	}
+
+	<-b.done
+	return b.err
+}
+
+// flushBatch applies every mutator collected in b to a single cloned
+// candidate config and restarts sing-box once for the whole batch. Detaching
+// b from s.batch happens before the (potentially slow) restart so calls
+// arriving while a restart is already in flight start a fresh batch instead
+// of blocking indefinitely on batchMu.
+func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
+	s.batchMu.Lock()
+	if s.batch == b {
+		s.batch = nil
+	}
+	mutators := b.mutators
+	s.batchMu.Unlock()
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	candidate, err := s.config.Clone()
+	if err == nil {
+		for _, m := range mutators {
+			m(candidate)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = s.applyConfigWithRestart(ctx, candidate)
+		cancel()
+	}
+
+	b.err = err
+	close(b.done)
 }
 
 // applyConfigWithRestart restarts the core with candidate, waits for the API to
