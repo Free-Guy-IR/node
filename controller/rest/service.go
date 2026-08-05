@@ -36,7 +36,6 @@ func (s *Service) setRouter() {
 
 	router.Group(func(private chi.Router) {
 		private.Use(s.checkBackendMiddleware)
-		private.Use(s.validateCurrentClient)
 
 		private.Put("/stop", s.Stop)
 		private.Get("/logs", s.GetLogs)

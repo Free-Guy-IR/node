@@ -73,47 +73,6 @@ func validateApiKeyMiddleware(s *Service) grpc.UnaryServerInterceptor {
 	}
 }
 
-func validateCurrentClient(ctx context.Context, s *Service) error {
-	clientIP := clientIPFromContext(ctx)
-	if clientIP == "" {
-		return status.Errorf(codes.PermissionDenied, "unknown client ip")
-	}
-	if !s.IsCurrentClient(clientIP) {
-		return status.Errorf(codes.PermissionDenied, "node is controlled by another client")
-	}
-	return nil
-}
-
-func validateCurrentClientMiddleware(s *Service) grpc.UnaryServerInterceptor {
-	return func(
-		ctx context.Context,
-		req any,
-		info *grpc.UnaryServerInfo,
-		handler grpc.UnaryHandler,
-	) (any, error) {
-		if err := validateCurrentClient(ctx, s); err != nil {
-			return nil, err
-		}
-
-		return handler(ctx, req)
-	}
-}
-
-func validateCurrentClientStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
-	return func(
-		srv any,
-		ss grpc.ServerStream,
-		info *grpc.StreamServerInfo,
-		handler grpc.StreamHandler,
-	) error {
-		if err := validateCurrentClient(ss.Context(), s); err != nil {
-			return err
-		}
-
-		return handler(srv, ss)
-	}
-}
-
 func validateApiKeyStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 	return func(
 		srv any,
@@ -273,7 +232,6 @@ func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 		interceptors = append(interceptors, validateApiKeyMiddleware(s))
 
 		if backendMethods[info.FullMethod] {
-			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 			interceptors = append(interceptors, CheckBackendMiddleware(s))
 		}
 
@@ -296,7 +254,6 @@ func ConditionalStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 		interceptors = append(interceptors, validateApiKeyStreamMiddleware(s))
 
 		if backendMethods[info.FullMethod] {
-			interceptors = append(interceptors, validateCurrentClientStreamMiddleware(s))
 			interceptors = append(interceptors, CheckBackendStreamMiddleware(s))
 		}
 

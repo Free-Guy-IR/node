@@ -13,7 +13,7 @@ func TestRoutingMethodsAreBackendGated(t *testing.T) {
 	}
 	for _, m := range methods {
 		if !backendMethods[m] {
-			t.Errorf("%s missing from backendMethods (skips controlling-client/started gating)", m)
+			t.Errorf("%s missing from backendMethods (skips backend-started gating)", m)
 		}
 	}
 }

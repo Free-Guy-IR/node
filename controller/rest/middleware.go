@@ -42,22 +42,6 @@ func requestClientIP(r *http.Request) (string, bool) {
 	return ip, true
 }
 
-func (s *Service) validateCurrentClient(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, ok := requestClientIP(r)
-		if !ok {
-			http.Error(w, "unknown ip", http.StatusServiceUnavailable)
-			return
-		}
-		if !s.IsCurrentClient(ip) {
-			http.Error(w, "node is controlled by another client", http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (s *Service) checkBackendMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		back := s.Backend()
