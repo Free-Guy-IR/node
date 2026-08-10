@@ -255,3 +255,98 @@ func TestQueueUser_TightSequentialCallsCoalesceIntoOneRestart(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncUser_UnchangedUserSetSkipsRestart is the regression test for the
+// Hysteria2 "won't connect" incident: the panel syncs users constantly, but
+// most syncs are traffic/online updates that leave every hysteria2 inbound's
+// user set unchanged. Restarting on those dropped every Hysteria2 (QUIC)
+// session for no reason. The fix skips the restart when the user set is
+// identical - proven here by the generated config file's mtime, which the
+// restart rewrites and a skipped sync leaves untouched.
+func TestSyncUser_UnchangedUserSetSkipsRestart(t *testing.T) {
+	bin := discoverSingBoxBinary(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeSelfSignedCert(t, dir)
+	hyPort := freeUDPPort(t)
+	apiPort := freeTCPPort(t)
+
+	raw := fmt.Sprintf(`{
+		"log": {"level": "debug"},
+		"inbounds": [{
+			"type": "hysteria2",
+			"tag": "hy2-in",
+			"listen": "::",
+			"listen_port": %d,
+			"users": [],
+			"tls": {"enabled": true, "certificate_path": %q, "key_path": %q}
+		}],
+		"outbounds": [{"type": "direct"}]
+	}`, hyPort, certPath, keyPath)
+
+	sbConfig, err := NewConfig(raw)
+	if err != nil {
+		t.Fatalf("NewConfig() error = %v", err)
+	}
+	cfg := &config.Config{
+		SingBoxExecutablePath: bin,
+		GeneratedConfigPath:   dir,
+		LogBufferSize:         1000,
+		StartupLogTailSize:    200,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sb, err := New(ctx, sbConfig, nil, apiPort, cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer sb.Shutdown()
+
+	cfgPath := filepath.Join(dir, "singbox.json")
+	user := &common.User{
+		Email:    "steady@example.com",
+		Inbounds: []string{"hy2-in"},
+		Proxies:  &common.Proxy{Hysteria2: &common.Hysteria2{Password: "steadypass"}},
+	}
+
+	// First sync installs the user and restarts (writes the config file).
+	if err := sb.SyncUser(ctx, user); err != nil {
+		t.Fatalf("first SyncUser() error = %v", err)
+	}
+	st1, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat after first sync: %v", err)
+	}
+
+	// Syncing the identical user again changes no hysteria2 user set, so it
+	// must NOT restart - the config file's mtime must be unchanged.
+	time.Sleep(300 * time.Millisecond)
+	if err := sb.SyncUser(ctx, user); err != nil {
+		t.Fatalf("no-op SyncUser() error = %v", err)
+	}
+	st2, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat after no-op sync: %v", err)
+	}
+	if !st2.ModTime().Equal(st1.ModTime()) {
+		t.Errorf("no-op sync restarted the core (config mtime changed %v -> %v); the identical user set should skip the restart",
+			st1.ModTime(), st2.ModTime())
+	}
+
+	// A genuine change (a new user) must still restart - mtime advances.
+	other := &common.User{
+		Email:    "newcomer@example.com",
+		Inbounds: []string{"hy2-in"},
+		Proxies:  &common.Proxy{Hysteria2: &common.Hysteria2{Password: "newpass"}},
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := sb.SyncUser(ctx, other); err != nil {
+		t.Fatalf("changing SyncUser() error = %v", err)
+	}
+	st3, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat after changing sync: %v", err)
+	}
+	if st3.ModTime().Equal(st2.ModTime()) {
+		t.Errorf("adding a new hysteria2 user did not restart the core (config mtime unchanged) - a real change must apply")
+	}
+}

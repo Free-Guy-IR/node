@@ -296,9 +296,18 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 		for _, m := range mutators {
 			m(candidate)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = s.applyConfigWithRestart(ctx, candidate)
-		cancel()
+		if s.config.sameHysteria2Users(candidate) {
+			// The batch's net effect left every hysteria2 inbound's user set
+			// unchanged - the common case, since most syncs are traffic/online
+			// updates or touch users in no hysteria2 inbound. A restart here
+			// would drop every Hysteria2 session for nothing, so adopt the
+			// candidate (cheap, keeps other fields current) without one.
+			s.setConfig(candidate)
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err = s.applyConfigWithRestart(ctx, candidate)
+			cancel()
+		}
 	}
 
 	if err != nil {

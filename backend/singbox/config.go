@@ -40,6 +40,36 @@ type hy2UserEntry struct {
 	Password string `json:"password"`
 }
 
+// sameHysteria2Users reports whether every hysteria2 inbound in c holds exactly
+// the same user set (name + password) as the matching inbound in other. When it
+// does, restarting the core would drop every live Hysteria2 session only to
+// reinstall the identical set of credentials - disruption for no change - so the
+// caller can skip the restart. Compares only the fields that affect
+// authentication; traffic counters and other churn are intentionally ignored.
+func (c *Config) sameHysteria2Users(other *Config) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	other.mu.Lock()
+	defer other.mu.Unlock()
+
+	if len(c.hy2) != len(other.hy2) {
+		return false
+	}
+	for tag, in := range c.hy2 {
+		oin, ok := other.hy2[tag]
+		if !ok || len(in.users) != len(oin.users) {
+			return false
+		}
+		for name, u := range in.users {
+			ou, ok := oin.users[name]
+			if !ok || ou.Password != u.Password {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (h *hysteria2Inbound) sortedUsers() []hy2UserEntry {
 	names := make([]string, 0, len(h.users))
 	for name := range h.users {
