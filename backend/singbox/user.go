@@ -1,10 +1,15 @@
 package singbox
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pasarguard/node/common"
@@ -303,7 +308,18 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 			// would drop every Hysteria2 session for nothing, so adopt the
 			// candidate (cheap, keeps other fields current) without one.
 			s.setConfig(candidate)
+		} else if reloadErr := s.hotReloadHysteria2Users(candidate); reloadErr == nil {
+			// The user set changed, but our custom sing-box lets us swap it live
+			// through the clash_api /hysteria2/users endpoint (like xray's
+			// HandlerService) - so the change takes effect with zero restart and
+			// zero dropped Hysteria2 sessions. Adopt the candidate to keep the
+			// stored config current for the next real restart.
+			s.setConfig(candidate)
 		} else {
+			// Live update unavailable (older sing-box without the endpoint, api
+			// unreachable, or the update was rejected) - fall back to the safe
+			// restart path so the change is never silently lost.
+			log.Printf("sing-box: hysteria2 user hot-reload unavailable, falling back to restart: %v", reloadErr)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			err = s.applyConfigWithRestart(ctx, candidate)
 			cancel()
@@ -316,6 +332,47 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 
 	b.err = err
 	close(b.done)
+}
+
+// hotReloadHysteria2Users pushes every hysteria2 inbound's user set from the
+// candidate into the already-running core via the clash_api /hysteria2/users
+// endpoint our custom sing-box exposes. On success the change is live with no
+// restart and no dropped sessions - the sing-box counterpart to xray's live
+// AddUser/RemoveUser. Any failure (endpoint absent on an older sing-box, api
+// unreachable, or a rejected update) is returned so the caller falls back to
+// the restart path and the change is never lost.
+func (s *SingBox) hotReloadHysteria2Users(candidate *Config) error {
+	port := candidate.ClashPort()
+	if port == 0 {
+		return fmt.Errorf("clash api port is not set")
+	}
+	sets := candidate.HysteriaUserSets()
+	if len(sets) == 0 {
+		return nil
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/hysteria2/users", port)
+	for tag, users := range sets {
+		body, err := json.Marshal(map[string]any{"tag": tag, "users": users})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("hysteria2 user hot-reload for %q: %w", tag, err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("hysteria2 user hot-reload for %q: status %d: %s", tag, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		}
+	}
+	return nil
 }
 
 // applyConfigWithRestart restarts the core with candidate, waits for the API to

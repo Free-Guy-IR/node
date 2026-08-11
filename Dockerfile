@@ -27,11 +27,15 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG SINGBOX_VERSION=v1.13.14
 ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api
+# Our fork of sing-box v1.13.14: adds a clash_api PUT /hysteria2/users endpoint so
+# Hysteria2 user changes apply live, without restarting the core (no dropped sessions).
+ARG SINGBOX_REPO=https://github.com/Free-Guy-IR/sing-box.git
+ARG SINGBOX_BRANCH=v1.13.14-hotreload
 
 RUN apk update && apk add --no-cache git
 
 WORKDIR /singbox-src
-RUN git clone --depth 1 --branch ${SINGBOX_VERSION} https://github.com/SagerNet/sing-box.git .
+RUN git clone --depth 1 --branch ${SINGBOX_BRANCH} ${SINGBOX_REPO} .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -tags "${SINGBOX_TAGS}" \
     -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' -s -w -buildid=" \

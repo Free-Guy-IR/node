@@ -23,10 +23,11 @@ import (
 // per-request hot path), so the simpler single-lock model is sufficient and
 // easier to reason about.
 type Config struct {
-	mu      sync.Mutex
-	root    map[string]any
-	hy2     map[string]*hysteria2Inbound // tag -> inbound
-	apiPort int                          // 0 until ApplyAPI is called
+	mu        sync.Mutex
+	root      map[string]any
+	hy2       map[string]*hysteria2Inbound // tag -> inbound
+	apiPort   int                          // 0 until ApplyAPI is called
+	clashPort int                          // local clash_api controller port, for live Hysteria2 user hot-reload; 0 until ApplyAPI
 }
 
 type hysteria2Inbound struct {
@@ -175,6 +176,11 @@ func (c *Config) ApplyAPI(port int) error {
 	defer c.mu.Unlock()
 
 	c.apiPort = port
+	// clash_api rides on the adjacent port; it hosts the /hysteria2/users endpoint
+	// our custom sing-box exposes, which lets us swap a Hysteria2 inbound's user set
+	// live (no restart). If the port is taken, clash_api simply fails to bind and the
+	// hot-reload call falls back to the restart path - no crash.
+	c.clashPort = port + 1
 	return c.refreshAPILocked()
 }
 
@@ -214,9 +220,38 @@ func (c *Config) refreshAPILocked() error {
 			"users":    c.allUserEmailsLocked(),
 		},
 	}
+	// clash_api is bound to loopback only; it carries the custom /hysteria2/users
+	// endpoint used for live user hot-reload. Left unauthenticated because it is
+	// reachable only from this host (node and sing-box share the network namespace).
+	if c.clashPort != 0 {
+		experimental["clash_api"] = map[string]any{
+			"external_controller": fmt.Sprintf("127.0.0.1:%d", c.clashPort),
+		}
+	}
 	c.root["experimental"] = experimental
 
 	return nil
+}
+
+// ClashPort is the loopback port of the clash_api controller that hosts the
+// live Hysteria2 user-update endpoint. 0 until ApplyAPI has run.
+func (c *Config) ClashPort() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.clashPort
+}
+
+// HysteriaUserSets returns, per hysteria2 inbound tag, the current user set
+// (name+password). Used to push a live user update to the running core instead
+// of restarting it.
+func (c *Config) HysteriaUserSets() map[string][]hy2UserEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string][]hy2UserEntry, len(c.hy2))
+	for tag, in := range c.hy2 {
+		out[tag] = in.sortedUsers()
+	}
+	return out
 }
 
 func (c *Config) allInboundTagsLocked() []string {
@@ -291,6 +326,7 @@ func (c *Config) Clone() (*Config, error) {
 		return nil, fmt.Errorf("unmarshal sing-box config clone: %w", err)
 	}
 	cloned.apiPort = c.apiPort
+	cloned.clashPort = c.clashPort
 
 	return cloned, nil
 }
