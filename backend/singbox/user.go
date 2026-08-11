@@ -9,57 +9,105 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/pasarguard/node/common"
 )
 
-// hysteria2Entry extracts the (name, password) pair sing-box expects for a
-// hysteria2 inbound's "users" array from a common.User, if that user actually
-// has a Hysteria2 proxy configured.
-func hysteria2Entry(user *common.User) (hy2UserEntry, bool) {
-	proxy := user.GetProxies().GetHysteria2()
-	if proxy == nil {
-		return hy2UserEntry{}, false
-	}
+// userEntryForType extracts the sing-box user object a given inbound type needs
+// from a common.User, if that user actually has the matching proxy sub-message
+// configured. The name is always the user's email. Returns false when the user
+// has no email or no proxy of that type.
+//
+//   - hysteria2   -> {name, password}
+//   - vless       -> {name, uuid, flow}
+//   - vmess       -> {name, uuid}
+//   - trojan      -> {name, password}
+//   - shadowsocks -> {name, password}
+//   - tuic        -> {name, uuid, password}
+func userEntryForType(user *common.User, typ string) (userEntry, bool) {
 	email := user.GetEmail()
 	if email == "" {
-		return hy2UserEntry{}, false
+		return userEntry{}, false
 	}
-	return hy2UserEntry{Name: email, Password: proxy.GetPassword()}, true
+	proxies := user.GetProxies()
+	switch typ {
+	case "hysteria2":
+		p := proxies.GetHysteria2()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, Password: p.GetPassword()}, true
+	case "vless":
+		p := proxies.GetVless()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, UUID: p.GetId(), Flow: p.GetFlow()}, true
+	case "vmess":
+		p := proxies.GetVmess()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, UUID: p.GetId()}, true
+	case "trojan":
+		p := proxies.GetTrojan()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, Password: p.GetPassword()}, true
+	case "shadowsocks":
+		p := proxies.GetShadowsocks()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, Password: p.GetPassword()}, true
+	case "tuic":
+		p := proxies.GetTuic()
+		if p == nil {
+			return userEntry{}, false
+		}
+		return userEntry{Name: email, UUID: p.GetUuid(), Password: p.GetPassword()}, true
+	default:
+		return userEntry{}, false
+	}
 }
 
-// syncUsers replaces the full user list of every indexed hysteria2 inbound:
-// only users that (a) carry a Hysteria2 proxy and (b) list the inbound's tag in
-// their Inbounds are kept. Mirrors xray's Config.syncUsers (full resync).
+// syncUsers replaces the full user list of every indexed inbound: a user is
+// kept on an inbound only if it (a) carries the proxy sub-message matching that
+// inbound's type and (b) lists the inbound's tag in its Inbounds. Mirrors xray's
+// Config.syncUsers (full resync).
 func (c *Config) syncUsers(users []*common.User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, inbound := range c.hy2 {
-		inbound.users = make(map[string]hy2UserEntry)
+	for _, inbound := range c.inbounds {
+		inbound.users = make(map[string]userEntry)
 	}
 
 	for _, user := range users {
-		entry, ok := hysteria2Entry(user)
-		if !ok {
-			continue
-		}
 		for _, tag := range user.GetInbounds() {
-			if inbound, ok := c.hy2[tag]; ok {
-				inbound.users[entry.Name] = entry
+			inbound, ok := c.inbounds[tag]
+			if !ok {
+				continue
 			}
+			entry, ok := userEntryForType(user, inbound.typ)
+			if !ok {
+				continue
+			}
+			inbound.users[entry.Name] = entry
 		}
 	}
 }
 
 // updateUsers upserts/removes only the given users against every indexed
-// hysteria2 inbound, leaving all other already-synced users untouched. A user is
-// added/updated on an inbound's tag if it is active there (has a Hysteria2 proxy
-// and lists that tag), otherwise it is removed from that inbound if present.
-// Mirrors xray's Config.updateUsers/buildInboundUpdates incremental-merge
-// semantics.
+// inbound, leaving all other already-synced users untouched. A user is
+// added/updated on an inbound's tag if it is active there (has the matching
+// proxy for that inbound's type and lists that tag), otherwise it is removed
+// from that inbound if present. Mirrors xray's Config.updateUsers/
+// buildInboundUpdates incremental-merge semantics.
 func (c *Config) updateUsers(users []*common.User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -70,20 +118,19 @@ func (c *Config) updateUsers(users []*common.User) {
 			continue
 		}
 
-		entry, active := hysteria2Entry(user)
 		activeTags := make(map[string]struct{})
-		if active {
-			for _, tag := range user.GetInbounds() {
-				activeTags[tag] = struct{}{}
-			}
+		for _, tag := range user.GetInbounds() {
+			activeTags[tag] = struct{}{}
 		}
 
-		for tag, inbound := range c.hy2 {
+		for tag, inbound := range c.inbounds {
 			if _, isActive := activeTags[tag]; isActive {
-				inbound.users[email] = entry
-			} else {
-				delete(inbound.users, email)
+				if entry, ok := userEntryForType(user, inbound.typ); ok {
+					inbound.users[email] = entry
+					continue
+				}
 			}
+			delete(inbound.users, email)
 		}
 	}
 }
@@ -133,39 +180,38 @@ type singBoxPendingBatch struct {
 	deadline     time.Time
 }
 
-// SyncUser applies a single user's Hysteria2 membership across all hysteria2
-// inbounds and restarts sing-box with the resulting config.
+// SyncUser applies a single user's membership across all indexed inbounds and
+// applies the resulting config to sing-box.
 //
 // Deviation from xray worth double-checking: xray's SyncUser/UpdateUsers add or
 // remove a user live via the xray HandlerService gRPC API with no core restart.
 // sing-box's experimental.v2ray_api only registers a StatsService (confirmed by
 // reading experimental/v2rayapi/server.go on the dev box - only
 // RegisterStatsServiceServer is called, there is no handler/proxyman-command
-// equivalent). There is therefore no way to hot-upsert a Hysteria2 user into a
-// running sing-box process: every one of SyncUser/SyncUsers/UpdateUsers/
-// UpdateUsersAndRestart must rewrite the config file and restart the process.
-// This means single-user syncs are far more disruptive here than on xray (brief
-// connection drop for all users on this node, not just the one being synced).
-// enqueueSync (below) coalesces rapid successive calls into one restart to
-// keep that disruption as infrequent as possible.
+// equivalent). Our custom sing-box fork instead exposes a clash_api
+// /inbounds/{tag}/users endpoint that lets us swap an inbound's user set live;
+// when that endpoint is available every one of SyncUser/SyncUsers/UpdateUsers/
+// UpdateUsersAndRestart applies with no restart. When it is not (older sing-box,
+// api unreachable, or a rejected update) they fall back to rewriting the config
+// file and restarting the process (brief connection drop for all users on this
+// node). enqueueSync (below) coalesces rapid successive calls so that fallback
+// restart, when it happens, happens as infrequently as possible.
 func (s *SingBox) SyncUser(ctx context.Context, user *common.User) error {
 	return s.enqueueSync(func(c *Config) { c.upsertUser(user) })
 }
 
-// SyncUsers fully replaces the user list on every hysteria2 inbound and
-// restarts sing-box.
+// SyncUsers fully replaces the user list on every indexed inbound and applies
+// the resulting config to sing-box.
 func (s *SingBox) SyncUsers(ctx context.Context, users []*common.User) error {
 	return s.enqueueSync(func(c *Config) { c.syncUsers(users) })
 }
 
-// UpdateUsers incrementally merges the given users and restarts sing-box.
+// UpdateUsers incrementally merges the given users and applies the resulting
+// config to sing-box.
 //
-// Note: on xray this is a live, restart-free operation. On sing-box it still
-// requires a full restart (see SyncUser's doc comment for why) - functionally
-// this makes UpdateUsers identical to UpdateUsersAndRestart on this backend.
-// Kept as a distinct method (rather than aliasing) to preserve the Backend
-// interface's semantics/call sites and in case a future sing-box version adds a
-// hot-update API.
+// Note: kept as a distinct method (rather than aliasing) to preserve the
+// Backend interface's semantics/call sites; on the fallback path it behaves
+// identically to UpdateUsersAndRestart.
 func (s *SingBox) UpdateUsers(ctx context.Context, users []*common.User) error {
 	return s.enqueueSync(func(c *Config) { c.updateUsers(users) })
 }
@@ -188,9 +234,8 @@ func (s *SingBox) enqueueSync(mutate func(*Config)) error {
 	return b.err
 }
 
-// QueueUser adds user's Hysteria2 membership to the current (or a new)
-// pending batch and returns immediately, without waiting for that batch to
-// flush.
+// QueueUser adds user's membership to the current (or a new) pending batch and
+// returns immediately, without waiting for that batch to flush.
 //
 // Why this exists alongside enqueueSync/SyncUser: the panel's node bridge
 // sends a burst of individually-queued users to this node over ONE
@@ -281,10 +326,10 @@ func (s *SingBox) scheduleFlushCheck(b *singBoxPendingBatch) {
 }
 
 // flushBatch applies every mutator collected in b to a single cloned
-// candidate config and restarts sing-box once for the whole batch. Detaching
-// b from s.batch happens before the (potentially slow) restart so calls
-// arriving while a restart is already in flight start a fresh batch instead
-// of blocking indefinitely on batchMu.
+// candidate config and applies it to sing-box once for the whole batch.
+// Detaching b from s.batch happens before the (potentially slow) restart so
+// calls arriving while a restart is already in flight start a fresh batch
+// instead of blocking indefinitely on batchMu.
 func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 	s.batchMu.Lock()
 	if s.batch == b {
@@ -301,25 +346,25 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 		for _, m := range mutators {
 			m(candidate)
 		}
-		if s.config.sameHysteria2Users(candidate) {
-			// The batch's net effect left every hysteria2 inbound's user set
+		if s.config.sameUsers(candidate) {
+			// The batch's net effect left every indexed inbound's user set
 			// unchanged - the common case, since most syncs are traffic/online
-			// updates or touch users in no hysteria2 inbound. A restart here
-			// would drop every Hysteria2 session for nothing, so adopt the
-			// candidate (cheap, keeps other fields current) without one.
+			// updates or touch users in no indexed inbound. A restart here
+			// would drop every session for nothing, so adopt the candidate
+			// (cheap, keeps other fields current) without one.
 			s.setConfig(candidate)
-		} else if reloadErr := s.hotReloadHysteria2Users(candidate); reloadErr == nil {
+		} else if reloadErr := s.hotReloadUsers(candidate); reloadErr == nil {
 			// The user set changed, but our custom sing-box lets us swap it live
-			// through the clash_api /hysteria2/users endpoint (like xray's
+			// through the clash_api /inbounds/{tag}/users endpoint (like xray's
 			// HandlerService) - so the change takes effect with zero restart and
-			// zero dropped Hysteria2 sessions. Adopt the candidate to keep the
-			// stored config current for the next real restart.
+			// zero dropped sessions. Adopt the candidate to keep the stored
+			// config current for the next real restart.
 			s.setConfig(candidate)
 		} else {
 			// Live update unavailable (older sing-box without the endpoint, api
 			// unreachable, or the update was rejected) - fall back to the safe
 			// restart path so the change is never silently lost.
-			log.Printf("sing-box: hysteria2 user hot-reload unavailable, falling back to restart: %v", reloadErr)
+			log.Printf("sing-box: user hot-reload unavailable, falling back to restart: %v", reloadErr)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			err = s.applyConfigWithRestart(ctx, candidate)
 			cancel()
@@ -334,42 +379,42 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 	close(b.done)
 }
 
-// hotReloadHysteria2Users pushes every hysteria2 inbound's user set from the
-// candidate into the already-running core via the clash_api /hysteria2/users
+// hotReloadUsers pushes every indexed inbound's user set from the candidate
+// into the already-running core via the clash_api /inbounds/{tag}/users
 // endpoint our custom sing-box exposes. On success the change is live with no
 // restart and no dropped sessions - the sing-box counterpart to xray's live
 // AddUser/RemoveUser. Any failure (endpoint absent on an older sing-box, api
-// unreachable, or a rejected update) is returned so the caller falls back to
-// the restart path and the change is never lost.
-func (s *SingBox) hotReloadHysteria2Users(candidate *Config) error {
+// unreachable, or a rejected update on any tag) is returned so the caller falls
+// back to the restart path and the change is never lost.
+func (s *SingBox) hotReloadUsers(candidate *Config) error {
 	port := candidate.ClashPort()
 	if port == 0 {
 		return fmt.Errorf("clash api port is not set")
 	}
-	sets := candidate.HysteriaUserSets()
+	sets := candidate.UserSets()
 	if len(sets) == 0 {
 		return nil
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	url := fmt.Sprintf("http://127.0.0.1:%d/hysteria2/users", port)
-	for tag, users := range sets {
-		body, err := json.Marshal(map[string]any{"tag": tag, "users": users})
+	for tag, set := range sets {
+		endpoint := fmt.Sprintf("http://127.0.0.1:%d/inbounds/%s/users", port, url.PathEscape(tag))
+		body, err := json.Marshal(map[string]any{"type": set.Type, "users": set.Users})
 		if err != nil {
 			return err
 		}
-		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+		req, err := http.NewRequest(http.MethodPut, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("hysteria2 user hot-reload for %q: %w", tag, err)
+			return fmt.Errorf("user hot-reload for %q: %w", tag, err)
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("hysteria2 user hot-reload for %q: status %d: %s", tag, resp.StatusCode, strings.TrimSpace(string(respBody)))
+			return fmt.Errorf("user hot-reload for %q: status %d: %s", tag, resp.StatusCode, strings.TrimSpace(string(respBody)))
 		}
 	}
 	return nil
