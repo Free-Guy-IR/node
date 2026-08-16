@@ -29,7 +29,6 @@ type Controller struct {
 	cfg         *config.Config
 	apiPort     int
 	metricPort  int
-	clientIP    string
 	lastRequest time.Time
 	stats       *common.SystemStatsResponse
 	cancelFunc  context.CancelFunc
@@ -53,12 +52,14 @@ func (c *Controller) ApiKey() uuid.UUID {
 	return c.cfg.ApiKey
 }
 
-func (c *Controller) Connect(ip string, keepAlive uint64) {
+func (c *Controller) Connect(keepAlive uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lastRequest = time.Now()
-	c.clientIP = ip
 
+	if c.cancelFunc != nil {
+		c.cancelFunc()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancelFunc = cancel
 	go c.recordSystemStats(ctx)
@@ -86,19 +87,6 @@ func (c *Controller) Disconnect() {
 	c.backend = nil
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
-	c.clientIP = ""
-}
-
-func (c *Controller) Ip() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.clientIP
-}
-
-func (c *Controller) IsCurrentClient(ip string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.clientIP == "" || c.clientIP == ip
 }
 
 func (c *Controller) LockControl() {
@@ -189,8 +177,11 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	defer ticker.Stop()
 
 	collect := func() {
-		stats, err := sysstats.GetSystemStats()
+		stats, err := sysstats.GetSystemStats(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("Failed to get system stats: %v", err)
 			return
 		}
