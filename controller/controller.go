@@ -62,6 +62,13 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 	c.lastRequest = time.Now()
 	c.clientIP = ip
 
+	// Cancel the previous connection's collectors before starting new ones,
+	// otherwise each reconnect leaks a recordSystemStats/keepAliveTracker
+	// goroutine bound to the old context (upstream fix, kept with our client-IP tracking).
+	if c.cancelFunc != nil {
+		c.cancelFunc()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancelFunc = cancel
 	go c.recordSystemStats(ctx)
@@ -241,7 +248,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	defer ticker.Stop()
 
 	collect := func() {
-		stats, err := sysstats.GetSystemStats()
+		stats, err := sysstats.GetSystemStats(ctx)
 		if err != nil {
 			log.Printf("Failed to get system stats: %v", err)
 			return
