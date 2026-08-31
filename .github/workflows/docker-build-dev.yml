@@ -6,8 +6,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: pasarguard/${{ github.event.repository.name }}:${{ github.ref_name }}
-  GHCR_IMAGE: ghcr.io/pasarguard/${{ github.event.repository.name }}:${{ github.ref_name }}
+  IMAGE: free-guy-ir/node:${{ github.ref_name }}
+  GHCR_IMAGE: ghcr.io/free-guy-ir/node:${{ github.ref_name }}
 
 jobs:
   build-and-push:
