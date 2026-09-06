@@ -14,7 +14,7 @@ import (
 	"github.com/9seconds/mtg/v2/ipblocklist"
 	"github.com/9seconds/mtg/v2/ipblocklist/files"
 	"github.com/9seconds/mtg/v2/mtglib"
-	"github.com/9seconds/mtg/v2/network"
+	networkv2 "github.com/9seconds/mtg/v2/network/v2"
 	"github.com/yl2chen/cidranger"
 
 	"github.com/pasarguard/node/backend/mtproto/middleproxy"
@@ -85,17 +85,15 @@ func statsUpdateInterval(cfg *config.Config) time.Duration {
 }
 
 func buildNetwork() (mtglib.Network, error) {
-	dialer, err := network.NewDefaultDialer(0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("mtproto: cannot build dialer: %w", err)
-	}
-
-	ntw, err := network.NewNetwork(dialer, "pasarguard-mtproto", "1.1.1.1", 0)
-	if err != nil {
-		return nil, fmt.Errorf("mtproto: cannot build network: %w", err)
-	}
-
-	return ntw, nil
+	return networkv2.New(
+		nil,
+		networkv2.UserAgent,
+		networkv2.DefaultTimeout,
+		networkv2.DefaultHTTPTimeout,
+		networkv2.DefaultIdleTimeout,
+		networkv2.DefaultKeepAliveConfig,
+		networkv2.DefaultTCPNotSentLowat,
+	), nil
 }
 
 // buildAllowAllList builds an mtglib.IPBlocklist used as ProxyOpts.IPAllowlist
@@ -248,6 +246,12 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			EventStream:        newMtprotoEventStream(accumulator, b.emailForUsername),
 			Secrets:            b.secretsForInstance(inst.FakeTLSDomain),
 			DomainFrontingHost: inst.FakeTLSDomain,
+			PlainMode:          inst.Plain(),
+		}
+
+		if !inst.Plain() {
+			opts.DoppelGangerURLs = []string{"https://" + inst.FakeTLSDomain}
+			opts.DoppelGangerDRS = true
 		}
 
 		proxy, err := mtglib.NewProxy(opts)
@@ -272,7 +276,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		go proxy.Serve(listener) //nolint: errcheck
 
-		b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (domain=%s)", inst.Tag, inst.Port, inst.FakeTLSDomain))
+		b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (mode=%s domain=%s)", inst.Tag, inst.Port, inst.Mode, inst.FakeTLSDomain))
 	}
 
 	b.order = order
@@ -388,4 +392,3 @@ func (b *Backend) sampleStatsPeriodically(ctx context.Context, interval time.Dur
 		}
 	}
 }
-

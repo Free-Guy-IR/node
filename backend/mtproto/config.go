@@ -26,10 +26,15 @@ import (
 // fake-TLS domain fronting host every user connecting to it is validated
 // against. There is no per-instance PKI (MTProto secrets are symmetric, not
 // certificate-based) and no protocol/network choice (mtg is TCP-only).
+func (c *InstanceConfig) Plain() bool {
+	return c.Mode == "plain"
+}
+
 type InstanceConfig struct {
 	Tag           string `json:"tag"`
 	Port          int    `json:"port"`
-	FakeTLSDomain string `json:"fake_tls_domain"`
+	Mode          string `json:"mode,omitempty"`
+	FakeTLSDomain string `json:"fake_tls_domain,omitempty"`
 
 	// AdTag is a hex-encoded Telegram middle-proxy "ad tag" (obtained from
 	// @MTProxybot), which activates sponsor-channel promotion for clients
@@ -83,8 +88,18 @@ func validate(cfg *Config) error {
 		}
 		ports[inst.Port] = struct{}{}
 
-		if inst.FakeTLSDomain == "" {
-			return fmt.Errorf("mtproto config: instance %q must set fake_tls_domain", inst.Tag)
+		switch inst.Mode {
+		case "", "faketls":
+			inst.Mode = "faketls"
+			if inst.FakeTLSDomain == "" {
+				return fmt.Errorf("mtproto config: instance %q must set fake_tls_domain", inst.Tag)
+			}
+		case "plain":
+			if inst.AdTag != "" {
+				return fmt.Errorf("mtproto config: instance %q cannot combine plain mode with ad_tag", inst.Tag)
+			}
+		default:
+			return fmt.Errorf("mtproto config: instance %q has unknown mode %q", inst.Tag, inst.Mode)
 		}
 
 		if inst.AdTag != "" {
