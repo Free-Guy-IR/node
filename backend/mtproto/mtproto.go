@@ -250,6 +250,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		}
 
 		if !inst.Plain() {
+			opts.FakeTLSDomains = inst.Domains()
 			opts.DoppelGangerURLs = []string{"https://" + inst.FakeTLSDomain}
 			opts.DoppelGangerDRS = true
 		}
@@ -276,7 +277,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		go proxy.Serve(listener) //nolint: errcheck
 
-		b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (mode=%s domain=%s)", inst.Tag, inst.Port, inst.Mode, inst.FakeTLSDomain))
+		b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (mode=%s domains=%d first=%s)", inst.Tag, inst.Port, inst.Mode, len(inst.Domains()), inst.FakeTLSDomain))
 	}
 
 	b.order = order

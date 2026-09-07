@@ -249,13 +249,13 @@ func buildProxyRequest(connID [8]byte, clientAddr, ourAddr *net.TCPAddr, connTyp
 // (see stats.go) so ad-tag traffic is counted identically to every other
 // mtproto instance.
 type relayOptions struct {
-	AdTag        []byte
-	StreamID     string
-	Username     string
-	Email        string
-	OnAuth       func(streamID, username, email string)
-	OnTraffic    func(streamID string, n uint, isRead bool)
-	OnFinish     func(streamID string)
+	AdTag     []byte
+	StreamID  string
+	Username  string
+	Email     string
+	OnAuth    func(streamID, username, email string)
+	OnTraffic func(streamID string, n uint, isRead bool)
+	OnFinish  func(streamID string)
 }
 
 // Relay runs one client connection end to end: dials the middle-proxy

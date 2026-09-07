@@ -30,11 +30,24 @@ func (c *InstanceConfig) Plain() bool {
 	return c.Mode == "plain"
 }
 
+func (c *InstanceConfig) Domains() []string {
+	if len(c.FakeTLSDomains) > 0 {
+		return c.FakeTLSDomains
+	}
+
+	if c.FakeTLSDomain != "" {
+		return []string{c.FakeTLSDomain}
+	}
+
+	return nil
+}
+
 type InstanceConfig struct {
-	Tag           string `json:"tag"`
-	Port          int    `json:"port"`
-	Mode          string `json:"mode,omitempty"`
-	FakeTLSDomain string `json:"fake_tls_domain,omitempty"`
+	Tag            string   `json:"tag"`
+	Port           int      `json:"port"`
+	Mode           string   `json:"mode,omitempty"`
+	FakeTLSDomain  string   `json:"fake_tls_domain,omitempty"`
+	FakeTLSDomains []string `json:"fake_tls_domains,omitempty"`
 
 	// AdTag is a hex-encoded Telegram middle-proxy "ad tag" (obtained from
 	// @MTProxybot), which activates sponsor-channel promotion for clients
@@ -91,10 +104,30 @@ func validate(cfg *Config) error {
 		switch inst.Mode {
 		case "", "faketls":
 			inst.Mode = "faketls"
+
+			domains := inst.Domains()
+			if len(domains) == 0 {
+				return fmt.Errorf("mtproto config: instance %q must set fake_tls_domain or fake_tls_domains", inst.Tag)
+			}
+
+			seenDomains := make(map[string]struct{}, len(domains))
+			for _, d := range domains {
+				if d == "" {
+					return fmt.Errorf("mtproto config: instance %q has an empty fake-tls domain", inst.Tag)
+				}
+				if _, dup := seenDomains[d]; dup {
+					return fmt.Errorf("mtproto config: instance %q lists duplicate fake-tls domain %q", inst.Tag, d)
+				}
+				seenDomains[d] = struct{}{}
+			}
+
 			if inst.FakeTLSDomain == "" {
-				return fmt.Errorf("mtproto config: instance %q must set fake_tls_domain", inst.Tag)
+				inst.FakeTLSDomain = domains[0]
 			}
 		case "plain":
+			if len(inst.FakeTLSDomains) > 0 {
+				return fmt.Errorf("mtproto config: instance %q cannot set fake_tls_domains in plain mode", inst.Tag)
+			}
 			if inst.AdTag != "" {
 				return fmt.Errorf("mtproto config: instance %q cannot combine plain mode with ad_tag", inst.Tag)
 			}
