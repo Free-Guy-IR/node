@@ -73,6 +73,22 @@ func applyHostRouting(pool, egressIface, ownerID string, logf func(string, ...an
 		_ = cleanupHostRouting(ownerID)
 		return nil, err
 	}
+	if requireIPsecEnabled() {
+		if err := ipsecGuardSupported(); err != nil {
+			_ = cleanupHostRouting(ownerID)
+			return nil, err
+		}
+		if err := ensureIPsecGuard(ownerID); err != nil {
+			_ = cleanupHostRouting(ownerID)
+			return nil, err
+		}
+		logf("l2tp host routing: udp/%s accepted only from IPsec (set %s=0 to disable)", l2tpListenerPort, envRequireIPsec)
+	} else {
+		if err := removeIPsecGuard(ownerID); err != nil {
+			logf("l2tp host routing: could not drop a previous IPsec guard: %v", err)
+		}
+		logf("l2tp host routing: WARNING %s is off, plain L2TP without IPsec is accepted on udp/%s", envRequireIPsec, l2tpListenerPort)
+	}
 	return func() {
 		if err := cleanupHostRouting(ownerID); err != nil {
 			logf("l2tp host routing: cleanup failed: %v", err)
@@ -161,6 +177,9 @@ func cleanupHostRouting(ownerID string) error {
 	}
 	ownChain := nftChain{family: nftFamily, table: nftTable, name: nftForwardHook}
 	if err := removeNFTRulesWithComment(ownChain, prefix); err != nil && !nftMissing(err) {
+		errs = append(errs, err)
+	}
+	if err := removeIPsecGuard(ownerID); err != nil && !nftMissing(err) {
 		errs = append(errs, err)
 	}
 	chains, err := nftForwardBaseChains()
