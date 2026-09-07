@@ -3,7 +3,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN apk update && apk add --no-cache make
+RUN apk update && apk add --no-cache make git
 
 WORKDIR /src
 
