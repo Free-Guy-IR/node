@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pasarguard/node/backend"
+	"github.com/pasarguard/node/backend/l2tp"
 	"github.com/pasarguard/node/backend/mtproto"
 	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/singbox"
@@ -21,7 +22,9 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.5.4"
+const NodeVersion = "0.6.0"
+
+var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
 
 type Service interface {
 	Disconnect()
@@ -208,6 +211,24 @@ func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) 
 			return err
 		}
 		c.backend = newBackend
+	case common.BackendType_L2TP:
+		if err := l2tp.CheckDeps(); err != nil {
+			return err
+		}
+		config, err := l2tp.NewConfig(backend.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err := l2tp.New(
+			ctx,
+			config,
+			backend.GetUsers(),
+			c.cfg,
+		)
+		if err != nil {
+			return err
+		}
+		c.backend = newBackend
 	default:
 		return errors.New("invalid backend type")
 	}
@@ -310,9 +331,10 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	defer c.mu.Unlock()
 
 	response := &common.BaseInfoResponse{
-		Started:     false,
-		CoreVersion: "",
-		NodeVersion: NodeVersion,
+		Started:           false,
+		CoreVersion:       "",
+		NodeVersion:       NodeVersion,
+		SupportedBackends: append([]string(nil), supportedBackends...),
 	}
 
 	if c.backend != nil {

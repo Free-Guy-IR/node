@@ -14,7 +14,7 @@
     </a>
 </p>
 
-> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2), OpenVPN, and MTProto (Telegram proxy) backend support.
+> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2), OpenVPN, MTProto (Telegram proxy), and L2TP/IPsec backend support.
 
 # Documentation
 You can find a full guide in docs https://docs.pasarguard.org/en/node/
@@ -45,6 +45,31 @@ node-eu-1 edit-env
 You can run any other subcommand for that same node with the same prefix (`node-eu-1 ...`).
 
 > ⚠️ **Important:** Never reuse ports between nodes. The connection port and every core's inbound/instance ports (Xray, sing-box, OpenVPN, MTProto, ...) attached to each node must be completely unique per node.
+
+# L2TP/IPsec
+
+The installer prepares this automatically: it loads and persists the `tun` and `ppp_generic` kernel modules,
+persists `net.ipv4.ip_forward=1`, and maps `/dev/net/tun` and `/dev/ppp` into the container **only when the host
+actually provides them**, so a host without PPP support still installs and runs every other core normally.
+
+If PPP support is added to the host later (for example `apt install linux-modules-extra-$(uname -r)` on Ubuntu),
+enable it without reinstalling:
+
+```bash
+pg-node l2tp-enable
+```
+
+Use the node's own name instead of `pg-node` for a named node (`node-eu-1 l2tp-enable`).
+
+An L2TP node needs UDP **500**, **4500** and **1701** free on the host, and `network_mode: host` with
+`NET_ADMIN`. Nothing else on the host may already run strongSwan/libreswan or xl2tpd, since the node starts its
+own. A node running an L2TP core runs only that core.
+
+For a manual (non-installer) deployment, add the override file to the compose command:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.l2tp.yml up -d
+```
 
 # Donation
 You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)

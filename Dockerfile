@@ -45,7 +45,10 @@ FROM alpine:latest
 
 LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"
 
-RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps iptables openvpn
+RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps iptables openvpn strongswan xl2tpd ppp
+RUN command -v swanctl >/dev/null && command -v xl2tpd >/dev/null && command -v pppd >/dev/null && command -v nft >/dev/null \
+    && { test -x /usr/lib/strongswan/charon || test -x /usr/lib/ipsec/charon || test -x /usr/libexec/ipsec/charon; } \
+    && test -f /etc/swanctl/swanctl.conf
 
 WORKDIR /app
 COPY --from=builder /src/main /app/main

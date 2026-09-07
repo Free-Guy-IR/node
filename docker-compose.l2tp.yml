@@ -1,0 +1,4 @@
+services:
+  node:
+    devices:
+      - "/dev/ppp:/dev/ppp"
