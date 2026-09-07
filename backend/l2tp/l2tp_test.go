@@ -1,6 +1,7 @@
 package l2tp
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -180,4 +181,40 @@ func TestChapQuoteEscapes(t *testing.T) {
 
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
+}
+
+func TestUnsupportedIPsecMatchOnlyClaimsAKernelLimitForARealOne(t *testing.T) {
+	cases := []struct {
+		err  string
+		want bool
+	}{
+		{"nft -c -f x: exit 1: Error: syntax error, unexpected ipsec", true},
+		{"nft: unknown expression meta ipsec", true},
+		{"meta ipsec is not supported by this kernel", true},
+		{"nft -c -f /tmp/x.nft: exit status 1: Error: Could not process rule: File exists", false},
+		{"nft: command not found", false},
+		{"permission denied", false},
+		{"Error: Could not process rule: Operation not permitted", false},
+	}
+	for _, c := range cases {
+		if got := isUnsupportedIPsecMatch(errors.New(c.err)); got != c.want {
+			t.Fatalf("isUnsupportedIPsecMatch(%q) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+func TestIPsecGuardIsOnUnlessExplicitlyDisabled(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", true}, {"1", true}, {"true", true}, {"yes", true}, {"anything", true}, {"0", false}, {"false", false}, {"FALSE", false}, {"no", false}, {" 0 ", false}} {
+		t.Setenv(envRequireIPsec, c.value)
+		if got := requireIPsecEnabled(); got != c.want {
+			t.Fatalf("%s=%q -> %v, want %v", envRequireIPsec, c.value, got, c.want)
+		}
+	}
+	os.Unsetenv(envRequireIPsec)
+	if !requireIPsecEnabled() {
+		t.Fatal("an unset variable must keep the guard on")
+	}
 }

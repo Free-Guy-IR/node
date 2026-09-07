@@ -3,7 +3,8 @@
 package l2tp
 
 import (
-	"errors"
+	"crypto/rand"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -49,22 +50,44 @@ func removeIPsecGuard(ownerID string) error {
 }
 
 func ipsecGuardSupported() error {
-	probe := "table " + nftFamily + " pg_l2tp_probe {\n chain input {\n  type filter hook input priority 0; policy accept;\n  udp dport " +
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return fmt.Errorf("l2tp ipsec guard: cannot name a probe table: %w", err)
+	}
+	table := fmt.Sprintf("pg_l2tp_probe_%x", suffix)
+	probe := "table " + nftFamily + " " + table + " {\n chain input {\n  type filter hook input priority 0; policy accept;\n  udp dport " +
 		l2tpListenerPort + " meta ipsec missing drop\n }\n}\n"
 	f, err := os.CreateTemp("", "pg-l2tp-probe-*.nft")
 	if err != nil {
-		return err
+		return fmt.Errorf("l2tp ipsec guard: cannot write a probe ruleset: %w", err)
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString(probe); err != nil {
 		f.Close()
-		return err
+		return fmt.Errorf("l2tp ipsec guard: cannot write a probe ruleset: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return fmt.Errorf("l2tp ipsec guard: cannot write a probe ruleset: %w", err)
 	}
-	if err := runNFT("-c", "-f", f.Name()); err != nil {
-		return errors.New("this kernel's nftables cannot match on IPsec (meta ipsec); set " + envRequireIPsec + "=0 to run L2TP without that protection")
+	err = runNFT("-c", "-f", f.Name())
+	if err == nil {
+		return nil
 	}
-	return nil
+	if isUnsupportedIPsecMatch(err) {
+		return fmt.Errorf("this kernel's nftables cannot match on IPsec (meta ipsec); set %s=0 to run L2TP without that protection: %w", envRequireIPsec, err)
+	}
+	return fmt.Errorf("l2tp ipsec guard: could not validate the nftables rule: %w", err)
+}
+
+func isUnsupportedIPsecMatch(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "ipsec") {
+		return false
+	}
+	for _, marker := range []string{"unknown", "not supported", "unsupported", "syntax error", "invalid", "no such file"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
