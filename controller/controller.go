@@ -41,6 +41,13 @@ type Controller struct {
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
 	controlMu   sync.Mutex
+
+	ownRxTotal   int64
+	ownTxTotal   int64
+	ownRxSpeed   uint64
+	ownTxSpeed   uint64
+	ownSampledAt time.Time
+	ownMeasured  bool
 }
 
 func New(cfg *config.Config) *Controller {
@@ -275,6 +282,11 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 			return
 		}
 
+		if rx, tx, ok := c.sampleOwnThroughput(ctx); ok {
+			stats.IncomingBandwidthSpeed = rx
+			stats.OutgoingBandwidthSpeed = tx
+		}
+
 		c.mu.Lock()
 		c.stats = stats
 		c.mu.Unlock()
@@ -290,6 +302,69 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 			collect()
 		}
 	}
+}
+
+func (c *Controller) sampleOwnThroughput(ctx context.Context) (uint64, uint64, bool) {
+	c.mu.RLock()
+	b := c.backend
+	lastRequest := c.lastRequest
+	lastSample := c.ownSampledAt
+	rxSpeed, txSpeed, measured := c.ownRxSpeed, c.ownTxSpeed, c.ownMeasured
+	c.mu.RUnlock()
+	if b == nil || !b.Started() {
+		c.mu.Lock()
+		c.ownMeasured = false
+		c.mu.Unlock()
+		return 0, 0, false
+	}
+
+	if time.Since(lastRequest) > 30*time.Second {
+		return rxSpeed, txSpeed, measured
+	}
+	if measured && time.Since(lastSample) < 3*time.Second {
+		return rxSpeed, txSpeed, measured
+	}
+
+	statsCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	resp, err := b.GetStats(statsCtx, &common.StatRequest{Type: common.StatType_UsersStat, Reset_: false})
+	if err != nil || resp == nil {
+		c.mu.RLock()
+		rx, tx, measured := c.ownRxSpeed, c.ownTxSpeed, c.ownMeasured
+		c.mu.RUnlock()
+		return rx, tx, measured
+	}
+
+	var rxTotal, txTotal int64
+	for _, stat := range resp.GetStats() {
+		if stat == nil {
+			continue
+		}
+		switch stat.GetType() {
+		case "downlink":
+			rxTotal += stat.GetValue()
+		case "uplink":
+			txTotal += stat.GetValue()
+		}
+	}
+
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	prevRx, prevTx, prevAt, had := c.ownRxTotal, c.ownTxTotal, c.ownSampledAt, c.ownMeasured
+	c.ownRxTotal, c.ownTxTotal, c.ownSampledAt = rxTotal, txTotal, now
+
+	elapsed := now.Sub(prevAt).Seconds()
+	if !had || elapsed <= 0 || rxTotal < prevRx || txTotal < prevTx {
+		c.ownMeasured = true
+		return c.ownRxSpeed, c.ownTxSpeed, true
+	}
+
+	c.ownRxSpeed = uint64(float64(rxTotal-prevRx) / elapsed)
+	c.ownTxSpeed = uint64(float64(txTotal-prevTx) / elapsed)
+	c.ownMeasured = true
+	return c.ownRxSpeed, c.ownTxSpeed, true
 }
 
 func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsResponse {
