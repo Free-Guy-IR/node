@@ -38,9 +38,37 @@ type InstanceConfig struct {
 	DuplicateCN     bool     `json:"duplicate_cn"`
 	Verb            int      `json:"verb"`
 
+	Mssfix int `json:"mssfix"`
+
+	TunMtu   int `json:"tun_mtu"`
+	Fragment int `json:"fragment"`
+
 	// network is the parsed/validated form of Network, cached once by
 	// NewConfig so render.go never has to re-parse or re-validate it.
 	network *net.IPNet
+}
+
+const defaultMssfix = 1300
+
+func (c *InstanceConfig) EffectiveMssfix() int {
+	if c.Mssfix > 0 {
+		return c.Mssfix
+	}
+	return defaultMssfix
+}
+
+func (c *InstanceConfig) EffectiveTunMtu() int {
+	if c.TunMtu > 0 {
+		return c.TunMtu
+	}
+	return 0
+}
+
+func (c *InstanceConfig) EffectiveFragment() int {
+	if c.Fragment > 0 {
+		return c.Fragment
+	}
+	return 0
 }
 
 // Config is the parsed, validated form of the raw JSON the panel sends in

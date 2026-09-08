@@ -31,6 +31,13 @@ func renderInstanceConfig(inst *InstanceConfig, pki PKI, tunIndex int, managemen
 	fmt.Fprintf(&b, "server %s %s\n", inst.network.IP.String(), mask.String())
 
 	fmt.Fprintf(&b, "keepalive %s\n", inst.Keepalive)
+	fmt.Fprintf(&b, "mssfix %d\n", inst.EffectiveMssfix())
+	if mtu := inst.EffectiveTunMtu(); mtu > 0 {
+		fmt.Fprintf(&b, "tun-mtu %d\n", mtu)
+	}
+	if frag := inst.EffectiveFragment(); frag > 0 && inst.Protocol == "udp" {
+		fmt.Fprintf(&b, "fragment %d\n", frag)
+	}
 	fmt.Fprintf(&b, "cipher %s\n", inst.Cipher)
 	fmt.Fprintf(&b, "auth %s\n", inst.Auth)
 
