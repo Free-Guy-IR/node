@@ -23,12 +23,28 @@ func newUserStore(inboundTag string) *userStore {
 	return &userStore{inboundTag: inboundTag, users: make(map[string]userEntry)}
 }
 
+func safeChapField(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x21 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 func credsFor(u *common.User) (username, password string, ok bool) {
 	cred := u.GetProxies().GetL2Tp()
-	if cred == nil || cred.GetUsername() == "" || cred.GetPassword() == "" {
+	if cred == nil {
 		return "", "", false
 	}
-	return cred.GetUsername(), cred.GetPassword(), true
+	username, password = cred.GetUsername(), cred.GetPassword()
+	if !safeChapField(username) || !safeChapField(password) {
+		return "", "", false
+	}
+	return username, password, true
 }
 
 func usernameOf(u *common.User) string {

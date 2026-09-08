@@ -22,7 +22,7 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.6.3"
+const NodeVersion = "0.6.4"
 
 var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
 

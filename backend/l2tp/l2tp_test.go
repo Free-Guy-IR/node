@@ -240,3 +240,33 @@ func TestUnsupportedIPsecMatchAgainstRealNftStderr(t *testing.T) {
 		}
 	}
 }
+
+func TestCredsForRejectsCredentialsThatCouldInjectAChapSecretsLine(t *testing.T) {
+	cases := map[string]struct{ username, password string }{
+		"newline in password": {"7", "good\nattacker l2tp-de \"pw\""},
+		"newline in username": {"7\nattacker", "goodpassword"},
+		"carriage return":     {"7", "good\rpassword"},
+		"tab":                 {"7", "good\tpassword"},
+		"space":               {"7", "good password"},
+		"nul byte":            {"7", "good\x00password"},
+		"non ascii":           {"7", "gööd-password"},
+		"empty password":      {"7", ""},
+		"empty username":      {"", "goodpassword"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			u := &common.User{Proxies: &common.Proxy{L2Tp: &common.L2TpUser{Username: tc.username, Password: tc.password}}}
+			if _, _, ok := credsFor(u); ok {
+				t.Fatalf("credsFor accepted an unsafe credential: %q / %q", tc.username, tc.password)
+			}
+		})
+	}
+}
+
+func TestCredsForAcceptsAPanelGeneratedCredential(t *testing.T) {
+	u := &common.User{Proxies: &common.Proxy{L2Tp: &common.L2TpUser{Username: "27741", Password: "k81rSG4vJ9Ljhh4UJaPm"}}}
+	username, password, ok := credsFor(u)
+	if !ok || username != "27741" || password != "k81rSG4vJ9Ljhh4UJaPm" {
+		t.Fatalf("credsFor rejected a valid credential: %q %q %v", username, password, ok)
+	}
+}
