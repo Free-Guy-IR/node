@@ -146,7 +146,13 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 	case common.StatType_UsersStat:
 		return o.statsTracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
-		return &common.StatResponse{Stats: []*common.Stat{}}, nil
+		o.mu.Lock()
+		totalRx, totalTx := o.totalRx, o.totalTx
+		o.mu.Unlock()
+		dRx, dTx := o.inboundStats.Delta(totalRx, totalTx, request.GetReset_())
+		return &common.StatResponse{
+			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
+		}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
 		o.mu.Lock()
 		totalRx, totalTx := o.totalRx, o.totalTx

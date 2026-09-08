@@ -57,6 +57,7 @@ type L2TP struct {
 	users          *userStore
 	statsTracker   *stats.Tracker
 	interfaceStats *stats.InterfaceCountersTracker
+	inboundStats   *stats.InterfaceCountersTracker
 	totalRx        int64
 	totalTx        int64
 	ifSeen         map[string][2]int64
@@ -98,6 +99,7 @@ func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *con
 		users:          newUserStore(l2Config.InboundTag),
 		statsTracker:   stats.New(),
 		interfaceStats: stats.NewInterfaceCountersTracker(),
+		inboundStats:   stats.NewInterfaceCountersTracker(),
 		ifSeen:         make(map[string][2]int64),
 		cumRx:          make(map[string]int64),
 		cumTx:          make(map[string]int64),

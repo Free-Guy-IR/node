@@ -67,6 +67,8 @@ type Backend struct {
 	// middleproxy) served a given connection.
 	outboundRx atomic.Int64
 	outboundTx atomic.Int64
+
+	inboundCounters map[string]*inboundCounter
 }
 
 func logBufferSizeOrDefault(cfg *config.Config) int {
@@ -196,11 +198,13 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 	bCtx, bCancel := context.WithCancel(context.Background())
 
 	b := &Backend{
-		instances:    make(map[string]*proxyInstance, len(mtCfg.Instances)),
-		startTime:    time.Now(),
-		logsChan:     make(chan string, logBufferSizeOrDefault(nodeCfg)),
-		statsTracker: stats.New(),
-		cancelFunc:   bCancel,
+		instances: make(map[string]*proxyInstance, len(mtCfg.Instances)),
+
+		inboundCounters: make(map[string]*inboundCounter, len(mtCfg.Instances)),
+		startTime:       time.Now(),
+		logsChan:        make(chan string, logBufferSizeOrDefault(nodeCfg)),
+		statsTracker:    stats.New(),
+		cancelFunc:      bCancel,
 	}
 
 	b.applyInitialUsers(users)
@@ -224,7 +228,9 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			return nil, err
 		}
 
-		accumulator := newEventAccumulator(&b.outboundRx, &b.outboundTx)
+		counter := &inboundCounter{}
+		b.inboundCounters[inst.Tag] = counter
+		accumulator := newEventAccumulator(&b.outboundRx, &b.outboundTx, &counter.rx, &counter.tx)
 
 		if inst.AdTag != "" {
 			pi, err := b.newMiddleProxyInstance(inst, accumulator)

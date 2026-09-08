@@ -58,9 +58,11 @@ type eventAccumulator struct {
 	// per-instance aggregate to repurpose).
 	outboundRx *atomic.Int64
 	outboundTx *atomic.Int64
+	inboundRx  *atomic.Int64
+	inboundTx  *atomic.Int64
 }
 
-func newEventAccumulator(outboundRx, outboundTx *atomic.Int64) *eventAccumulator {
+func newEventAccumulator(outboundRx, outboundTx, inboundRx, inboundTx *atomic.Int64) *eventAccumulator {
 	return &eventAccumulator{
 		streamUser:   make(map[string]string),
 		cumulativeRx: make(map[string]int64),
@@ -68,6 +70,8 @@ func newEventAccumulator(outboundRx, outboundTx *atomic.Int64) *eventAccumulator
 		email:        make(map[string]string),
 		outboundRx:   outboundRx,
 		outboundTx:   outboundTx,
+		inboundRx:    inboundRx,
+		inboundTx:    inboundTx,
 	}
 }
 
@@ -84,8 +88,10 @@ func (a *eventAccumulator) traffic(streamID string, n uint, isRead bool) {
 
 	if isRead {
 		a.outboundRx.Add(int64(n))
+		a.inboundRx.Add(int64(n))
 	} else {
 		a.outboundTx.Add(int64(n))
+		a.inboundTx.Add(int64(n))
 	}
 
 	username, ok := a.streamUser[streamID]
@@ -220,11 +226,7 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	case common.StatType_UsersStat:
 		return rewriteLinkToTag(b.statsTracker.GetUsersStats(ctx, request.GetReset_())), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
-		// Every instance shares the same user set (see user.go) - there is no
-		// distinct per-instance aggregate beyond what UsersStat already reports,
-		// so instance-level totals are read the same way sing-box's single
-		// v2ray-less inbound would be: not applicable as a separate figure.
-		return &common.StatResponse{Stats: []*common.Stat{}}, nil
+		return b.inboundStat(request.GetReset_()), nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
 		return b.outboundStat(request.GetReset_()), nil
 	default:
@@ -246,6 +248,31 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 // per-listener sockets, every mtproto instance on this backend shares the
 // same authenticated-user set (see GetStats' Inbound/Inbounds case above),
 // so there is no meaningful sub-instance split to report here either.
+type inboundCounter struct {
+	rx atomic.Int64
+	tx atomic.Int64
+}
+
+func (b *Backend) inboundStat(reset bool) *common.StatResponse {
+	response := &common.StatResponse{Stats: make([]*common.Stat, 0, len(b.order)*2)}
+	for _, tag := range b.order {
+		counter, ok := b.inboundCounters[tag]
+		if !ok {
+			continue
+		}
+		var rx, tx int64
+		if reset {
+			rx = counter.rx.Swap(0)
+			tx = counter.tx.Swap(0)
+		} else {
+			rx = counter.rx.Load()
+			tx = counter.tx.Load()
+		}
+		response.Stats = append(response.Stats, stats.BuildInterfaceStats(tag, tag, rx, tx)...)
+	}
+	return response
+}
+
 func (b *Backend) outboundStat(reset bool) *common.StatResponse {
 	var rx, tx int64
 	if reset {
