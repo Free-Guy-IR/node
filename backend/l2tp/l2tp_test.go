@@ -218,3 +218,25 @@ func TestIPsecGuardIsOnUnlessExplicitlyDisabled(t *testing.T) {
 		t.Fatal("an unset variable must keep the guard on")
 	}
 }
+
+func TestUnsupportedIPsecMatchAgainstRealNftStderr(t *testing.T) {
+	real := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"permission denied", `nft add rule ip pg_node_l2tp_nat input udp dport 1701 meta ipsec missing drop: exit status 1: Error: Could not process rule: Permission denied (you must be root)`, false},
+		{"binary missing", `exec: "nft": executable file not found in $PATH`, false},
+		{"table collision", `nft add table ip pg_l2tp_probe: exit status 1: Error: Could not process rule: File exists`, false},
+		{"operation not permitted", `nft -c -f /tmp/p.nft: exit status 1: Error: Could not process rule: Operation not permitted`, false},
+		{"no such chain", `nft -a list chain ip pg_node_l2tp_nat input: exit status 1: Error: No such file or directory`, false},
+		{"old nft rejects the keyword", `nft -c -f /tmp/p.nft: exit status 1: /tmp/p.nft:3:20-24: Error: syntax error, unexpected ipsec, expecting string`, true},
+		{"kernel lacks the expression", `nft -c -f /tmp/p.nft: exit status 1: Error: Could not process rule: meta ipsec is not supported by this kernel`, true},
+		{"unknown expression", `nft -c -f /tmp/p.nft: exit status 1: Error: unknown expression 'meta ipsec'`, true},
+	}
+	for _, c := range real {
+		if got := isUnsupportedIPsecMatch(errors.New(c.err)); got != c.want {
+			t.Fatalf("%s: isUnsupportedIPsecMatch = %v, want %v (err: %s)", c.name, got, c.want, c.err)
+		}
+	}
+}
