@@ -270,3 +270,20 @@ func TestCredsForAcceptsAPanelGeneratedCredential(t *testing.T) {
 		t.Fatalf("credsFor rejected a valid credential: %q %q %v", username, password, ok)
 	}
 }
+
+func TestCredsForRejectsOverlongCredentials(t *testing.T) {
+	long := strings.Repeat("a", maxChapFieldLength+1)
+	u := &common.User{Proxies: &common.Proxy{L2Tp: &common.L2TpUser{Username: "7", Password: long}}}
+	if _, _, ok := credsFor(u); ok {
+		t.Fatal("credsFor accepted an overlong password")
+	}
+	u = &common.User{Proxies: &common.Proxy{L2Tp: &common.L2TpUser{Username: long, Password: "goodpassword"}}}
+	if _, _, ok := credsFor(u); ok {
+		t.Fatal("credsFor accepted an overlong username")
+	}
+	atLimit := strings.Repeat("a", maxChapFieldLength)
+	u = &common.User{Proxies: &common.Proxy{L2Tp: &common.L2TpUser{Username: "7", Password: atLimit}}}
+	if _, _, ok := credsFor(u); !ok {
+		t.Fatal("credsFor rejected a password exactly at the limit")
+	}
+}

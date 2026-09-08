@@ -35,6 +35,8 @@ func safeChapField(s string) bool {
 	return true
 }
 
+const maxChapFieldLength = 64
+
 func credsFor(u *common.User) (username, password string, ok bool) {
 	cred := u.GetProxies().GetL2Tp()
 	if cred == nil {
@@ -42,6 +44,9 @@ func credsFor(u *common.User) (username, password string, ok bool) {
 	}
 	username, password = cred.GetUsername(), cred.GetPassword()
 	if !safeChapField(username) || !safeChapField(password) {
+		return "", "", false
+	}
+	if len(username) > maxChapFieldLength || len(password) > maxChapFieldLength {
 		return "", "", false
 	}
 	return username, password, true
