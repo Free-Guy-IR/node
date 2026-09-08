@@ -31,11 +31,16 @@ ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api
 # Hysteria2 user changes apply live, without restarting the core (no dropped sessions).
 ARG SINGBOX_REPO=https://github.com/Free-Guy-IR/sing-box.git
 ARG SINGBOX_BRANCH=v1.13.14-hotreload
+ARG SINGBOX_COMMIT=4d8f221c5d0fb1c625a6cd691199c01ecc069cf7
 
 RUN apk update && apk add --no-cache git
 
 WORKDIR /singbox-src
-RUN git clone --depth 1 --branch ${SINGBOX_BRANCH} ${SINGBOX_REPO} .
+RUN git init -q . \
+ && git remote add origin ${SINGBOX_REPO} \
+ && git fetch -q --depth 1 origin ${SINGBOX_COMMIT} \
+ && git checkout -q FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${SINGBOX_COMMIT}"
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -tags "${SINGBOX_TAGS}" \
     -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' -s -w -buildid=" \
