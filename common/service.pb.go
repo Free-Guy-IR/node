@@ -2322,6 +2322,94 @@ func (x *AddRoutingRuleRequest) GetShouldReset() bool {
 	return false
 }
 
+type RemoveBackendRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          BackendType            `protobuf:"varint,1,opt,name=type,proto3,enum=service.BackendType" json:"type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveBackendRequest) Reset() {
+	*x = RemoveBackendRequest{}
+	mi := &file_common_service_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveBackendRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveBackendRequest) ProtoMessage() {}
+
+func (x *RemoveBackendRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_common_service_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveBackendRequest.ProtoReflect.Descriptor instead.
+func (*RemoveBackendRequest) Descriptor() ([]byte, []int) {
+	return file_common_service_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *RemoveBackendRequest) GetType() BackendType {
+	if x != nil {
+		return x.Type
+	}
+	return BackendType_XRAY
+}
+
+type BackendList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Types         []BackendType          `protobuf:"varint,1,rep,packed,name=types,proto3,enum=service.BackendType" json:"types,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BackendList) Reset() {
+	*x = BackendList{}
+	mi := &file_common_service_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BackendList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BackendList) ProtoMessage() {}
+
+func (x *BackendList) ProtoReflect() protoreflect.Message {
+	mi := &file_common_service_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BackendList.ProtoReflect.Descriptor instead.
+func (*BackendList) Descriptor() ([]byte, []int) {
+	return file_common_service_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *BackendList) GetTypes() []BackendType {
+	if x != nil {
+		return x.Types
+	}
+	return nil
+}
+
 type RemoveRoutingRuleRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RuleTag       string                 `protobuf:"bytes,1,opt,name=rule_tag,json=ruleTag,proto3" json:"rule_tag,omitempty"`
@@ -2331,7 +2419,7 @@ type RemoveRoutingRuleRequest struct {
 
 func (x *RemoveRoutingRuleRequest) Reset() {
 	*x = RemoveRoutingRuleRequest{}
-	mi := &file_common_service_proto_msgTypes[36]
+	mi := &file_common_service_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2343,7 +2431,7 @@ func (x *RemoveRoutingRuleRequest) String() string {
 func (*RemoveRoutingRuleRequest) ProtoMessage() {}
 
 func (x *RemoveRoutingRuleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[36]
+	mi := &file_common_service_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2356,7 +2444,7 @@ func (x *RemoveRoutingRuleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveRoutingRuleRequest.ProtoReflect.Descriptor instead.
 func (*RemoveRoutingRuleRequest) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{36}
+	return file_common_service_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RemoveRoutingRuleRequest) GetRuleTag() string {
@@ -2376,7 +2464,7 @@ type OverrideBalancerTargetRequest struct {
 
 func (x *OverrideBalancerTargetRequest) Reset() {
 	*x = OverrideBalancerTargetRequest{}
-	mi := &file_common_service_proto_msgTypes[37]
+	mi := &file_common_service_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2388,7 +2476,7 @@ func (x *OverrideBalancerTargetRequest) String() string {
 func (*OverrideBalancerTargetRequest) ProtoMessage() {}
 
 func (x *OverrideBalancerTargetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[37]
+	mi := &file_common_service_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2401,7 +2489,7 @@ func (x *OverrideBalancerTargetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OverrideBalancerTargetRequest.ProtoReflect.Descriptor instead.
 func (*OverrideBalancerTargetRequest) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{37}
+	return file_common_service_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *OverrideBalancerTargetRequest) GetBalancerTag() string {
@@ -2584,7 +2672,11 @@ const file_common_service_proto_rawDesc = "" +
 	"\rtarget_domain\x18\x05 \x01(\tR\ftargetDomain\"N\n" +
 	"\x15AddRoutingRuleRequest\x12\x12\n" +
 	"\x04rule\x18\x01 \x01(\tR\x04rule\x12!\n" +
-	"\fshould_reset\x18\x02 \x01(\bR\vshouldReset\"5\n" +
+	"\fshould_reset\x18\x02 \x01(\bR\vshouldReset\"@\n" +
+	"\x14RemoveBackendRequest\x12(\n" +
+	"\x04type\x18\x01 \x01(\x0e2\x14.service.BackendTypeR\x04type\"9\n" +
+	"\vBackendList\x12*\n" +
+	"\x05types\x18\x01 \x03(\x0e2\x14.service.BackendTypeR\x05types\"5\n" +
 	"\x18RemoveRoutingRuleRequest\x12\x19\n" +
 	"\brule_tag\x18\x01 \x01(\tR\aruleTag\"Z\n" +
 	"\x1dOverrideBalancerTargetRequest\x12!\n" +
@@ -2603,10 +2695,14 @@ const file_common_service_proto_rawDesc = "" +
 	"\bInbounds\x10\x02\x12\v\n" +
 	"\aInbound\x10\x03\x12\r\n" +
 	"\tUsersStat\x10\x04\x12\f\n" +
-	"\bUserStat\x10\x052\xdc\t\n" +
+	"\bUserStat\x10\x052\x88\v\n" +
 	"\vNodeService\x126\n" +
 	"\x05Start\x12\x10.service.Backend\x1a\x19.service.BaseInfoResponse\"\x00\x12(\n" +
-	"\x04Stop\x12\x0e.service.Empty\x1a\x0e.service.Empty\"\x00\x12:\n" +
+	"\x04Stop\x12\x0e.service.Empty\x1a\x0e.service.Empty\"\x00\x120\n" +
+	"\n" +
+	"AddBackend\x12\x10.service.Backend\x1a\x0e.service.Empty\"\x00\x12@\n" +
+	"\rRemoveBackend\x12\x1d.service.RemoveBackendRequest\x1a\x0e.service.Empty\"\x00\x126\n" +
+	"\fListBackends\x12\x0e.service.Empty\x1a\x14.service.BackendList\"\x00\x12:\n" +
 	"\vGetBaseInfo\x12\x0e.service.Empty\x1a\x19.service.BaseInfoResponse\"\x00\x12+\n" +
 	"\aGetLogs\x12\x0e.service.Empty\x1a\f.service.Log\"\x000\x01\x12@\n" +
 	"\x0eGetSystemStats\x12\x0e.service.Empty\x1a\x1c.service.SystemStatsResponse\"\x00\x12B\n" +
@@ -2638,7 +2734,7 @@ func file_common_service_proto_rawDescGZIP() []byte {
 }
 
 var file_common_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_common_service_proto_goTypes = []any{
 	(BackendType)(0),                      // 0: service.BackendType
 	(StatType)(0),                         // 1: service.StatType
@@ -2678,17 +2774,19 @@ var file_common_service_proto_goTypes = []any{
 	(*TestRouteRequest)(nil),              // 35: service.TestRouteRequest
 	(*RouteResult)(nil),                   // 36: service.RouteResult
 	(*AddRoutingRuleRequest)(nil),         // 37: service.AddRoutingRuleRequest
-	(*RemoveRoutingRuleRequest)(nil),      // 38: service.RemoveRoutingRuleRequest
-	(*OverrideBalancerTargetRequest)(nil), // 39: service.OverrideBalancerTargetRequest
-	nil,                                   // 40: service.StatsOnlineIpListResponse.IpsEntry
-	nil,                                   // 41: service.TestRouteRequest.AttributesEntry
+	(*RemoveBackendRequest)(nil),          // 38: service.RemoveBackendRequest
+	(*BackendList)(nil),                   // 39: service.BackendList
+	(*RemoveRoutingRuleRequest)(nil),      // 40: service.RemoveRoutingRuleRequest
+	(*OverrideBalancerTargetRequest)(nil), // 41: service.OverrideBalancerTargetRequest
+	nil,                                   // 42: service.StatsOnlineIpListResponse.IpsEntry
+	nil,                                   // 43: service.TestRouteRequest.AttributesEntry
 }
 var file_common_service_proto_depIdxs = []int32{
 	0,  // 0: service.Backend.type:type_name -> service.BackendType
 	28, // 1: service.Backend.users:type_name -> service.User
 	6,  // 2: service.StatResponse.stats:type_name -> service.Stat
 	1,  // 3: service.StatRequest.type:type_name -> service.StatType
-	40, // 4: service.StatsOnlineIpListResponse.ips:type_name -> service.StatsOnlineIpListResponse.IpsEntry
+	42, // 4: service.StatsOnlineIpListResponse.ips:type_name -> service.StatsOnlineIpListResponse.IpsEntry
 	11, // 5: service.LatencyResponse.latencies:type_name -> service.Latency
 	16, // 6: service.Proxy.vmess:type_name -> service.Vmess
 	17, // 7: service.Proxy.vless:type_name -> service.Vless
@@ -2705,50 +2803,58 @@ var file_common_service_proto_depIdxs = []int32{
 	28, // 18: service.Users.users:type_name -> service.User
 	28, // 19: service.UsersChunk.users:type_name -> service.User
 	31, // 20: service.RoutingRulesResponse.rules:type_name -> service.RoutingRule
-	41, // 21: service.TestRouteRequest.attributes:type_name -> service.TestRouteRequest.AttributesEntry
-	4,  // 22: service.NodeService.Start:input_type -> service.Backend
-	2,  // 23: service.NodeService.Stop:input_type -> service.Empty
-	2,  // 24: service.NodeService.GetBaseInfo:input_type -> service.Empty
-	2,  // 25: service.NodeService.GetLogs:input_type -> service.Empty
-	2,  // 26: service.NodeService.GetSystemStats:input_type -> service.Empty
-	2,  // 27: service.NodeService.GetBackendStats:input_type -> service.Empty
-	8,  // 28: service.NodeService.GetStats:input_type -> service.StatRequest
-	12, // 29: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
-	8,  // 30: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
-	8,  // 31: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
-	28, // 32: service.NodeService.SyncUser:input_type -> service.User
-	29, // 33: service.NodeService.SyncUsers:input_type -> service.Users
-	30, // 34: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
-	2,  // 35: service.NodeService.ListRoutingRules:input_type -> service.Empty
-	33, // 36: service.NodeService.GetBalancerInfo:input_type -> service.BalancerInfoRequest
-	35, // 37: service.NodeService.TestRoute:input_type -> service.TestRouteRequest
-	37, // 38: service.NodeService.AddRoutingRule:input_type -> service.AddRoutingRuleRequest
-	38, // 39: service.NodeService.RemoveRoutingRule:input_type -> service.RemoveRoutingRuleRequest
-	39, // 40: service.NodeService.OverrideBalancerTarget:input_type -> service.OverrideBalancerTargetRequest
-	3,  // 41: service.NodeService.Start:output_type -> service.BaseInfoResponse
-	2,  // 42: service.NodeService.Stop:output_type -> service.Empty
-	3,  // 43: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
-	5,  // 44: service.NodeService.GetLogs:output_type -> service.Log
-	15, // 45: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
-	14, // 46: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
-	7,  // 47: service.NodeService.GetStats:output_type -> service.StatResponse
-	13, // 48: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
-	9,  // 49: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
-	10, // 50: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
-	2,  // 51: service.NodeService.SyncUser:output_type -> service.Empty
-	2,  // 52: service.NodeService.SyncUsers:output_type -> service.Empty
-	2,  // 53: service.NodeService.SyncUsersChunked:output_type -> service.Empty
-	32, // 54: service.NodeService.ListRoutingRules:output_type -> service.RoutingRulesResponse
-	34, // 55: service.NodeService.GetBalancerInfo:output_type -> service.BalancerInfoResponse
-	36, // 56: service.NodeService.TestRoute:output_type -> service.RouteResult
-	2,  // 57: service.NodeService.AddRoutingRule:output_type -> service.Empty
-	2,  // 58: service.NodeService.RemoveRoutingRule:output_type -> service.Empty
-	2,  // 59: service.NodeService.OverrideBalancerTarget:output_type -> service.Empty
-	41, // [41:60] is the sub-list for method output_type
-	22, // [22:41] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	43, // 21: service.TestRouteRequest.attributes:type_name -> service.TestRouteRequest.AttributesEntry
+	0,  // 22: service.RemoveBackendRequest.type:type_name -> service.BackendType
+	0,  // 23: service.BackendList.types:type_name -> service.BackendType
+	4,  // 24: service.NodeService.Start:input_type -> service.Backend
+	2,  // 25: service.NodeService.Stop:input_type -> service.Empty
+	4,  // 26: service.NodeService.AddBackend:input_type -> service.Backend
+	38, // 27: service.NodeService.RemoveBackend:input_type -> service.RemoveBackendRequest
+	2,  // 28: service.NodeService.ListBackends:input_type -> service.Empty
+	2,  // 29: service.NodeService.GetBaseInfo:input_type -> service.Empty
+	2,  // 30: service.NodeService.GetLogs:input_type -> service.Empty
+	2,  // 31: service.NodeService.GetSystemStats:input_type -> service.Empty
+	2,  // 32: service.NodeService.GetBackendStats:input_type -> service.Empty
+	8,  // 33: service.NodeService.GetStats:input_type -> service.StatRequest
+	12, // 34: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
+	8,  // 35: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
+	8,  // 36: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
+	28, // 37: service.NodeService.SyncUser:input_type -> service.User
+	29, // 38: service.NodeService.SyncUsers:input_type -> service.Users
+	30, // 39: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
+	2,  // 40: service.NodeService.ListRoutingRules:input_type -> service.Empty
+	33, // 41: service.NodeService.GetBalancerInfo:input_type -> service.BalancerInfoRequest
+	35, // 42: service.NodeService.TestRoute:input_type -> service.TestRouteRequest
+	37, // 43: service.NodeService.AddRoutingRule:input_type -> service.AddRoutingRuleRequest
+	40, // 44: service.NodeService.RemoveRoutingRule:input_type -> service.RemoveRoutingRuleRequest
+	41, // 45: service.NodeService.OverrideBalancerTarget:input_type -> service.OverrideBalancerTargetRequest
+	3,  // 46: service.NodeService.Start:output_type -> service.BaseInfoResponse
+	2,  // 47: service.NodeService.Stop:output_type -> service.Empty
+	2,  // 48: service.NodeService.AddBackend:output_type -> service.Empty
+	2,  // 49: service.NodeService.RemoveBackend:output_type -> service.Empty
+	39, // 50: service.NodeService.ListBackends:output_type -> service.BackendList
+	3,  // 51: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
+	5,  // 52: service.NodeService.GetLogs:output_type -> service.Log
+	15, // 53: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
+	14, // 54: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
+	7,  // 55: service.NodeService.GetStats:output_type -> service.StatResponse
+	13, // 56: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
+	9,  // 57: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
+	10, // 58: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
+	2,  // 59: service.NodeService.SyncUser:output_type -> service.Empty
+	2,  // 60: service.NodeService.SyncUsers:output_type -> service.Empty
+	2,  // 61: service.NodeService.SyncUsersChunked:output_type -> service.Empty
+	32, // 62: service.NodeService.ListRoutingRules:output_type -> service.RoutingRulesResponse
+	34, // 63: service.NodeService.GetBalancerInfo:output_type -> service.BalancerInfoResponse
+	36, // 64: service.NodeService.TestRoute:output_type -> service.RouteResult
+	2,  // 65: service.NodeService.AddRoutingRule:output_type -> service.Empty
+	2,  // 66: service.NodeService.RemoveRoutingRule:output_type -> service.Empty
+	2,  // 67: service.NodeService.OverrideBalancerTarget:output_type -> service.Empty
+	46, // [46:68] is the sub-list for method output_type
+	24, // [24:46] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_common_service_proto_init() }
@@ -2762,7 +2868,7 @@ func file_common_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_service_proto_rawDesc), len(file_common_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

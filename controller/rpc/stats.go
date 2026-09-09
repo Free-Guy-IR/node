@@ -18,12 +18,11 @@ func (s *Service) backend() (backend.Backend, error) {
 }
 
 func (s *Service) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
-	backend, err := s.backend()
-	if err != nil {
+	if _, err := s.backend(); err != nil {
 		return nil, err
 	}
 
-	stats, err := backend.GetStats(ctx, request)
+	stats, err := s.StatsAll(ctx, request)
 	if err != nil {
 		err = common.InterceptNotFound(err)
 		return nil, err
@@ -32,12 +31,11 @@ func (s *Service) GetStats(ctx context.Context, request *common.StatRequest) (*c
 }
 
 func (s *Service) GetUserOnlineStats(ctx context.Context, request *common.StatRequest) (*common.OnlineStatResponse, error) {
-	backend, err := s.backend()
-	if err != nil {
+	if _, err := s.backend(); err != nil {
 		return nil, err
 	}
 
-	stats, err := backend.GetUserOnlineStats(ctx, request.GetName())
+	stats, err := s.UserOnlineStatsAll(ctx, request.GetName())
 	if err != nil {
 		err = common.InterceptNotFound(err)
 		return nil, err
@@ -46,12 +44,11 @@ func (s *Service) GetUserOnlineStats(ctx context.Context, request *common.StatRe
 }
 
 func (s *Service) GetUserOnlineIpListStats(ctx context.Context, request *common.StatRequest) (*common.StatsOnlineIpListResponse, error) {
-	backend, err := s.backend()
-	if err != nil {
+	if _, err := s.backend(); err != nil {
 		return nil, err
 	}
 
-	stats, err := backend.GetUserOnlineIpListStats(ctx, request.GetName())
+	stats, err := s.UserOnlineIpListStatsAll(ctx, request.GetName())
 	if err != nil {
 		err = common.InterceptNotFound(err)
 		return nil, err

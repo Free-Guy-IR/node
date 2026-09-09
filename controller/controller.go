@@ -22,7 +22,7 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.6.4"
+const NodeVersion = "0.6.5"
 
 var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
 
@@ -32,6 +32,8 @@ type Service interface {
 
 type Controller struct {
 	backend     backend.Backend
+	primaryType common.BackendType
+	extras      []extraBackend
 	cfg         *config.Config
 	apiPort     int
 	metricPort  int
@@ -90,6 +92,8 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 func (c *Controller) Disconnect() {
 	c.cancelFunc()
 
+	c.shutdownExtras()
+
 	c.mu.Lock()
 	backend := c.backend
 	c.mu.Unlock()
@@ -104,6 +108,7 @@ func (c *Controller) Disconnect() {
 	defer c.mu.Unlock()
 
 	c.backend = nil
+	c.primaryType = common.BackendType_XRAY
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
 	c.clientIP = ""
@@ -135,111 +140,71 @@ func (c *Controller) NewRequest() {
 	c.lastRequest = time.Now()
 }
 
-func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) error {
+func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPort, metricPort int) (backend.Backend, error) {
+	switch b.GetType() {
+	case common.BackendType_XRAY:
+		config, err := xray.NewConfig(b.GetConfig(), b.GetExcludeInbounds())
+		if err != nil {
+			return nil, err
+		}
+		return xray.New(ctx, config, b.GetUsers(), apiPort, metricPort, c.cfg)
+
+	case common.BackendType_WIREGUARD:
+		config, err := wireguard.NewConfig(b.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+		return wireguard.New(c.cfg, config, b.GetUsers())
+
+	case common.BackendType_SING_BOX:
+		config, err := singbox.NewConfig(b.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+		return singbox.New(ctx, config, b.GetUsers(), apiPort, c.cfg)
+
+	case common.BackendType_OPEN_VPN:
+		config, err := openvpn.NewConfig(b.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+		return openvpn.New(ctx, config, b.GetUsers(), c.cfg)
+
+	case common.BackendType_MTPROTO:
+		config, err := mtproto.NewConfig(b.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+		return mtproto.New(ctx, config, b.GetUsers(), c.cfg)
+
+	case common.BackendType_L2TP:
+		if err := l2tp.CheckDeps(); err != nil {
+			return nil, err
+		}
+		config, err := l2tp.NewConfig(b.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+		return l2tp.New(ctx, config, b.GetUsers(), c.cfg)
+
+	default:
+		return nil, errors.New("invalid backend type")
+	}
+}
+
+func (c *Controller) StartBackend(ctx context.Context, b *common.Backend) error {
+	c.shutdownExtras()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	switch backend.GetType() {
-	case common.BackendType_XRAY:
-		config, err := xray.NewConfig(backend.GetConfig(), backend.GetExcludeInbounds())
-		if err != nil {
-			return err
-		}
-
-		newBackend, err := xray.New(
-			ctx,
-			config,
-			backend.GetUsers(),
-			c.apiPort,
-			c.metricPort,
-			c.cfg,
-		)
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-
-	case common.BackendType_WIREGUARD:
-		config, err := wireguard.NewConfig(backend.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err := wireguard.New(c.cfg, config, backend.GetUsers())
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-
-	case common.BackendType_SING_BOX:
-		config, err := singbox.NewConfig(backend.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err := singbox.New(
-			ctx,
-			config,
-			backend.GetUsers(),
-			c.apiPort,
-			c.cfg,
-		)
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-
-	case common.BackendType_OPEN_VPN:
-		config, err := openvpn.NewConfig(backend.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err := openvpn.New(
-			ctx,
-			config,
-			backend.GetUsers(),
-			c.cfg,
-		)
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-
-	case common.BackendType_MTPROTO:
-		config, err := mtproto.NewConfig(backend.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err := mtproto.New(
-			ctx,
-			config,
-			backend.GetUsers(),
-			c.cfg,
-		)
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-	case common.BackendType_L2TP:
-		if err := l2tp.CheckDeps(); err != nil {
-			return err
-		}
-		config, err := l2tp.NewConfig(backend.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err := l2tp.New(
-			ctx,
-			config,
-			backend.GetUsers(),
-			c.cfg,
-		)
-		if err != nil {
-			return err
-		}
-		c.backend = newBackend
-	default:
-		return errors.New("invalid backend type")
+	newBackend, err := c.buildBackend(ctx, b, c.apiPort, c.metricPort)
+	if err != nil {
+		return err
 	}
 
+	c.backend = newBackend
+	c.primaryType = b.GetType()
 	return nil
 }
 

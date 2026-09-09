@@ -21,6 +21,9 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	NodeService_Start_FullMethodName                    = "/service.NodeService/Start"
 	NodeService_Stop_FullMethodName                     = "/service.NodeService/Stop"
+	NodeService_AddBackend_FullMethodName               = "/service.NodeService/AddBackend"
+	NodeService_RemoveBackend_FullMethodName            = "/service.NodeService/RemoveBackend"
+	NodeService_ListBackends_FullMethodName             = "/service.NodeService/ListBackends"
 	NodeService_GetBaseInfo_FullMethodName              = "/service.NodeService/GetBaseInfo"
 	NodeService_GetLogs_FullMethodName                  = "/service.NodeService/GetLogs"
 	NodeService_GetSystemStats_FullMethodName           = "/service.NodeService/GetSystemStats"
@@ -48,6 +51,9 @@ const (
 type NodeServiceClient interface {
 	Start(ctx context.Context, in *Backend, opts ...grpc.CallOption) (*BaseInfoResponse, error)
 	Stop(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
+	AddBackend(ctx context.Context, in *Backend, opts ...grpc.CallOption) (*Empty, error)
+	RemoveBackend(ctx context.Context, in *RemoveBackendRequest, opts ...grpc.CallOption) (*Empty, error)
+	ListBackends(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*BackendList, error)
 	GetBaseInfo(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*BaseInfoResponse, error)
 	GetLogs(ctx context.Context, in *Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Log], error)
 	GetSystemStats(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*SystemStatsResponse, error)
@@ -89,6 +95,36 @@ func (c *nodeServiceClient) Stop(ctx context.Context, in *Empty, opts ...grpc.Ca
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, NodeService_Stop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) AddBackend(ctx context.Context, in *Backend, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, NodeService_AddBackend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) RemoveBackend(ctx context.Context, in *RemoveBackendRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, NodeService_RemoveBackend_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeServiceClient) ListBackends(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*BackendList, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BackendList)
+	err := c.cc.Invoke(ctx, NodeService_ListBackends_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +324,9 @@ func (c *nodeServiceClient) OverrideBalancerTarget(ctx context.Context, in *Over
 type NodeServiceServer interface {
 	Start(context.Context, *Backend) (*BaseInfoResponse, error)
 	Stop(context.Context, *Empty) (*Empty, error)
+	AddBackend(context.Context, *Backend) (*Empty, error)
+	RemoveBackend(context.Context, *RemoveBackendRequest) (*Empty, error)
+	ListBackends(context.Context, *Empty) (*BackendList, error)
 	GetBaseInfo(context.Context, *Empty) (*BaseInfoResponse, error)
 	GetLogs(*Empty, grpc.ServerStreamingServer[Log]) error
 	GetSystemStats(context.Context, *Empty) (*SystemStatsResponse, error)
@@ -320,6 +359,15 @@ func (UnimplementedNodeServiceServer) Start(context.Context, *Backend) (*BaseInf
 }
 func (UnimplementedNodeServiceServer) Stop(context.Context, *Empty) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Stop not implemented")
+}
+func (UnimplementedNodeServiceServer) AddBackend(context.Context, *Backend) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method AddBackend not implemented")
+}
+func (UnimplementedNodeServiceServer) RemoveBackend(context.Context, *RemoveBackendRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveBackend not implemented")
+}
+func (UnimplementedNodeServiceServer) ListBackends(context.Context, *Empty) (*BackendList, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListBackends not implemented")
 }
 func (UnimplementedNodeServiceServer) GetBaseInfo(context.Context, *Empty) (*BaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetBaseInfo not implemented")
@@ -425,6 +473,60 @@ func _NodeService_Stop_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeServiceServer).Stop(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_AddBackend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Backend)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).AddBackend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_AddBackend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).AddBackend(ctx, req.(*Backend))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_RemoveBackend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveBackendRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).RemoveBackend(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_RemoveBackend_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).RemoveBackend(ctx, req.(*RemoveBackendRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeService_ListBackends_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServiceServer).ListBackends(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeService_ListBackends_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServiceServer).ListBackends(ctx, req.(*Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -720,6 +822,18 @@ var NodeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Stop",
 			Handler:    _NodeService_Stop_Handler,
+		},
+		{
+			MethodName: "AddBackend",
+			Handler:    _NodeService_AddBackend_Handler,
+		},
+		{
+			MethodName: "RemoveBackend",
+			Handler:    _NodeService_RemoveBackend_Handler,
+		},
+		{
+			MethodName: "ListBackends",
+			Handler:    _NodeService_ListBackends_Handler,
 		},
 		{
 			MethodName: "GetBaseInfo",

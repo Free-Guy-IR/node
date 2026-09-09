@@ -42,6 +42,15 @@ func mtprotoCredential(user *common.User) (username string, keyBytes [mtglib.Sec
 	return username, keyBytes, true
 }
 
+func (b *Backend) wantsUser(user *common.User) bool {
+	for _, tag := range user.GetInbounds() {
+		if _, ok := b.instances[tag]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // applyInitialUsers seeds Backend.secretsByID before any mtglib.Proxy is
 // constructed, so New's first ProxyOpts.Secrets build already reflects every
 // user provided at startup.
@@ -50,7 +59,7 @@ func (b *Backend) applyInitialUsers(users []*common.User) {
 
 	for _, user := range users {
 		username, keyBytes, ok := mtprotoCredential(user)
-		if !ok {
+		if !ok || !b.wantsUser(user) {
 			continue
 		}
 		entries[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes}
@@ -130,6 +139,10 @@ func (b *Backend) updateUsers(users []*common.User) {
 		if !ok {
 			continue
 		}
+		if !b.wantsUser(user) {
+			delete(b.secretsByID, username)
+			continue
+		}
 		b.secretsByID[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes}
 	}
 	b.mu.Unlock()
@@ -155,7 +168,7 @@ func (b *Backend) removeUsers(users []*common.User) {
 // SyncUser applies a single user's MTProto membership across all instances,
 // live.
 func (b *Backend) SyncUser(_ context.Context, user *common.User) error {
-	if _, _, ok := mtprotoCredential(user); !ok {
+	if _, _, ok := mtprotoCredential(user); !ok || !b.wantsUser(user) {
 		b.removeUsers([]*common.User{user})
 		return nil
 	}

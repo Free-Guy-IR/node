@@ -38,6 +38,9 @@ func (s *Service) setRouter() {
 		private.Use(s.checkBackendMiddleware)
 
 		private.Put("/stop", s.Stop)
+		private.Post("/backend", s.AddBackend)
+		private.Delete("/backend", s.RemoveBackend)
+		private.Get("/backends", s.ListBackends)
 		private.Get("/logs", s.GetLogs)
 		// stats api
 		private.Route("/stats", func(statsGroup chi.Router) {
