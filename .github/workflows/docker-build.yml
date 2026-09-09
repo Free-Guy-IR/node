@@ -9,6 +9,10 @@ on:
         description: "Image tag to publish (defaults to the branch/tag name)"
         required: false
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   # The fork publishes only to its own GHCR namespace. Upstream hardcodes

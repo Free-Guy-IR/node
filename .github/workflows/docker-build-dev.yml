@@ -4,6 +4,10 @@ on:
   push:
     branches: ['*']
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   IMAGE: free-guy-ir/node:${{ github.ref_name }}
