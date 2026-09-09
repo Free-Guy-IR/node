@@ -14,10 +14,7 @@
     </a>
 </p>
 
-> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/PasarGuard/node), extended with sing-box (Hysteria2), OpenVPN, MTProto (Telegram proxy), and L2TP/IPsec backend support.
-
-# Documentation
-You can find a full guide in docs https://docs.pasarguard.org/en/node/
+> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/Free-Guy-IR/node), extended with sing-box (Hysteria2), OpenVPN, MTProto (Telegram proxy), and L2TP/IPsec backend support.
 
 # One-Click Installation (Recommended)
 The easiest way to install PasarGuard Node is using our automated installation script:
@@ -71,23 +68,20 @@ For a manual (non-installer) deployment, add the override file to the compose co
 docker compose -f docker-compose.yml -f docker-compose.l2tp.yml up -d
 ```
 
-# Donation
-You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
-
 # Contributors
 
 We ❤️‍🔥 contributors! If you'd like to contribute, please check out our [Contributing Guidelines](CONTRIBUTING.md) and feel free to submit a pull request or open an issue. We also welcome you to join our [Telegram](https://t.me/Pasar_Guard) group for either support or contributing guidance.
 
-Check [open issues](https://github.com/PasarGuard/node/issues) to help the progress of this project.
+Check [open issues](https://github.com/Free-Guy-IR/node/issues) to help the progress of this project.
 
 ## Stargazers over time
-[![Stargazers over time](https://starchart.cc/PasarGuard/node.svg?variant=adaptive)](https://starchart.cc/PasarGuard/node)
+[![Stargazers over time](https://starchart.cc/Free-Guy-IR/node.svg?variant=adaptive)](https://starchart.cc/Free-Guy-IR/node)
                     
 <p align="center">
 Thanks to the all contributors who have helped improve PasarGuard Node:
 </p>
 <p align="center">
-<a href="https://github.com/PasarGuard/node/graphs/contributors">
+<a href="https://github.com/Free-Guy-IR/node/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=PasarGuard/node" />
 </a>
 </p>
