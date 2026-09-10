@@ -167,6 +167,10 @@ test-integration:
 test-integration-full:
 	GOTOOLCHAIN=auto TEST_INTEGRATION=true go test ./... -v -p 1
 	GOTOOLCHAIN=auto go test -tags=integration -v -p 1 ./backend/wireguard
+	$(MAKE) test-integration-mtproto
+
+test-integration-mtproto:
+	MTPROTO_SMOKE_FRONTING=1 GOTOOLCHAIN=auto TEST_INTEGRATION=false go test -count=1 -v -p 1 -run TestLiveSmoke_MTProto ./backend/mtproto
 
 test-integration-wireguard:
 	GOTOOLCHAIN=auto go test -tags=integration -v -p 1 ./backend/wireguard
