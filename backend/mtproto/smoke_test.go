@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -72,23 +73,27 @@ func TestLiveSmoke_MTProtoStartsAndDomainFronts(t *testing.T) {
 	// proxied to the real fronting domain - exercising the full real-network
 	// chain (Network dialer, IPAllowlist, listener, EventStream wiring)
 	// without needing a real MTProto client.
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint: gosec
-		},
-		Timeout: 10 * time.Second,
-	}
+	if os.Getenv("MTPROTO_SMOKE_FRONTING") == "" {
+		t.Log("skipping the domain-fronting leg; it reaches httpbin.org over the real internet and is timing dependent - set MTPROTO_SMOKE_FRONTING=1 to run it")
+	} else {
+		client := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint: gosec
+			},
+			Timeout: 10 * time.Second,
+		}
 
-	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/get", port)) //nolint: noctx
-	if err != nil {
-		t.Fatalf("domain-fronted request failed: %v", err)
-	}
-	defer resp.Body.Close()
+		resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/get", port)) //nolint: noctx
+		if err != nil {
+			t.Fatalf("domain-fronted request failed: %v", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 from domain-fronted request, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 from domain-fronted request, got %d", resp.StatusCode)
+		}
+		t.Log("unauthenticated connection was correctly domain-fronted to a real site")
 	}
-	t.Log("unauthenticated connection was correctly domain-fronted to a real site")
 
 	// Live user sync must not error or restart anything.
 	testSecret := make([]byte, 16)
