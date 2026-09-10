@@ -2,7 +2,8 @@ package mtproto
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"github.com/pasarguard/node/backend"
 	"runtime"
 	"strings"
 	"sync"
@@ -230,7 +231,7 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	case common.StatType_Outbound, common.StatType_Outbounds:
 		return b.outboundStat(request.GetReset_()), nil
 	default:
-		return nil, errors.New("unsupported stat type")
+		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
 }
 

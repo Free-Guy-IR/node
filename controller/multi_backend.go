@@ -206,10 +206,16 @@ func joinBackendErrors(results []backendResult[any]) []error {
 }
 
 func logPartialFailure(operation string, delivered int, errs []error) {
-	if len(errs) == 0 || delivered == 0 {
+	unexpected := make([]error, 0, len(errs))
+	for _, err := range errs {
+		if !errors.Is(err, backend.ErrStatTypeNotSupported) {
+			unexpected = append(unexpected, err)
+		}
+	}
+	if len(unexpected) == 0 || delivered == 0 {
 		return
 	}
-	log.Printf("%s: %d backend(s) failed while %d result(s) were delivered: %v", operation, len(errs), delivered, errors.Join(errs...))
+	log.Printf("%s: %d backend(s) failed while %d result(s) were delivered: %v", operation, len(unexpected), delivered, errors.Join(unexpected...))
 }
 
 func (c *Controller) StatsAll(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {

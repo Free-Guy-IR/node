@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/pasarguard/node/backend"
@@ -272,5 +273,36 @@ func TestShutdownExtrasStopsEveryExtraBackend(t *testing.T) {
 	}
 	if len(c.extras) != 0 {
 		t.Fatalf("extras must be cleared, got %d", len(c.extras))
+	}
+}
+
+func TestUnsupportedStatTypeIsNotLoggedAsAFailure(t *testing.T) {
+	notSupported := fmt.Errorf("%w: inbound stats for wireguard", backend.ErrStatTypeNotSupported)
+	realFailure := errors.New("connection refused")
+
+	results := []backendResult[any]{
+		{backendType: common.BackendType_XRAY, value: &common.StatResponse{}},
+		{backendType: common.BackendType_WIREGUARD, err: notSupported},
+	}
+	errs := joinBackendErrors(results)
+	if len(errs) != 1 {
+		t.Fatalf("joinBackendErrors must still surface the error to callers, got %v", errs)
+	}
+	if !errors.Is(errs[0], backend.ErrStatTypeNotSupported) {
+		t.Fatalf("the wrapped sentinel must survive joinBackendErrors, got %v", errs[0])
+	}
+
+	mixed := joinBackendErrors([]backendResult[any]{
+		{backendType: common.BackendType_WIREGUARD, err: notSupported},
+		{backendType: common.BackendType_SING_BOX, err: realFailure},
+	})
+	unexpected := 0
+	for _, err := range mixed {
+		if !errors.Is(err, backend.ErrStatTypeNotSupported) {
+			unexpected++
+		}
+	}
+	if unexpected != 1 {
+		t.Fatalf("exactly one of the two errors is a real failure, counted %d", unexpected)
 	}
 }

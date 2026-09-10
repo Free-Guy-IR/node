@@ -2,7 +2,8 @@ package l2tp
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"github.com/pasarguard/node/backend"
 	"os"
 	"runtime"
 	"time"
@@ -162,7 +163,7 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
 		}, nil
 	default:
-		return nil, errors.New("unsupported stat type for l2tp")
+		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
 }
 

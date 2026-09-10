@@ -2,9 +2,12 @@ package backend
 
 import (
 	"context"
+	"errors"
 
 	"github.com/pasarguard/node/common"
 )
+
+var ErrStatTypeNotSupported = errors.New("stat type not supported by this backend")
 
 type Backend interface {
 	Started() bool

@@ -2,8 +2,8 @@ package wireguard
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"maps"
 	"runtime"
 	"time"
@@ -80,9 +80,9 @@ func (wg *WireGuard) GetStats(ctx context.Context, request *common.StatRequest) 
 		return wg.handleInterfaceOutboundStats(request.GetName(), request.GetReset_())
 
 	case common.StatType_Inbound, common.StatType_Inbounds:
-		return nil, errors.New("inbound stats not applicable for wireguard")
+		return nil, fmt.Errorf("%w: inbound stats for wireguard", backend.ErrStatTypeNotSupported)
 	default:
-		return nil, errors.New("unsupported stat type")
+		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
 }
 
