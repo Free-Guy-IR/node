@@ -33,5 +33,12 @@ func ReapProbe(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	pid := cmd.Process.Pid
+	if pid <= 1 {
+		return
+	}
+	if selfPgid, err := syscall.Getpgid(os.Getpid()); err == nil && pid != selfPgid {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

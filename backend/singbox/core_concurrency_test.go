@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/pasarguard/node/backend"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -391,10 +392,50 @@ func reapMarkerChild(t *testing.T, marker string) {
 		if err != nil {
 			return
 		}
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 1 {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || pid <= 1 {
+			return
+		}
+		if pgid, err := syscall.Getpgid(pid); err == nil && pgid > 1 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+func TestReapProbeNeverKillsItsOwnProcessGroup(t *testing.T) {
+	marker := make(chan int, 1)
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30 & echo started; wait")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper without ConfigureProbe: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case pid := <-marker:
+			if pid > 1 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		default:
 		}
 	})
+
+	self := os.Getpid()
+	selfPgid, err := syscall.Getpgid(self)
+	if err != nil {
+		t.Fatalf("getpgid(self): %v", err)
+	}
+
+	backend.ReapProbe(cmd)
+
+	if err := syscall.Kill(self, 0); err != nil {
+		t.Fatalf("ReapProbe signalled our own process: %v", err)
+	}
+	if cur, err := syscall.Getpgid(self); err != nil || cur != selfPgid {
+		t.Fatalf("our process group changed or died after ReapProbe (was %d now %d err %v)", selfPgid, cur, err)
+	}
 }
 
 func assertProbeReapsGrandchild(t *testing.T, wrapperBody string) {
