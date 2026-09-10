@@ -28,17 +28,3 @@ func ConfigureProbe(cmd *exec.Cmd) {
 		return nil
 	}
 }
-
-func ReapProbe(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	pid := cmd.Process.Pid
-	if pid <= 1 {
-		return
-	}
-	if selfPgid, err := syscall.Getpgid(os.Getpid()); err == nil && pid != selfPgid {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-}

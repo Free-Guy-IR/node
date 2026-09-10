@@ -30,7 +30,6 @@ func DetectVersion() string {
 
 	cmd := exec.CommandContext(ctx, xl2tpdBinary, "-v")
 	backend.ConfigureProbe(cmd)
-	defer backend.ReapProbe(cmd)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {

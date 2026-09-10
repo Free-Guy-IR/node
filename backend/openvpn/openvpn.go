@@ -170,7 +170,6 @@ func detectVersion(executablePath string) string {
 
 	cmd := exec.CommandContext(ctx, executablePath, "--version")
 	backend.ConfigureProbe(cmd)
-	defer backend.ReapProbe(cmd)
 
 	out, _ := cmd.Output()
 	line, _, _ := strings.Cut(string(out), "\n")
