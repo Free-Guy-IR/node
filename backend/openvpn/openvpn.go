@@ -158,11 +158,16 @@ func assignTunIndices(instances []*InstanceConfig) map[string]int {
 	return idx
 }
 
+var versionProbeTimeout = 10 * time.Second
+
 // detectVersion best-effort parses "openvpn --version" output. Note openvpn
 // exits non-zero for --version, so the error from Output() is intentionally
 // ignored - stdout is still populated either way.
 func detectVersion(executablePath string) string {
-	out, _ := exec.Command(executablePath, "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+	defer cancel()
+
+	out, _ := exec.CommandContext(ctx, executablePath, "--version").Output()
 	line, _, _ := strings.Cut(string(out), "\n")
 	line = strings.TrimSpace(line)
 	if line == "" {

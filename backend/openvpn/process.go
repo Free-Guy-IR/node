@@ -103,7 +103,15 @@ func (p *instanceProcess) isStartedLocked() bool {
 	if p.process == nil || p.process.Process == nil {
 		return false
 	}
-	return p.process.ProcessState == nil
+	if p.waitDone == nil {
+		return true
+	}
+	select {
+	case <-p.waitDone:
+		return false
+	default:
+		return true
+	}
 }
 
 func (p *instanceProcess) Started() bool {
