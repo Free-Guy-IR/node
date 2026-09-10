@@ -30,15 +30,9 @@ var multiInstanceBackends = map[common.BackendType]bool{
 
 var ErrBackendTypeNotShareable = errors.New("this backend type cannot run alongside another backend on the same node")
 
-func (c *Controller) AttachBackend(ctx context.Context, b *common.Backend) error {
-	backendType := b.GetType()
-	if !multiInstanceBackends[backendType] {
-		return fmt.Errorf("%w: %s", ErrBackendTypeNotShareable, backendType)
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Controller) attachPrecheck(backendType common.BackendType) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.backend == nil {
 		return errors.New("no primary backend is running on this node")
 	}
@@ -50,13 +44,45 @@ func (c *Controller) AttachBackend(ctx context.Context, b *common.Backend) error
 			return fmt.Errorf("a %s backend is already running on this node", backendType)
 		}
 	}
+	return nil
+}
+
+func (c *Controller) AttachBackend(ctx context.Context, b *common.Backend) error {
+	backendType := b.GetType()
+	if !multiInstanceBackends[backendType] {
+		return fmt.Errorf("%w: %s", ErrBackendTypeNotShareable, backendType)
+	}
+
+	if err := c.attachPrecheck(backendType); err != nil {
+		return err
+	}
 
 	newBackend, err := c.buildBackend(ctx, b, netutil.FindFreePort(), netutil.FindFreePort())
 	if err != nil {
 		return err
 	}
 
+	c.mu.Lock()
+	if err := func() error {
+		if c.backend == nil {
+			return errors.New("no primary backend is running on this node")
+		}
+		if c.primaryType == backendType {
+			return fmt.Errorf("a %s backend is already running as this node primary backend", backendType)
+		}
+		for _, extra := range c.extras {
+			if extra.backendType == backendType {
+				return fmt.Errorf("a %s backend is already running on this node", backendType)
+			}
+		}
+		return nil
+	}(); err != nil {
+		c.mu.Unlock()
+		newBackend.Shutdown()
+		return err
+	}
 	c.extras = append(c.extras, extraBackend{backendType: backendType, backend: newBackend})
+	c.mu.Unlock()
 	return nil
 }
 
@@ -227,20 +253,22 @@ func (c *Controller) StatsAll(ctx context.Context, request *common.StatRequest) 
 	}
 
 	merged := &common.StatResponse{}
+	delivered := 0
 	for _, result := range results {
 		if result.err != nil {
 			continue
 		}
 		if resp, ok := result.value.(*common.StatResponse); ok && resp != nil {
+			delivered++
 			merged.Stats = append(merged.Stats, resp.GetStats()...)
 		}
 	}
 
 	errs := joinBackendErrors(results)
-	if len(merged.GetStats()) == 0 && len(errs) > 0 {
+	if delivered == 0 && len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	logPartialFailure("stats", len(merged.GetStats()), errs)
+	logPartialFailure("stats", delivered, errs)
 	return merged, nil
 }
 

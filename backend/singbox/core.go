@@ -91,7 +91,7 @@ func (c *Core) stageConfigFile(config []byte) (string, error) {
 		os.Remove(name)
 		return "", fmt.Errorf("failed to close temporary config file: %w", err)
 	}
-	if err := os.Chmod(name, 0644); err != nil {
+	if err := os.Chmod(name, 0600); err != nil {
 		os.Remove(name)
 		return "", fmt.Errorf("failed to set config file mode: %w", err)
 	}
