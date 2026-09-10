@@ -28,3 +28,10 @@ func ConfigureProbe(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+func ReapProbe(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}

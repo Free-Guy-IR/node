@@ -127,6 +127,7 @@ func (c *Core) refreshVersion() string {
 
 	cmd := exec.CommandContext(ctx, c.executablePath, "version")
 	backend.ConfigureProbe(cmd)
+	defer backend.ReapProbe(cmd)
 
 	out, err := cmd.Output()
 	if err != nil {

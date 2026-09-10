@@ -101,6 +101,7 @@ func (c *Core) refreshVersion() (string, error) {
 
 	cmd := exec.CommandContext(ctx, c.executablePath, "version")
 	backend.ConfigureProbe(cmd)
+	defer backend.ReapProbe(cmd)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()

@@ -77,6 +77,7 @@ func getWireGuardVersion() string {
 
 	cmd := exec.CommandContext(ctx, "wg", "--version")
 	backend.ConfigureProbe(cmd)
+	defer backend.ReapProbe(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("failed to get wireguard version: %v", err)

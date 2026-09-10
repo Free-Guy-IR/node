@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -383,7 +384,21 @@ func TestConcurrentStartsLaunchWithTheWinnersConfig(t *testing.T) {
 	}
 }
 
-func TestVersionProbeSurvivesABinaryThatForksAndHoldsStdout(t *testing.T) {
+func reapMarkerChild(t *testing.T, marker string) {
+	t.Helper()
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(marker)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 1 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+}
+
+func assertProbeReapsGrandchild(t *testing.T, wrapperBody string) {
+	t.Helper()
 	original := versionProbeTimeout
 	versionProbeTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { versionProbeTimeout = original })
@@ -391,10 +406,11 @@ func TestVersionProbeSurvivesABinaryThatForksAndHoldsStdout(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "stub-sing-box")
 	marker := filepath.Join(dir, "grandchild.pid")
-	script := "#!/bin/sh\nsleep 600 &\necho $! > " + marker + "\nwait\n"
+	script := "#!/bin/sh\nsleep 600 &\necho $! > " + marker + "\n" + wrapperBody + "\n"
 	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
 		t.Fatalf("write stub binary: %v", err)
 	}
+	reapMarkerChild(t, marker)
 
 	done := make(chan struct{})
 	start := time.Now()
@@ -431,4 +447,12 @@ func TestVersionProbeSurvivesABinaryThatForksAndHoldsStdout(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func TestVersionProbeSurvivesABinaryThatForksAndHoldsStdout(t *testing.T) {
+	assertProbeReapsGrandchild(t, "wait")
+}
+
+func TestVersionProbeReapsAGrandchildWhenTheWrapperExitsEarly(t *testing.T) {
+	assertProbeReapsGrandchild(t, "exit 0")
 }
