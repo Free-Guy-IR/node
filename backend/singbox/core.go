@@ -38,6 +38,7 @@ type Core struct {
 	cancelFunc      context.CancelFunc
 	mu              sync.Mutex
 	state           atomic.Pointer[coreState]
+	processStart    uint64
 	startupFailureM sync.RWMutex
 }
 
@@ -66,11 +67,50 @@ func (c *Core) configFilePath() string {
 	return filepath.Join(c.configDir, "singbox.json")
 }
 
-func (c *Core) writeConfigFile(config []byte) error {
+func (c *Core) stageConfigFile(config []byte) (string, error) {
 	if err := os.MkdirAll(c.configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
+		return "", fmt.Errorf("failed to create config directory: %w", err)
 	}
-	return os.WriteFile(c.configFilePath(), config, 0644)
+	tmp, err := os.CreateTemp(c.configDir, "singbox-*.json")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temporary config file: %w", err)
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(config); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return "", fmt.Errorf("failed to write temporary config file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return "", fmt.Errorf("failed to flush temporary config file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return "", fmt.Errorf("failed to close temporary config file: %w", err)
+	}
+	if err := os.Chmod(name, 0644); err != nil {
+		os.Remove(name)
+		return "", fmt.Errorf("failed to set config file mode: %w", err)
+	}
+	return name, nil
+}
+
+func (c *Core) commitConfigFileLocked(staged string) error {
+	return os.Rename(staged, c.configFilePath())
+}
+
+func (c *Core) writeConfigFile(config []byte) error {
+	staged, err := c.stageConfigFile(config)
+	if err != nil {
+		return err
+	}
+	if err := c.commitConfigFileLocked(staged); err != nil {
+		os.Remove(staged)
+		return err
+	}
+	return nil
 }
 
 var versionProbeTimeout = 10 * time.Second
@@ -149,9 +189,11 @@ func (c *Core) Start(sbConfig *Config) error {
 		return err
 	}
 
-	if err = c.writeConfigFile(bytesConfig); err != nil {
+	staged, err := c.stageConfigFile(bytesConfig)
+	if err != nil {
 		return err
 	}
+	defer os.Remove(staged)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -170,11 +212,19 @@ func (c *Core) Start(sbConfig *Config) error {
 
 	if c.process != nil && c.process.Process != nil {
 		pid := c.process.Process.Pid
+		startTime := c.processStart
 		_ = c.process.Process.Kill()
-		_ = killProcessTree(pid)
+		if canKillByPid(pid, startTime) {
+			_ = killProcessTree(pid)
+		}
 		c.process = nil
 		c.processPID = 0
+		c.processStart = 0
 		c.publishStateLocked()
+	}
+
+	if err := c.commitConfigFileLocked(staged); err != nil {
+		return err
 	}
 
 	cmd := exec.Command(c.executablePath, "run", "-c", c.configFilePath())
@@ -195,6 +245,7 @@ func (c *Core) Start(sbConfig *Config) error {
 
 	c.process = cmd
 	c.processPID = cmd.Process.Pid
+	c.processStart, _ = processStartTime(cmd.Process.Pid)
 	c.stopping = false
 	c.waitDone = make(chan struct{})
 	c.publishStateLocked()
@@ -248,6 +299,7 @@ func (c *Core) Stop() {
 	if started {
 		pid := c.process.Process.Pid
 		c.processPID = pid
+		startTime := c.processStart
 		waitDone := c.waitDone
 		c.stopping = true
 
@@ -257,17 +309,22 @@ func (c *Core) Stop() {
 		case <-waitDone:
 		case <-time.After(5 * time.Second):
 			log.Printf("sing-box process %d did not terminate within timeout, force killing", pid)
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, startTime) {
+				_ = killProcessTree(pid)
+			}
 		}
 
-		if err := verifyProcessDead(pid); err != nil {
+		if err := verifyProcessDead(pid, startTime); err != nil {
 			log.Printf("warning: sing-box process %d may still be running: %v", pid, err)
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, startTime) {
+				_ = killProcessTree(pid)
+			}
 		}
 	}
 
 	c.process = nil
 	c.processPID = 0
+	c.processStart = 0
 	c.publishStateLocked()
 	c.stopping = false
 	c.waitDone = nil

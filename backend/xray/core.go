@@ -41,6 +41,7 @@ type Core struct {
 	cancelFunc                context.CancelFunc
 	mu                        sync.Mutex
 	state                     atomic.Pointer[coreState]
+	processStart              uint64
 	startupMu                 sync.RWMutex
 	runtimeMu                 sync.RWMutex
 }
@@ -102,6 +103,9 @@ func (c *Core) refreshVersion() (string, error) {
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("xray version probe did not finish: %w", ctxErr)
+		}
 		return "", err
 	}
 
@@ -245,10 +249,14 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 	// Force kill any orphaned process in this Core instance before starting new one
 	if c.process != nil && c.process.Process != nil {
 		pid := c.process.Process.Pid
+		startTime := c.processStart
 		_ = c.process.Process.Kill()
-		_ = killProcessTree(pid)
+		if canKillByPid(pid, startTime) {
+			_ = killProcessTree(pid)
+		}
 		c.process = nil
 		c.processPID = 0
+		c.processStart = 0
 		c.publishStateLocked()
 	}
 
@@ -277,6 +285,7 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 	}
 	c.process = cmd
 	c.processPID = cmd.Process.Pid
+	c.processStart, _ = processStartTime(cmd.Process.Pid)
 	c.stopping = false
 	c.waitDone = make(chan struct{})
 	c.publishStateLocked()
@@ -332,6 +341,7 @@ func (c *Core) Stop() {
 	if started {
 		pid := c.process.Process.Pid
 		c.processPID = pid
+		startTime := c.processStart
 		waitDone := c.waitDone
 		c.stopping = true
 
@@ -345,19 +355,24 @@ func (c *Core) Stop() {
 		case <-time.After(5 * time.Second):
 			// Timeout - try force kill
 			log.Printf("xray process %d did not terminate within timeout, force killing", pid)
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, startTime) {
+				_ = killProcessTree(pid)
+			}
 		}
 
 		// Verify process is actually dead
-		if err := verifyProcessDead(pid); err != nil {
+		if err := verifyProcessDead(pid, startTime); err != nil {
 			log.Printf("warning: xray process %d may still be running: %v", pid, err)
 			// Try one more time to kill it
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, startTime) {
+				_ = killProcessTree(pid)
+			}
 		}
 	}
 	socketPaths := append([]string(nil), c.unixSocketPaths...)
 	c.process = nil
 	c.processPID = 0
+	c.processStart = 0
 	c.publishStateLocked()
 	c.stopping = false
 	c.waitDone = nil

@@ -163,7 +163,7 @@ func killProcessTree(pid int) error {
 }
 
 // verifyProcessDead checks if a process is actually dead
-func verifyProcessDead(pid int) error {
+func verifyProcessDead(pid int, startTime uint64) error {
 	if !isProcessRunning(pid) {
 		return nil
 	}
@@ -230,4 +230,12 @@ func isProcessZombie(pid int) bool {
 	}
 
 	return false
+}
+
+func sameProcess(pid int, startTime uint64) bool {
+	return true
+}
+
+func canKillByPid(pid int, startTime uint64) bool {
+	return true
 }

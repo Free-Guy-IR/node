@@ -38,16 +38,17 @@ type instanceProcess struct {
 
 	statsTracker *stats.InterfaceCountersTracker
 
-	mu         sync.Mutex
-	state      atomic.Pointer[processState]
-	process    *exec.Cmd
-	processPID int
-	stopping   bool
-	restarting bool
-	waitDone   chan struct{}
-	cancelFunc context.CancelFunc
-	mgmt       *ManagementClient
-	natApplied bool
+	mu           sync.Mutex
+	state        atomic.Pointer[processState]
+	processStart uint64
+	process      *exec.Cmd
+	processPID   int
+	stopping     bool
+	restarting   bool
+	waitDone     chan struct{}
+	cancelFunc   context.CancelFunc
+	mgmt         *ManagementClient
+	natApplied   bool
 
 	startupFailureMu sync.RWMutex
 	startupFailure   string
@@ -247,6 +248,7 @@ func (p *instanceProcess) Start() error {
 	p.mu.Lock()
 	p.process = cmd
 	p.processPID = cmd.Process.Pid
+	p.processStart, _ = processStartTime(cmd.Process.Pid)
 	p.stopping = false
 	p.waitDone = make(chan struct{})
 	p.publishStateLocked()
@@ -353,12 +355,16 @@ func (p *instanceProcess) Stop() {
 		case <-waitDone:
 		case <-time.After(5 * time.Second):
 			log.Printf("openvpn instance %q: process %d did not terminate within timeout, force killing", p.tag, pid)
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, p.processStart) {
+				_ = killProcessTree(pid)
+			}
 		}
 
-		if err := verifyProcessDead(pid); err != nil {
+		if err := verifyProcessDead(pid, p.processStart); err != nil {
 			log.Printf("warning: openvpn instance %q: process %d may still be running: %v", p.tag, pid, err)
-			_ = killProcessTree(pid)
+			if canKillByPid(pid, p.processStart) {
+				_ = killProcessTree(pid)
+			}
 		}
 	}
 
@@ -367,6 +373,7 @@ func (p *instanceProcess) Stop() {
 	p.mu.Lock()
 	p.process = nil
 	p.processPID = 0
+	p.processStart = 0
 	p.publishStateLocked()
 	p.stopping = false
 	p.waitDone = nil

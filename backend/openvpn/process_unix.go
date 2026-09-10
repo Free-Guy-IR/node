@@ -3,6 +3,7 @@
 package openvpn
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -189,8 +190,11 @@ func getProcessGroupID(pid int) (int, error) {
 	return strconv.Atoi(fields[4])
 }
 
-func verifyProcessDead(pid int) error {
+func verifyProcessDead(pid int, startTime uint64) error {
 	if !isProcessRunning(pid) {
+		return nil
+	}
+	if !sameProcess(pid, startTime) {
 		return nil
 	}
 	return fmt.Errorf("process %d is still running", pid)
@@ -227,4 +231,46 @@ func pathsMatch(candidate, target string) bool {
 	candidateReal, errA := filepath.EvalSymlinks(candidateAbs)
 	targetReal, errB := filepath.EvalSymlinks(targetAbs)
 	return errA == nil && errB == nil && candidateReal == targetReal
+}
+
+func processStartTime(pid int) (uint64, bool) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	close := bytes.LastIndexByte(raw, ')')
+	if close < 0 || close+2 >= len(raw) {
+		return 0, false
+	}
+	fields := strings.Fields(string(raw[close+2:]))
+	if len(fields) < 20 {
+		return 0, false
+	}
+	start, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return start, true
+}
+
+func sameProcess(pid int, startTime uint64) bool {
+	if startTime == 0 {
+		return true
+	}
+	current, ok := processStartTime(pid)
+	if !ok {
+		return false
+	}
+	return current == startTime
+}
+
+func canKillByPid(pid int, startTime uint64) bool {
+	if startTime == 0 {
+		return false
+	}
+	current, ok := processStartTime(pid)
+	if !ok {
+		return false
+	}
+	return current == startTime
 }

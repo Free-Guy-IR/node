@@ -202,3 +202,180 @@ func TestCore_StartedGoesFalseWhileTheCoreLockIsHeldDuringStop(t *testing.T) {
 		t.Fatal("Stop() did not return")
 	}
 }
+
+func TestWrapperStartedAnswersWhileShutdownHoldsTheWrapperLock(t *testing.T) {
+	sb := &SingBox{core: stubCoreWith(t, "exec sleep 30")}
+	t.Cleanup(sb.core.Stop)
+
+	if err := sb.core.Start(stubConfig(t)); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	sb.mu.Lock()
+	answered := make(chan bool, 1)
+	go func() { answered <- sb.Started() }()
+
+	select {
+	case got := <-answered:
+		sb.mu.Unlock()
+		if !got {
+			t.Fatal("the wrapper must report the running core while the wrapper lock is held")
+		}
+	case <-time.After(3 * time.Second):
+		sb.mu.Unlock()
+		t.Fatal("SingBox.Started() blocked on the wrapper lock; Shutdown would stall every request again")
+	}
+}
+
+func TestVerifyProcessDeadIgnoresARecycledPid(t *testing.T) {
+	self := os.Getpid()
+
+	actual, ok := processStartTime(self)
+	if !ok {
+		t.Skip("cannot read the start time of this process")
+	}
+
+	if err := verifyProcessDead(self, actual); err == nil {
+		t.Fatal("a live process with a matching start time must be reported as alive")
+	}
+
+	if err := verifyProcessDead(self, actual+1); err != nil {
+		t.Fatalf("a live pid whose start time does not match is a different process and must count as dead, got %v", err)
+	}
+
+	if err := verifyProcessDead(self, 0); err == nil {
+		t.Fatal("a zero start time must fall back to the old pid-only behaviour")
+	}
+}
+
+func TestProcessStartTimeIsStableAndPerProcess(t *testing.T) {
+	self := os.Getpid()
+	a, ok := processStartTime(self)
+	if !ok {
+		t.Skip("cannot read the start time of this process")
+	}
+	b, _ := processStartTime(self)
+	if a != b {
+		t.Fatalf("start time must not change between reads: %d then %d", a, b)
+	}
+	if _, ok := processStartTime(1 << 30); ok {
+		t.Fatal("a pid that cannot exist must not yield a start time")
+	}
+}
+
+func TestCanKillByPidRequiresProvenIdentity(t *testing.T) {
+	self := os.Getpid()
+	actual, ok := processStartTime(self)
+	if !ok {
+		t.Skip("cannot read the start time of this process")
+	}
+
+	if !canKillByPid(self, actual) {
+		t.Fatal("a pid whose start time matches is ours and must be killable")
+	}
+	if canKillByPid(self, actual+1) {
+		t.Fatal("a recycled pid must never be killed by pid")
+	}
+	if canKillByPid(self, 0) {
+		t.Fatal("an unknown start time must fail closed, not fall back to killing by pid")
+	}
+	if canKillByPid(1<<30, actual) {
+		t.Fatal("a pid that cannot exist must not be killable")
+	}
+}
+
+func TestStagedConfigIsOnlyCommittedByTheStartThatStagedIt(t *testing.T) {
+	core := stubCoreWith(t, "exec sleep 30")
+
+	first, err := core.stageConfigFile([]byte(`{"first":true}`))
+	if err != nil {
+		t.Fatalf("stage first: %v", err)
+	}
+	second, err := core.stageConfigFile([]byte(`{"second":true}`))
+	if err != nil {
+		t.Fatalf("stage second: %v", err)
+	}
+	if first == second {
+		t.Fatal("two concurrent stages must not share a temporary file")
+	}
+
+	if err := core.commitConfigFileLocked(second); err != nil {
+		t.Fatalf("commit second: %v", err)
+	}
+	got, err := os.ReadFile(core.configFilePath())
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != `{"second":true}` {
+		t.Fatalf("the committed config must be the one that was committed, got %s", got)
+	}
+
+	if err := core.commitConfigFileLocked(first); err != nil {
+		t.Fatalf("commit first: %v", err)
+	}
+	got, err = os.ReadFile(core.configFilePath())
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != `{"first":true}` {
+		t.Fatalf("each commit must replace the file wholesale, got %s", got)
+	}
+}
+
+func TestConcurrentStartsLaunchWithTheWinnersConfig(t *testing.T) {
+	core := stubCoreWith(t, "exec sleep 30")
+	t.Cleanup(core.Stop)
+
+	first, err := NewConfig(`{"log":{"level":"error"},"inbounds":[],"outbounds":[{"type":"direct"}]}`)
+	if err != nil {
+		t.Fatalf("NewConfig first: %v", err)
+	}
+	second, err := NewConfig(`{"log":{"level":"warn"},"inbounds":[],"outbounds":[{"type":"block"}]}`)
+	if err != nil {
+		t.Fatalf("NewConfig second: %v", err)
+	}
+
+	type attempt struct {
+		cfg *Config
+		err error
+	}
+	results := make([]attempt, 2)
+	var wg sync.WaitGroup
+	for i, cfg := range []*Config{first, second} {
+		wg.Add(1)
+		go func(i int, cfg *Config) {
+			defer wg.Done()
+			results[i] = attempt{cfg: cfg, err: core.Start(cfg)}
+		}(i, cfg)
+	}
+	wg.Wait()
+
+	winners := 0
+	var winner *Config
+	for _, r := range results {
+		if r.err == nil {
+			winners++
+			winner = r.cfg
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("exactly one concurrent Start must succeed, got %d", winners)
+	}
+
+	want, err := winner.ToBytes()
+	if err != nil {
+		t.Fatalf("winner ToBytes: %v", err)
+	}
+	got, err := os.ReadFile(core.configFilePath())
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("the running process must have launched with the config of the Start that won:\n on disk: %s\n winner : %s", got, want)
+	}
+
+	leftovers, _ := filepath.Glob(filepath.Join(core.configDir, "singbox-*.json"))
+	if len(leftovers) != 0 {
+		t.Fatalf("staged temp files must not be left behind, found %v", leftovers)
+	}
+}
