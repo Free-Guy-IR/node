@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -38,6 +39,7 @@ type instanceProcess struct {
 	statsTracker *stats.InterfaceCountersTracker
 
 	mu         sync.Mutex
+	state      atomic.Pointer[processState]
 	process    *exec.Cmd
 	processPID int
 	stopping   bool
@@ -99,25 +101,36 @@ func (p *instanceProcess) writeConfigFile() error {
 	return os.WriteFile(p.configFilePath(), []byte(text), 0o600)
 }
 
-func (p *instanceProcess) isStartedLocked() bool {
-	if p.process == nil || p.process.Process == nil {
+type processState struct {
+	cmd      *exec.Cmd
+	waitDone <-chan struct{}
+}
+
+func startedFromState(s *processState) bool {
+	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return false
 	}
-	if p.waitDone == nil {
+	if s.waitDone == nil {
 		return true
 	}
 	select {
-	case <-p.waitDone:
+	case <-s.waitDone:
 		return false
 	default:
 		return true
 	}
 }
 
+func (p *instanceProcess) publishStateLocked() {
+	if p.process == nil || p.process.Process == nil {
+		p.state.Store(nil)
+		return
+	}
+	p.state.Store(&processState{cmd: p.process, waitDone: p.waitDone})
+}
+
 func (p *instanceProcess) Started() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.isStartedLocked()
+	return startedFromState(p.state.Load())
 }
 
 func (p *instanceProcess) Stopping() bool {
@@ -199,7 +212,7 @@ func (p *instanceProcess) Start() error {
 	}
 
 	p.mu.Lock()
-	if p.isStartedLocked() {
+	if p.Started() {
 		p.mu.Unlock()
 		return fmt.Errorf("openvpn instance %q is already started", p.tag)
 	}
@@ -236,6 +249,7 @@ func (p *instanceProcess) Start() error {
 	p.processPID = cmd.Process.Pid
 	p.stopping = false
 	p.waitDone = make(chan struct{})
+	p.publishStateLocked()
 	waitDone := p.waitDone
 	p.mu.Unlock()
 
@@ -305,7 +319,7 @@ func (p *instanceProcess) handleProcessExit(cmd *exec.Cmd, err error) {
 func (p *instanceProcess) Stop() {
 	p.mu.Lock()
 
-	started := p.isStartedLocked()
+	started := p.Started()
 	if !started && p.process == nil {
 		p.mu.Unlock()
 		return
@@ -353,6 +367,7 @@ func (p *instanceProcess) Stop() {
 	p.mu.Lock()
 	p.process = nil
 	p.processPID = 0
+	p.publishStateLocked()
 	p.stopping = false
 	p.waitDone = nil
 	if p.cancelFunc != nil {

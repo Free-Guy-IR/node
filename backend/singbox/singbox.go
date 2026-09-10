@@ -125,8 +125,6 @@ func (s *SingBox) Version() string {
 }
 
 func (s *SingBox) Started() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	return s.core.Started()
 }
 

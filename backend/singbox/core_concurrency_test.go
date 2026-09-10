@@ -146,3 +146,59 @@ func TestCore_VersionProbeCannotHangForever(t *testing.T) {
 		t.Fatalf("NewCore blocked past the %s version-probe timeout on a hanging binary", versionProbeTimeout)
 	}
 }
+
+func TestCore_StartedDoesNotBlockWhileTheCoreLockIsHeld(t *testing.T) {
+	core := stubCoreWith(t, "exec sleep 30")
+	t.Cleanup(core.Stop)
+
+	if err := core.Start(stubConfig(t)); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	core.mu.Lock()
+	answered := make(chan bool, 1)
+	go func() { answered <- core.Started() }()
+
+	select {
+	case got := <-answered:
+		core.mu.Unlock()
+		if !got {
+			t.Fatal("Started() must still see the running process while another goroutine holds the core lock")
+		}
+	case <-time.After(3 * time.Second):
+		core.mu.Unlock()
+		t.Fatal("Started() blocked on the core lock; the request hot path is no longer lock-free")
+	}
+}
+
+func TestCore_StartedGoesFalseWhileTheCoreLockIsHeldDuringStop(t *testing.T) {
+	core := stubCoreWith(t, "exec sleep 30")
+	cfg := stubConfig(t)
+
+	if err := core.Start(cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !core.Started() {
+		t.Fatal("Started() must be true right after a successful Start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		core.Stop()
+		close(stopped)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for core.Started() {
+		if time.Now().After(deadline) {
+			t.Fatal("Started() never went false while Stop() was running")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop() did not return")
+	}
+}

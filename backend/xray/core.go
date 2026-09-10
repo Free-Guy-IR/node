@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nodeLogger "github.com/pasarguard/node/logger"
@@ -39,6 +40,7 @@ type Core struct {
 	logger                    *nodeLogger.Logger
 	cancelFunc                context.CancelFunc
 	mu                        sync.Mutex
+	state                     atomic.Pointer[coreState]
 	startupMu                 sync.RWMutex
 	runtimeMu                 sync.RWMutex
 }
@@ -118,25 +120,36 @@ func (c *Core) Version() string {
 	return c.version
 }
 
-func (c *Core) isStartedLocked() bool {
-	if c.process == nil || c.process.Process == nil {
+type coreState struct {
+	cmd      *exec.Cmd
+	waitDone <-chan struct{}
+}
+
+func startedFromState(s *coreState) bool {
+	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return false
 	}
-	if c.waitDone == nil {
+	if s.waitDone == nil {
 		return true
 	}
 	select {
-	case <-c.waitDone:
+	case <-s.waitDone:
 		return false
 	default:
 		return true
 	}
 }
 
+func (c *Core) publishStateLocked() {
+	if c.process == nil || c.process.Process == nil {
+		c.state.Store(nil)
+		return
+	}
+	c.state.Store(&coreState{cmd: c.process, waitDone: c.waitDone})
+}
+
 func (c *Core) Started() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.isStartedLocked()
+	return startedFromState(c.state.Load())
 }
 
 func (c *Core) Stopping() bool {
@@ -213,7 +226,7 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 	defer c.mu.Unlock()
 
 	// Check if already started after acquiring lock to prevent race condition
-	if c.isStartedLocked() {
+	if c.Started() {
 		return errors.New("xray is started already")
 	}
 
@@ -236,6 +249,7 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 		_ = killProcessTree(pid)
 		c.process = nil
 		c.processPID = 0
+		c.publishStateLocked()
 	}
 
 	socketPaths := collectUnixSocketPaths(xConfig)
@@ -265,6 +279,7 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 	c.processPID = cmd.Process.Pid
 	c.stopping = false
 	c.waitDone = make(chan struct{})
+	c.publishStateLocked()
 	c.unixSocketPaths = socketPaths
 
 	// Wait for the process to exit to prevent zombie processes
@@ -309,7 +324,7 @@ func (c *Core) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	started := c.isStartedLocked()
+	started := c.Started()
 	if !started && c.process == nil && c.cancelFunc == nil && c.logger == nil && len(c.unixSocketPaths) == 0 {
 		return
 	}
@@ -343,6 +358,7 @@ func (c *Core) Stop() {
 	socketPaths := append([]string(nil), c.unixSocketPaths...)
 	c.process = nil
 	c.processPID = 0
+	c.publishStateLocked()
 	c.stopping = false
 	c.waitDone = nil
 	c.unixSocketPaths = nil

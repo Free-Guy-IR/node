@@ -117,8 +117,6 @@ func (x *Xray) Version() string {
 }
 
 func (x *Xray) Started() bool {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
 	return x.core.Started()
 }
 

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,6 +37,7 @@ type Core struct {
 	startupFailure  string
 	cancelFunc      context.CancelFunc
 	mu              sync.Mutex
+	state           atomic.Pointer[coreState]
 	startupFailureM sync.RWMutex
 }
 
@@ -103,25 +105,36 @@ func (c *Core) Version() string {
 	return c.version
 }
 
-func (c *Core) isStartedLocked() bool {
-	if c.process == nil || c.process.Process == nil {
+type coreState struct {
+	cmd      *exec.Cmd
+	waitDone <-chan struct{}
+}
+
+func startedFromState(s *coreState) bool {
+	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return false
 	}
-	if c.waitDone == nil {
+	if s.waitDone == nil {
 		return true
 	}
 	select {
-	case <-c.waitDone:
+	case <-s.waitDone:
 		return false
 	default:
 		return true
 	}
 }
 
+func (c *Core) publishStateLocked() {
+	if c.process == nil || c.process.Process == nil {
+		c.state.Store(nil)
+		return
+	}
+	c.state.Store(&coreState{cmd: c.process, waitDone: c.waitDone})
+}
+
 func (c *Core) Started() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.isStartedLocked()
+	return startedFromState(c.state.Load())
 }
 
 func (c *Core) Stopping() bool {
@@ -143,7 +156,7 @@ func (c *Core) Start(sbConfig *Config) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isStartedLocked() {
+	if c.Started() {
 		return errors.New("sing-box is started already")
 	}
 
@@ -161,6 +174,7 @@ func (c *Core) Start(sbConfig *Config) error {
 		_ = killProcessTree(pid)
 		c.process = nil
 		c.processPID = 0
+		c.publishStateLocked()
 	}
 
 	cmd := exec.Command(c.executablePath, "run", "-c", c.configFilePath())
@@ -183,6 +197,7 @@ func (c *Core) Start(sbConfig *Config) error {
 	c.processPID = cmd.Process.Pid
 	c.stopping = false
 	c.waitDone = make(chan struct{})
+	c.publishStateLocked()
 
 	waitDone := c.waitDone
 	go func() {
@@ -225,7 +240,7 @@ func (c *Core) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	started := c.isStartedLocked()
+	started := c.Started()
 	if !started && c.process == nil && c.cancelFunc == nil {
 		return
 	}
@@ -253,6 +268,7 @@ func (c *Core) Stop() {
 
 	c.process = nil
 	c.processPID = 0
+	c.publishStateLocked()
 	c.stopping = false
 	c.waitDone = nil
 
