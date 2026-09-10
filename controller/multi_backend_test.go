@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/pasarguard/node/backend"
@@ -304,5 +305,17 @@ func TestUnsupportedStatTypeIsNotLoggedAsAFailure(t *testing.T) {
 	}
 	if unexpected != 1 {
 		t.Fatalf("exactly one of the two errors is a real failure, counted %d", unexpected)
+	}
+}
+
+func TestStatTypeSentinelKeepsThePhraseThePanelMatchesOn(t *testing.T) {
+	err := fmt.Errorf("%w: inbound stats for wireguard", backend.ErrStatTypeNotSupported)
+	wrapped := fmt.Errorf("%s: %w", common.BackendType_WIREGUARD, err)
+
+	if !strings.Contains(wrapped.Error(), "not applicable") {
+		t.Fatalf("app/jobs/record_usages.py downgrades this to debug by matching \"not applicable\" in the error detail; the rendered text was %q", wrapped.Error())
+	}
+	if !errors.Is(wrapped, backend.ErrStatTypeNotSupported) {
+		t.Fatalf("the sentinel must survive wrapping, got %v", wrapped)
 	}
 }

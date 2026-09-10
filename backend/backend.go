@@ -7,7 +7,7 @@ import (
 	"github.com/pasarguard/node/common"
 )
 
-var ErrStatTypeNotSupported = errors.New("stat type not supported by this backend")
+var ErrStatTypeNotSupported = errors.New("stat type not applicable for this backend")
 
 type Backend interface {
 	Started() bool
