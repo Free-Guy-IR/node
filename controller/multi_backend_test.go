@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pasarguard/node/backend"
@@ -317,5 +318,104 @@ func TestStatTypeSentinelKeepsThePhraseThePanelMatchesOn(t *testing.T) {
 	}
 	if !errors.Is(wrapped, backend.ErrStatTypeNotSupported) {
 		t.Fatalf("the sentinel must survive wrapping, got %v", wrapped)
+	}
+}
+
+func TestAttachBuiltInstallsAtMostOnePerTypeUnderConcurrency(t *testing.T) {
+	primary := &recordingBackend{name: "primary"}
+	c := controllerWithExtras(primary, common.BackendType_XRAY)
+
+	const n = 16
+	built := make([]*recordingBackend, n)
+	for i := range built {
+		built[i] = &recordingBackend{name: fmt.Sprintf("cand-%d", i)}
+	}
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = c.attachBuilt(common.BackendType_SING_BOX, built[i])
+		}(i)
+	}
+	wg.Wait()
+
+	installed := 0
+	for _, e := range errs {
+		if e == nil {
+			installed++
+		}
+	}
+	if installed != 1 {
+		t.Fatalf("exactly one concurrent attach of a type must win, got %d", installed)
+	}
+
+	c.mu.RLock()
+	gotExtras := len(c.extras)
+	var winner backend.Backend
+	if gotExtras == 1 {
+		winner = c.extras[0].backend
+	}
+	c.mu.RUnlock()
+	if gotExtras != 1 {
+		t.Fatalf("controller must hold exactly one extra, got %d", gotExtras)
+	}
+
+	shutdowns := 0
+	for _, b := range built {
+		shutdowns += b.shutdowns
+	}
+	if shutdowns != n-1 {
+		t.Fatalf("every rejected backend must be shut down exactly once: want %d, got %d", n-1, shutdowns)
+	}
+	if winner.(*recordingBackend).shutdowns != 0 {
+		t.Fatalf("the installed backend must not be shut down")
+	}
+}
+
+func TestAttachDetachCycleLeaksNoBackend(t *testing.T) {
+	primary := &recordingBackend{name: "primary"}
+	c := controllerWithExtras(primary, common.BackendType_XRAY)
+
+	const rounds = 25
+	for i := 0; i < rounds; i++ {
+		b := &recordingBackend{name: fmt.Sprintf("round-%d", i)}
+		if err := c.attachBuilt(common.BackendType_MTPROTO, b); err != nil {
+			t.Fatalf("round %d attach: %v", i, err)
+		}
+		if err := c.DetachBackend(common.BackendType_MTPROTO); err != nil {
+			t.Fatalf("round %d detach: %v", i, err)
+		}
+		if b.shutdowns != 1 {
+			t.Fatalf("round %d: detached backend must be shut down exactly once, got %d", i, b.shutdowns)
+		}
+	}
+
+	c.mu.RLock()
+	leftover := len(c.extras)
+	c.mu.RUnlock()
+	if leftover != 0 {
+		t.Fatalf("no extras must survive a full attach/detach cycle, got %d", leftover)
+	}
+}
+
+func TestAttachBuiltRejectsASecondOfTheSameTypeAndShutsItDown(t *testing.T) {
+	primary := &recordingBackend{name: "primary"}
+	first := &recordingBackend{name: "first"}
+	c := controllerWithExtras(primary, common.BackendType_XRAY,
+		extraBackend{backendType: common.BackendType_SING_BOX, backend: first})
+
+	second := &recordingBackend{name: "second"}
+	err := c.attachBuilt(common.BackendType_SING_BOX, second)
+	if err == nil {
+		t.Fatal("attaching a second backend of a type already present must fail")
+	}
+	if second.shutdowns != 1 {
+		t.Fatalf("the rejected backend must be shut down exactly once, got %d", second.shutdowns)
+	}
+	if first.shutdowns != 0 {
+		t.Fatal("the already-installed backend must be left running")
 	}
 }

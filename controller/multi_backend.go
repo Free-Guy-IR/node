@@ -59,27 +59,32 @@ func (c *Controller) AttachBackend(ctx context.Context, b *common.Backend) error
 
 	newBackend, err := c.buildBackend(ctx, b, netutil.FindFreePort(), netutil.FindFreePort())
 	if err != nil {
-		return err
+		newBackend, err = c.buildBackend(ctx, b, netutil.FindFreePort(), netutil.FindFreePort())
+		if err != nil {
+			return err
+		}
 	}
 
+	return c.attachBuilt(backendType, newBackend)
+}
+
+func (c *Controller) attachBuilt(backendType common.BackendType, newBackend backend.Backend) error {
 	c.mu.Lock()
-	if err := func() error {
-		if c.backend == nil {
-			return errors.New("no primary backend is running on this node")
-		}
-		if c.primaryType == backendType {
-			return fmt.Errorf("a %s backend is already running as this node primary backend", backendType)
-		}
-		for _, extra := range c.extras {
-			if extra.backendType == backendType {
-				return fmt.Errorf("a %s backend is already running on this node", backendType)
-			}
-		}
-		return nil
-	}(); err != nil {
+	reject := func(err error) error {
 		c.mu.Unlock()
 		newBackend.Shutdown()
 		return err
+	}
+	if c.backend == nil {
+		return reject(errors.New("no primary backend is running on this node"))
+	}
+	if c.primaryType == backendType {
+		return reject(fmt.Errorf("a %s backend is already running as this node primary backend", backendType))
+	}
+	for _, extra := range c.extras {
+		if extra.backendType == backendType {
+			return reject(fmt.Errorf("a %s backend is already running on this node", backendType))
+		}
 	}
 	c.extras = append(c.extras, extraBackend{backendType: backendType, backend: newBackend})
 	c.mu.Unlock()
@@ -267,6 +272,9 @@ func (c *Controller) StatsAll(ctx context.Context, request *common.StatRequest) 
 	errs := joinBackendErrors(results)
 	if delivered == 0 && len(errs) > 0 {
 		return nil, errors.Join(errs...)
+	}
+	if delivered == 0 {
+		log.Printf("stats: no backend delivered a result and none reported an error")
 	}
 	logPartialFailure("stats", delivered, errs)
 	return merged, nil
