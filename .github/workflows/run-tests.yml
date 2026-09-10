@@ -48,7 +48,6 @@ jobs:
 
   mtproto-fronting:
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       GOTOOLCHAIN: auto
 
@@ -66,4 +65,14 @@ jobs:
         run: make deps
 
       - name: Run the MTProto domain-fronting leg
-        run: make test-integration-mtproto
+        run: |
+          for attempt in 1 2 3; do
+            if make test-integration-mtproto; then
+              echo "fronting leg passed on attempt $attempt"
+              exit 0
+            fi
+            echo "attempt $attempt failed"
+            sleep 10
+          done
+          echo "the fronting leg failed three times; that is beyond network flake"
+          exit 1
