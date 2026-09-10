@@ -2,6 +2,7 @@ package l2tp
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pasarguard/node/backend/ipsec"
 )
@@ -19,8 +21,13 @@ var (
 	chapSecretsMu   sync.Mutex
 )
 
+var versionProbeTimeout = 10 * time.Second
+
 func DetectVersion() string {
-	out, err := exec.Command(xl2tpdBinary, "-v").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, xl2tpdBinary, "-v").CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return "unknown"
 	}

@@ -67,9 +67,14 @@ type WireGuard struct {
 	hostRouting    func()
 }
 
+var versionProbeTimeout = 10 * time.Second
+
 // getWireGuardVersion fetches the wireguard-tools version
 func getWireGuardVersion() string {
-	cmd := exec.Command("wg", "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "wg", "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("failed to get wireguard version: %v", err)

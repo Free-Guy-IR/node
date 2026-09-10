@@ -71,13 +71,18 @@ func (c *Core) writeConfigFile(config []byte) error {
 	return os.WriteFile(c.configFilePath(), config, 0644)
 }
 
+var versionProbeTimeout = 10 * time.Second
+
 // refreshVersion best-effort parses `sing-box version` output. Unlike xray's
 // equivalent, a parse failure here is NOT treated as fatal: a source build
 // without version ldflags set (as used by this integration's build recipe)
 // prints "sing-box version unknown", which is a legitimate, working binary -
 // failing NewCore over a cosmetic string would be wrong.
 func (c *Core) refreshVersion() string {
-	cmd := exec.Command(c.executablePath, "version")
+	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.executablePath, "version")
 	out, err := cmd.Output()
 	if err != nil {
 		return "unknown"
@@ -98,14 +103,25 @@ func (c *Core) Version() string {
 	return c.version
 }
 
-func (c *Core) Started() bool {
+func (c *Core) isStartedLocked() bool {
 	if c.process == nil || c.process.Process == nil {
 		return false
 	}
-	if c.process.ProcessState == nil {
+	if c.waitDone == nil {
 		return true
 	}
-	return false
+	select {
+	case <-c.waitDone:
+		return false
+	default:
+		return true
+	}
+}
+
+func (c *Core) Started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isStartedLocked()
 }
 
 func (c *Core) Stopping() bool {
@@ -127,7 +143,7 @@ func (c *Core) Start(sbConfig *Config) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.Started() {
+	if c.isStartedLocked() {
 		return errors.New("sing-box is started already")
 	}
 
@@ -209,7 +225,7 @@ func (c *Core) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	started := c.Started()
+	started := c.isStartedLocked()
 	if !started && c.process == nil && c.cancelFunc == nil {
 		return
 	}

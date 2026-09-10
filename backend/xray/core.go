@@ -89,8 +89,13 @@ func (c *Core) GenerateConfigFile(config []byte) error {
 	return err
 }
 
+var versionProbeTimeout = 10 * time.Second
+
 func (c *Core) refreshVersion() (string, error) {
-	cmd := exec.Command(c.executablePath, "version")
+	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.executablePath, "version")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()
@@ -113,14 +118,25 @@ func (c *Core) Version() string {
 	return c.version
 }
 
-func (c *Core) Started() bool {
+func (c *Core) isStartedLocked() bool {
 	if c.process == nil || c.process.Process == nil {
 		return false
 	}
-	if c.process.ProcessState == nil {
+	if c.waitDone == nil {
 		return true
 	}
-	return false
+	select {
+	case <-c.waitDone:
+		return false
+	default:
+		return true
+	}
+}
+
+func (c *Core) Started() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isStartedLocked()
 }
 
 func (c *Core) Stopping() bool {
@@ -197,7 +213,7 @@ func (c *Core) Start(xConfig *Config, debugMode bool) error {
 	defer c.mu.Unlock()
 
 	// Check if already started after acquiring lock to prevent race condition
-	if c.Started() {
+	if c.isStartedLocked() {
 		return errors.New("xray is started already")
 	}
 
@@ -293,7 +309,7 @@ func (c *Core) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	started := c.Started()
+	started := c.isStartedLocked()
 	if !started && c.process == nil && c.cancelFunc == nil && c.logger == nil && len(c.unixSocketPaths) == 0 {
 		return
 	}
