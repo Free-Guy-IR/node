@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"log"
 	"os"
 	"os/exec"
@@ -99,6 +100,7 @@ func (c *Core) refreshVersion() (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.executablePath, "version")
+	backend.ConfigureProbe(cmd)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	err := cmd.Run()

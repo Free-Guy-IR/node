@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"net"
 	"os"
 	"os/exec"
@@ -27,7 +28,10 @@ func DetectVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, xl2tpdBinary, "-v").CombinedOutput()
+	cmd := exec.CommandContext(ctx, xl2tpdBinary, "-v")
+	backend.ConfigureProbe(cmd)
+
+	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return "unknown"
 	}

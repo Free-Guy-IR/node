@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"log"
 	"os/exec"
 	"sort"
@@ -75,6 +76,7 @@ func getWireGuardVersion() string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "wg", "--version")
+	backend.ConfigureProbe(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("failed to get wireguard version: %v", err)

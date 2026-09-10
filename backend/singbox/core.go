@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"log"
 	"os"
 	"os/exec"
@@ -125,6 +126,8 @@ func (c *Core) refreshVersion() string {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.executablePath, "version")
+	backend.ConfigureProbe(cmd)
+
 	out, err := cmd.Output()
 	if err != nil {
 		return "unknown"

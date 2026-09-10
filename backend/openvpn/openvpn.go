@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -167,7 +168,10 @@ func detectVersion(executablePath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), versionProbeTimeout)
 	defer cancel()
 
-	out, _ := exec.CommandContext(ctx, executablePath, "--version").Output()
+	cmd := exec.CommandContext(ctx, executablePath, "--version")
+	backend.ConfigureProbe(cmd)
+
+	out, _ := cmd.Output()
 	line, _, _ := strings.Cut(string(out), "\n")
 	line = strings.TrimSpace(line)
 	if line == "" {

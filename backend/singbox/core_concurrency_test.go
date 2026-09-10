@@ -4,8 +4,11 @@ package singbox
 
 import (
 	"fmt"
+	"github.com/pasarguard/node/backend"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -377,5 +380,55 @@ func TestConcurrentStartsLaunchWithTheWinnersConfig(t *testing.T) {
 	leftovers, _ := filepath.Glob(filepath.Join(core.configDir, "singbox-*.json"))
 	if len(leftovers) != 0 {
 		t.Fatalf("staged temp files must not be left behind, found %v", leftovers)
+	}
+}
+
+func TestVersionProbeSurvivesABinaryThatForksAndHoldsStdout(t *testing.T) {
+	original := versionProbeTimeout
+	versionProbeTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { versionProbeTimeout = original })
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "stub-sing-box")
+	marker := filepath.Join(dir, "grandchild.pid")
+	script := "#!/bin/sh\nsleep 600 &\necho $! > " + marker + "\nwait\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		defer close(done)
+		if _, err := NewCore(exe, dir, 16, 16); err != nil {
+			t.Errorf("NewCore: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+		t.Logf("NewCore returned after %s", time.Since(start))
+	case <-time.After(versionProbeTimeout + backend.ProbeWaitDelay + 5*time.Second):
+		t.Fatal("NewCore blocked past the probe timeout: a forked grandchild still holds stdout")
+	}
+
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Skip("the stub never recorded a grandchild pid")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Skipf("unreadable grandchild pid %q", raw)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if !isProcessRunning(pid) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the probe left grandchild %d running; the whole process group must be killed", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
