@@ -57,3 +57,33 @@ func TestNewDropsUsersOnForeignInbounds(t *testing.T) {
 		t.Fatal("a user not on any mtproto instance tag must not be authorized")
 	}
 }
+
+func TestRestartConcurrentWithReaders(t *testing.T) {
+	b := newSeedTestBackend(t, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			b.Started()
+		}
+	}()
+
+	if err := b.Restart(); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	<-done
+
+	if !b.Started() {
+		t.Fatal("backend must report started after a successful restart")
+	}
+}
+
+func TestRestartAfterShutdownFails(t *testing.T) {
+	b := newSeedTestBackend(t, nil)
+	b.Shutdown()
+
+	if err := b.Restart(); err == nil {
+		t.Fatal("Restart after Shutdown must fail instead of leaking listeners")
+	}
+}
