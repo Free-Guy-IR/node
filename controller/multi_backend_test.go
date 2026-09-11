@@ -68,6 +68,22 @@ func controllerWithExtras(primary backend.Backend, primaryType common.BackendTyp
 	return &Controller{backend: primary, primaryType: primaryType, extras: extras}
 }
 
+type queueingBackend struct {
+	recordingBackend
+	queued []*common.User
+}
+
+func (q *queueingBackend) QueueUser(_ context.Context, u *common.User) error {
+	q.queued = append(q.queued, u)
+	return nil
+}
+
+type stoppedBackend struct {
+	recordingBackend
+}
+
+func (s *stoppedBackend) Started() bool { return false }
+
 func TestSingleBackendFansOutToExactlyOneBackend(t *testing.T) {
 	primary := &recordingBackend{name: "primary"}
 	c := controllerWithExtras(primary, common.BackendType_XRAY)
@@ -129,6 +145,30 @@ func TestUserSyncReachesEveryBackend(t *testing.T) {
 	}
 }
 
+func TestQueueUserAllReachesEveryBackend(t *testing.T) {
+	primary := &queueingBackend{}
+	extraQueued := &queueingBackend{}
+	extraPlain := &recordingBackend{}
+	c := controllerWithExtras(primary, common.BackendType_SING_BOX,
+		extraBackend{backendType: common.BackendType_L2TP, backend: extraQueued},
+		extraBackend{backendType: common.BackendType_MTPROTO, backend: extraPlain})
+
+	user := &common.User{Email: "a@b"}
+	if err := c.QueueUserAll(context.Background(), user); err != nil {
+		t.Fatalf("QueueUserAll: %v", err)
+	}
+
+	if len(primary.queued) != 1 || len(extraQueued.queued) != 1 {
+		t.Fatalf("queue-capable backends must receive the queued user, got %d and %d", len(primary.queued), len(extraQueued.queued))
+	}
+	if len(primary.syncedSingles) != 0 || len(extraQueued.syncedSingles) != 0 {
+		t.Fatal("queue-capable backends must not also receive a blocking SyncUser")
+	}
+	if len(extraPlain.syncedSingles) != 1 {
+		t.Fatal("a backend without QueueUser must receive a blocking SyncUser")
+	}
+}
+
 func TestStatsAreMergedAcrossBackends(t *testing.T) {
 	primary := &recordingBackend{stats: []*common.Stat{{Name: "a", Type: "uplink", Value: 10}}}
 	extra := &recordingBackend{stats: []*common.Stat{{Name: "b", Type: "uplink", Value: 5}}}
@@ -141,6 +181,27 @@ func TestStatsAreMergedAcrossBackends(t *testing.T) {
 	}
 	if len(resp.GetStats()) != 2 {
 		t.Fatalf("expected both backends stats, got %d", len(resp.GetStats()))
+	}
+}
+
+func TestAnyBackendStartedToleratesADownPrimary(t *testing.T) {
+	c := controllerWithExtras(&stoppedBackend{}, common.BackendType_XRAY,
+		extraBackend{backendType: common.BackendType_L2TP, backend: &recordingBackend{}})
+	if !c.AnyBackendStarted() {
+		t.Fatal("a started extra must satisfy AnyBackendStarted even while the primary is down")
+	}
+
+	down := controllerWithExtras(&stoppedBackend{}, common.BackendType_XRAY)
+	if down.AnyBackendStarted() {
+		t.Fatal("a node whose only backend is down must report false")
+	}
+
+	empty := &Controller{}
+	if empty.AnyBackendStarted() {
+		t.Fatal("a node with no backends must report false")
+	}
+	if len(empty.AllBackends()) != 0 {
+		t.Fatal("a node with no backends must expose an empty backend list")
 	}
 }
 

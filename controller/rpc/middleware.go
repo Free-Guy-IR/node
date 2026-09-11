@@ -51,6 +51,8 @@ func validateApiKey(ctx context.Context, s *Service) error {
 	switch {
 	case err != nil:
 		return status.Errorf(codes.InvalidArgument, "invalid api key format: must be a valid UUID")
+	case apiKey == uuid.Nil:
+		return status.Errorf(codes.Unauthenticated, "node api key is not configured")
 	case key != apiKey:
 		return status.Errorf(codes.PermissionDenied, "api key mismatch")
 	}
@@ -132,11 +134,10 @@ func validateApiKeyStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 }
 
 func checkBackendStatus(s *Service) error {
-	back := s.Backend()
-	if back == nil {
+	if len(s.AllBackends()) == 0 {
 		return status.Errorf(codes.Unavailable, "backend not initialized")
 	}
-	if !back.Started() {
+	if !s.AnyBackendStarted() {
 		return status.Errorf(codes.Unavailable, "core is not started yet")
 	}
 	return nil
@@ -259,6 +260,12 @@ var backendMethods = map[string]bool{
 	"/service.NodeService/OverrideBalancerTarget":   true,
 }
 
+var currentClientMethods = map[string]bool{
+	"/service.NodeService/AddBackend":    true,
+	"/service.NodeService/RemoveBackend": true,
+	"/service.NodeService/ListBackends":  true,
+}
+
 func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -275,6 +282,8 @@ func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 		if backendMethods[info.FullMethod] {
 			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 			interceptors = append(interceptors, CheckBackendMiddleware(s))
+		} else if currentClientMethods[info.FullMethod] {
+			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 		}
 
 		chained := grpcmiddleware.ChainUnaryServer(interceptors...)

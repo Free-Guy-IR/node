@@ -51,9 +51,9 @@ func (b *Backend) wantsUser(user *common.User) bool {
 	return false
 }
 
-// applyInitialUsers seeds Backend.secretsByID before any mtglib.Proxy is
-// constructed, so New's first ProxyOpts.Secrets build already reflects every
-// user provided at startup.
+// applyInitialUsers replaces Backend.secretsByID with the given users. It
+// must run after b.instances is populated: wantsUser scopes membership by
+// instance tag, so against an empty instances map every user is dropped.
 func (b *Backend) applyInitialUsers(users []*common.User) {
 	entries := make(map[string]secretEntry, len(users))
 

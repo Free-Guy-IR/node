@@ -38,6 +38,7 @@ type proxyInstance struct {
 	proxy       *mtglib.Proxy
 	mp          *middleproxy.Instance
 	listener    net.Listener
+	allowlist   *ipblocklist.Firehol
 	accumulator *eventAccumulator
 }
 
@@ -107,7 +108,7 @@ func buildNetwork() (mtglib.Network, error) {
 // either). Mirrors the exact construction upstream mtg's own CLI uses when
 // its allowlist feature is disabled (internal/cli/run_proxy.go's
 // makeIPAllowlist).
-func buildAllowAllList(logger mtglib.Logger) (mtglib.IPBlocklist, error) {
+func buildAllowAllList(logger mtglib.Logger) (*ipblocklist.Firehol, error) {
 	allowlist, err := ipblocklist.NewFireholFromFiles(
 		logger,
 		1,
@@ -184,9 +185,9 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 	return pi, nil
 }
 
-// New builds and starts one mtglib.Proxy per configured instance, seeded
-// with the initial user set before any listener starts accepting
-// connections (so no user has to reconnect after a fresh boot).
+// New builds and starts one mtglib.Proxy per configured instance, then seeds
+// the initial user set live (UpdateSecrets on every instance) before
+// returning, so no user has to wait for the next Sync after a fresh boot.
 func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config.Config) (*Backend, error) {
 	if mtCfg == nil {
 		return nil, errors.New("mtproto config must not be nil")
@@ -207,8 +208,6 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		cancelFunc:      bCancel,
 	}
 
-	b.applyInitialUsers(users)
-
 	ntw, err := buildNetwork()
 	if err != nil {
 		b.cancelFunc()
@@ -221,12 +220,6 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		order = append(order, inst.Tag)
 
 		instLogger := newMtgLogger("mtproto."+inst.Tag, b.recordLog)
-
-		allowlist, err := buildAllowAllList(instLogger.Named("allowlist"))
-		if err != nil {
-			b.Shutdown()
-			return nil, err
-		}
 
 		counter := &inboundCounter{}
 		b.inboundCounters[inst.Tag] = counter
@@ -241,6 +234,12 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			b.instances[inst.Tag] = pi
 			b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (middle-proxy/ad-tag mode)", inst.Tag, inst.Port))
 			continue
+		}
+
+		allowlist, err := buildAllowAllList(instLogger.Named("allowlist"))
+		if err != nil {
+			b.Shutdown()
+			return nil, err
 		}
 
 		opts := mtglib.ProxyOpts{
@@ -263,12 +262,15 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		proxy, err := mtglib.NewProxy(opts)
 		if err != nil {
+			allowlist.Shutdown()
 			b.Shutdown()
 			return nil, fmt.Errorf("mtproto: failed to create proxy for instance %q: %w", inst.Tag, err)
 		}
 
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: inst.Port})
 		if err != nil {
+			allowlist.Shutdown()
+			proxy.Shutdown()
 			b.Shutdown()
 			return nil, fmt.Errorf("mtproto: failed to listen on instance %q port %d: %w", inst.Tag, inst.Port, err)
 		}
@@ -278,6 +280,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			domain:      inst.FakeTLSDomain,
 			proxy:       proxy,
 			listener:    listener,
+			allowlist:   allowlist,
 			accumulator: accumulator,
 		}
 
@@ -287,6 +290,8 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 	}
 
 	b.order = order
+
+	b.syncAllUsers(users)
 
 	go b.sampleStatsPeriodically(bCtx, statsUpdateInterval(nodeCfg))
 
@@ -326,20 +331,20 @@ func (b *Backend) Logs() <-chan string {
 // object, which keeps all currently-authorized secrets intact (no need to
 // rebuild ProxyOpts or replay SyncUsers).
 func (b *Backend) Restart() error {
-	b.mu.RLock()
-	instances := make([]*proxyInstance, 0, len(b.instances))
-	for _, inst := range b.instances {
-		instances = append(instances, inst)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.cancelFunc == nil {
+		return errors.New("mtproto: backend is shut down")
 	}
-	b.mu.RUnlock()
 
 	var errs []error
-	for _, inst := range instances {
+	for _, inst := range b.instances {
+		port := 0
 		if inst.listener != nil {
-			inst.listener.Close() //nolint: errcheck
+			port = inst.listener.Addr().(*net.TCPAddr).Port //nolint: forcetypeassert
+			inst.listener.Close()                           //nolint: errcheck
 		}
-
-		port := inst.listener.Addr().(*net.TCPAddr).Port //nolint: forcetypeassert
 
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: port})
 		if err != nil {
@@ -371,6 +376,9 @@ func (b *Backend) Shutdown() {
 	for _, inst := range b.instances {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
+		}
+		if inst.allowlist != nil {
+			inst.allowlist.Shutdown()
 		}
 		if inst.proxy != nil {
 			inst.proxy.Shutdown()

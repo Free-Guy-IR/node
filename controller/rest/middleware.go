@@ -25,6 +25,9 @@ func (s *Service) validateApiKey(next http.Handler) http.Handler {
 		case err != nil:
 			http.Error(w, "invalid api key format: must be a valid UUID", http.StatusUnprocessableEntity)
 			return
+		case apiKey == uuid.Nil:
+			http.Error(w, "node api key is not configured", http.StatusUnauthorized)
+			return
 		case key != apiKey:
 			http.Error(w, "api key mismatch", http.StatusForbidden)
 			return
@@ -60,12 +63,11 @@ func (s *Service) validateCurrentClient(next http.Handler) http.Handler {
 
 func (s *Service) checkBackendMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		back := s.Backend()
-		if back == nil {
+		if len(s.AllBackends()) == 0 {
 			http.Error(w, "backend not initialized", http.StatusInternalServerError)
 			return
 		}
-		if !back.Started() {
+		if !s.AnyBackendStarted() {
 			http.Error(w, "core is not started yet", http.StatusServiceUnavailable)
 			return
 		}
