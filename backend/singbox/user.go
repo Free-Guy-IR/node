@@ -251,8 +251,8 @@ func (s *SingBox) enqueueSync(mutate func(*Config)) error {
 // restarts.
 //
 // QueueUser breaks that stall: the controller/rpc layer calls this instead
-// of SyncUser when the backend supports it (see the nonBlockingUserSyncer
-// interface check in controller/rpc/user.go), so it can immediately go back
+// of SyncUser when the backend supports it (see the queueingUserSyncer
+// interface check in controller.QueueUserAll), so it can immediately go back
 // to stream.Recv() for the next message. Every message already sent by the
 // client lands in the same batch, and the whole stream's worth of users
 // restarts sing-box exactly once.

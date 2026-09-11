@@ -175,6 +175,22 @@ func (c *Controller) SyncUserAll(ctx context.Context, user *common.User) error {
 	return errors.Join(errs...)
 }
 
+type queueingUserSyncer interface {
+	QueueUser(ctx context.Context, user *common.User) error
+}
+
+func (c *Controller) QueueUserAll(ctx context.Context, user *common.User) error {
+	var errs []error
+	for _, b := range c.AllBackends() {
+		if queuer, ok := b.(queueingUserSyncer); ok {
+			errs = append(errs, queuer.QueueUser(ctx, user))
+			continue
+		}
+		errs = append(errs, b.SyncUser(ctx, user))
+	}
+	return errors.Join(errs...)
+}
+
 func (c *Controller) SyncUsersAll(ctx context.Context, users []*common.User) error {
 	var errs []error
 	for _, b := range c.AllBackends() {
