@@ -78,6 +78,12 @@ func (q *queueingBackend) QueueUser(_ context.Context, u *common.User) error {
 	return nil
 }
 
+type stoppedBackend struct {
+	recordingBackend
+}
+
+func (s *stoppedBackend) Started() bool { return false }
+
 func TestSingleBackendFansOutToExactlyOneBackend(t *testing.T) {
 	primary := &recordingBackend{name: "primary"}
 	c := controllerWithExtras(primary, common.BackendType_XRAY)
@@ -175,6 +181,27 @@ func TestStatsAreMergedAcrossBackends(t *testing.T) {
 	}
 	if len(resp.GetStats()) != 2 {
 		t.Fatalf("expected both backends stats, got %d", len(resp.GetStats()))
+	}
+}
+
+func TestAnyBackendStartedToleratesADownPrimary(t *testing.T) {
+	c := controllerWithExtras(&stoppedBackend{}, common.BackendType_XRAY,
+		extraBackend{backendType: common.BackendType_L2TP, backend: &recordingBackend{}})
+	if !c.AnyBackendStarted() {
+		t.Fatal("a started extra must satisfy AnyBackendStarted even while the primary is down")
+	}
+
+	down := controllerWithExtras(&stoppedBackend{}, common.BackendType_XRAY)
+	if down.AnyBackendStarted() {
+		t.Fatal("a node whose only backend is down must report false")
+	}
+
+	empty := &Controller{}
+	if empty.AnyBackendStarted() {
+		t.Fatal("a node with no backends must report false")
+	}
+	if len(empty.AllBackends()) != 0 {
+		t.Fatal("a node with no backends must expose an empty backend list")
 	}
 }
 

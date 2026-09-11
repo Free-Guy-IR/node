@@ -134,11 +134,10 @@ func validateApiKeyStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 }
 
 func checkBackendStatus(s *Service) error {
-	back := s.Backend()
-	if back == nil {
+	if len(s.AllBackends()) == 0 {
 		return status.Errorf(codes.Unavailable, "backend not initialized")
 	}
-	if !back.Started() {
+	if !s.AnyBackendStarted() {
 		return status.Errorf(codes.Unavailable, "core is not started yet")
 	}
 	return nil

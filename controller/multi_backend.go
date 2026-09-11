@@ -152,6 +152,15 @@ func (c *Controller) AllBackends() []backend.Backend {
 	return backends
 }
 
+func (c *Controller) AnyBackendStarted() bool {
+	for _, b := range c.AllBackends() {
+		if b.Started() {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) shutdownExtras() {
 	c.mu.Lock()
 	extras := c.extras
