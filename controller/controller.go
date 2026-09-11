@@ -90,7 +90,13 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 }
 
 func (c *Controller) Disconnect() {
-	c.cancelFunc()
+	c.mu.RLock()
+	cancelFunc := c.cancelFunc
+	c.mu.RUnlock()
+
+	if cancelFunc != nil {
+		cancelFunc()
+	}
 
 	c.shutdownExtras()
 
@@ -195,16 +201,19 @@ func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPor
 func (c *Controller) StartBackend(ctx context.Context, b *common.Backend) error {
 	c.shutdownExtras()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	apiPort, metricPort := c.apiPort, c.metricPort
+	c.mu.RUnlock()
 
-	newBackend, err := c.buildBackend(ctx, b, c.apiPort, c.metricPort)
+	newBackend, err := c.buildBackend(ctx, b, apiPort, metricPort)
 	if err != nil {
 		return err
 	}
 
+	c.mu.Lock()
 	c.backend = newBackend
 	c.primaryType = b.GetType()
+	c.mu.Unlock()
 	return nil
 }
 
@@ -228,7 +237,9 @@ func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Durati
 			c.mu.RUnlock()
 			if time.Since(lastRequest) >= keepAlive {
 				log.Println("disconnect automatically due to keep alive timeout")
+				c.LockControl()
 				c.Disconnect()
+				c.UnlockControl()
 			}
 		}
 	}
