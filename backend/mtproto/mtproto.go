@@ -184,9 +184,9 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 	return pi, nil
 }
 
-// New builds and starts one mtglib.Proxy per configured instance, seeded
-// with the initial user set before any listener starts accepting
-// connections (so no user has to reconnect after a fresh boot).
+// New builds and starts one mtglib.Proxy per configured instance, then seeds
+// the initial user set live (UpdateSecrets on every instance) before
+// returning, so no user has to wait for the next Sync after a fresh boot.
 func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config.Config) (*Backend, error) {
 	if mtCfg == nil {
 		return nil, errors.New("mtproto config must not be nil")
@@ -206,8 +206,6 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		statsTracker:    stats.New(),
 		cancelFunc:      bCancel,
 	}
-
-	b.applyInitialUsers(users)
 
 	ntw, err := buildNetwork()
 	if err != nil {
@@ -287,6 +285,8 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 	}
 
 	b.order = order
+
+	b.syncAllUsers(users)
 
 	go b.sampleStatsPeriodically(bCtx, statsUpdateInterval(nodeCfg))
 
