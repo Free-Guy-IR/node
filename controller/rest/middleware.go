@@ -25,6 +25,9 @@ func (s *Service) validateApiKey(next http.Handler) http.Handler {
 		case err != nil:
 			http.Error(w, "invalid api key format: must be a valid UUID", http.StatusUnprocessableEntity)
 			return
+		case apiKey == uuid.Nil:
+			http.Error(w, "node api key is not configured", http.StatusUnauthorized)
+			return
 		case key != apiKey:
 			http.Error(w, "api key mismatch", http.StatusForbidden)
 			return

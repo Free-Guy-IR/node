@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -74,7 +76,10 @@ func Load() (*Config, error) {
 
 	cfg.ApiKey, err = GetEnvAsUUID("API_KEY")
 	if err != nil {
-		log.Printf("[Error] Failed to load API Key, error: %v", err)
+		return nil, fmt.Errorf("failed to load API Key: %w", err)
+	}
+	if cfg.ApiKey == uuid.Nil {
+		return nil, errors.New("API_KEY must not be the nil UUID")
 	}
 
 	nodeHostStr := GetEnv("NODE_HOST", "0.0.0.0")
@@ -93,6 +98,7 @@ func Load() (*Config, error) {
 
 // NewTestConfig creates a config for testing
 func NewTestConfig(generatedConfigPath string, key uuid.UUID) *Config {
+	_ = os.Setenv("API_KEY", key.String())
 	cfg, _ := Load()
 	cfg.GeneratedConfigPath = generatedConfigPath
 	cfg.ApiKey = key
