@@ -31,7 +31,7 @@ ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api
 # Hysteria2 user changes apply live, without restarting the core (no dropped sessions).
 ARG SINGBOX_REPO=https://github.com/Free-Guy-IR/sing-box.git
 ARG SINGBOX_BRANCH=v1.13.14-hotreload
-ARG SINGBOX_COMMIT=4d8f221c5d0fb1c625a6cd691199c01ecc069cf7
+ARG SINGBOX_COMMIT=4a87f503d6c1279a81c8c0ec7eb6a8ff1c7af44c
 
 RUN apk update && apk add --no-cache git
 
