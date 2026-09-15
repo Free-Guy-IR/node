@@ -18,6 +18,16 @@ GROUPS = {
 
 TYPE_DOMAIN = 2
 
+LIST_SIZE_HINT = {
+    1: 178876, 3: 3547, 4: 0, 6: 13, 7: 140, 8: 0, 9: 0, 10: 958, 11: 3784,
+    12: 12294, 13: 406, 14: 340, 15: 0, 16: 0, 17: 0, 19: 0, 20: 0, 21: 98935,
+    22: 154, 24: 102241, 25: 375, 26: 0, 27: 247866, 29: 198579, 30: 38950,
+    31: 0, 33: 0, 35: 94, 36: 34, 37: 1643, 39: 440, 40: 2071, 41: 107575,
+    42: 46009, 43: 178, 46: 49584, 47: 422362, 49: 271702, 50: 2810, 52: 16271,
+    53: 890, 54: 1533, 55: 1235, 56: 0, 57: 1370, 59: 0, 60: 345, 61: 200,
+    62: 1727, 63: 387, 65: 233, 66: 483, 67: 108, 68: 9879, 69: 115677, 71: 0,
+}
+
 
 def varint(value: int) -> bytes:
     out = bytearray()
@@ -124,6 +134,28 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    for group, ids in GROUPS.items():
+        lost = [i for i in ids if i in failed]
+        if not lost:
+            continue
+        survivors = [e for e in index if e["group"] == group]
+        if not survivors:
+            print(
+                f"group '{group}' lost every list it had ({lost}); "
+                "a category that silently disappears is worse than a build that stops.",
+                file=sys.stderr,
+            )
+            return 1
+        kept = sum(e["domains"] for e in survivors)
+        share = kept / max(1, kept + sum(LIST_SIZE_HINT.get(i, 0) for i in lost))
+        if share < 0.5:
+            print(
+                f"group '{group}' kept only {share:.0%} of its coverage after losing {lost}; "
+                "refusing rather than publishing a category that looks complete and is not.",
+                file=sys.stderr,
+            )
+            return 1
 
     payload = encode(categories)
     os.makedirs(out_dir, exist_ok=True)
