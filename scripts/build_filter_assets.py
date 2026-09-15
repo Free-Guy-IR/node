@@ -46,10 +46,9 @@ def number(field: int, value: int) -> bytes:
 def encode(categories: dict[str, list[str]]) -> bytes:
     out = bytearray()
     for code, domains in categories.items():
-        body = blob(1, code.upper().encode())
-        for domain in domains:
-            body += blob(2, number(1, TYPE_DOMAIN) + blob(2, domain.encode()))
-        out += blob(1, body)
+        parts = [blob(1, code.upper().encode())]
+        parts.extend(blob(2, number(1, TYPE_DOMAIN) + blob(2, d.encode())) for d in domains)
+        out += blob(1, b"".join(parts))
     return bytes(out)
 
 
@@ -75,21 +74,27 @@ def domains_of(raw: bytes) -> list[str]:
 
 def main() -> int:
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "/usr/local/share/xray"
-    names = {}
     try:
-        meta = json.loads(fetch(f"{REGISTRY}/../filters.json").decode())
+        meta = json.loads(fetch(f"{REGISTRY}/filters.json").decode())
         names = {f["filterId"]: f["name"] for f in meta.get("filters", [])}
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"could not read the registry metadata: {exc}", file=sys.stderr)
+        return 1
+    if not names:
+        print("the registry metadata carried no filter names", file=sys.stderr)
+        return 1
 
     categories: dict[str, list[str]] = {}
     index = []
+    wanted = sum(len(ids) for ids in GROUPS.values())
+    failed: list[int] = []
     for group, ids in GROUPS.items():
         for filter_id in ids:
             try:
                 raw = fetch(f"{REGISTRY}/filter_{filter_id}.txt")
             except Exception as exc:
-                print(f"  skipped filter_{filter_id}: {exc}", file=sys.stderr)
+                print(f"  could not fetch filter_{filter_id}: {exc}", file=sys.stderr)
+                failed.append(filter_id)
                 continue
             found = domains_of(raw)
             if not found:
@@ -110,6 +115,16 @@ def main() -> int:
         print("no lists could be fetched", file=sys.stderr)
         return 1
 
+    allowed = int(os.environ.get("FILTER_ASSET_MAX_FAILURES", "2"))
+    if len(failed) > allowed:
+        print(
+            f"{len(failed)} of {wanted} lists failed to download ({failed}); "
+            "refusing to ship a partial security asset. "
+            "Raise FILTER_ASSET_MAX_FAILURES to accept it deliberately.",
+            file=sys.stderr,
+        )
+        return 1
+
     payload = encode(categories)
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "pgfilter.dat"), "wb") as handle:
@@ -119,7 +134,12 @@ def main() -> int:
 
     with open(os.path.join(out_dir, "pgfilter_index.json"), "w", encoding="utf-8") as handle:
         json.dump(
-            {"file": "pgfilter.dat", "sha256": hashlib.sha256(payload).hexdigest(), "lists": index},
+            {
+                "file": "pgfilter.dat",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "lists": index,
+                "failed": failed,
+            },
             handle,
             ensure_ascii=False,
             indent=1,
