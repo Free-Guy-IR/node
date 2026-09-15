@@ -46,6 +46,21 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' -s -w -buildid=" \
     -o /out/sing-box ./cmd/sing-box
 
+FROM alpine:latest AS filter-assets
+
+ARG SKIP_FILTER_ASSETS=0
+
+RUN apk add --no-cache python3 ca-certificates
+WORKDIR /assets
+COPY scripts/build_filter_assets.py /build_filter_assets.py
+RUN if [ "$SKIP_FILTER_ASSETS" = "1" ]; then \
+        echo "filter assets skipped"; \
+        : > /assets/pgfilter.dat; \
+        echo '{"file":"pgfilter.dat","sha256":"","lists":[]}' > /assets/pgfilter_index.json; \
+    else \
+        python3 /build_filter_assets.py /assets; \
+    fi
+
 FROM alpine:latest
 
 LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"
@@ -60,5 +75,9 @@ COPY --from=builder /src/main /app/main
 COPY --from=builder /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=builder /usr/local/share/xray /usr/local/share/xray
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
+COPY --from=filter-assets /assets/pgfilter.dat /usr/local/share/xray/pgfilter.dat
+COPY --from=filter-assets /assets/pgfilter_index.json /usr/local/share/xray/pgfilter_index.json
+
+ENV XRAY_LOCATION_ASSET=/usr/local/share/xray
 
 ENTRYPOINT ["./main"]
