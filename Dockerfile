@@ -53,12 +53,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 # geosite category is expanded past that before it reaches the core. The patch gives
 # that server the same 64 MiB this node already allows elsewhere. The build applies the
 # patch and then greps for the result, so a patch that stops applying fails the build
-# instead of silently shipping an unpatched core.
+# instead of silently shipping an unpatched core. The source is pinned to a commit and
+# the checkout is asserted against it, the same way the sing-box stage does, because a
+# git tag can be moved and a tag alone would not tell us we built what we reviewed.
 FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS xray-builder
 
 ARG TARGETOS
 ARG TARGETARCH
 ARG XRAY_VERSION=v26.3.27
+ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
 
 RUN apk update && apk add --no-cache git
 
@@ -66,8 +69,9 @@ WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
- && git fetch -q --depth 1 origin refs/tags/${XRAY_VERSION} \
+ && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
  && git checkout -q FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
