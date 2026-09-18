@@ -46,6 +46,34 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' -s -w -buildid=" \
     -o /out/sing-box ./cmd/sing-box
 
+# --- xray builder ---
+# Built from source rather than using the prebuilt release binary installed by
+# make install_xray: Xray's commander starts its gRPC server with no options, so it
+# inherits grpc-go's 4 MiB receive default, and a routing rule that names a large
+# geosite category is expanded past that before it reaches the core. The patch gives
+# that server the same 64 MiB this node already allows elsewhere. The build applies the
+# patch and then greps for the result, so a patch that stops applying fails the build
+# instead of silently shipping an unpatched core.
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS xray-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG XRAY_VERSION=v26.3.27
+
+RUN apk update && apk add --no-cache git
+
+WORKDIR /xray-src
+COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+RUN git init -q . \
+ && git remote add origin https://github.com/XTLS/Xray-core.git \
+ && git fetch -q --depth 1 origin refs/tags/${XRAY_VERSION} \
+ && git checkout -q FETCH_HEAD \
+ && git apply --verbose /patches/xray-commander-message-size.patch \
+ && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags "-s -w -buildid=" \
+    -o /out/xray ./main
+
 FROM alpine:latest
 
 LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"
@@ -57,7 +85,7 @@ RUN command -v swanctl >/dev/null && command -v xl2tpd >/dev/null && command -v 
 
 WORKDIR /app
 COPY --from=builder /src/main /app/main
-COPY --from=builder /usr/local/bin/xray /usr/local/bin/xray
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
 COPY --from=builder /usr/local/share/xray /usr/local/share/xray
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 

@@ -27,6 +27,7 @@ type Config struct {
 	StartupLogTailSize          int
 	StatsUpdateIntervalSeconds  int
 	StatsCleanupIntervalSeconds int
+	GrpcMaxConcurrentStreams    uint32
 
 	// WireGuard host routing (Linux). See .env.example for semantics.
 	WGHostRouting        bool
@@ -58,6 +59,7 @@ func Load() (*Config, error) {
 		StartupLogTailSize:          GetEnvAsInt("STARTUP_LOG_TAIL_SIZE", 200),
 		StatsUpdateIntervalSeconds:  GetEnvAsInt("STATS_UPDATE_INTERVAL_SECONDS", 10),
 		StatsCleanupIntervalSeconds: GetEnvAsInt("STATS_CLEANUP_INTERVAL_SECONDS", 300),
+		GrpcMaxConcurrentStreams:    uint32(GetEnvAsInt("GRPC_MAX_CONCURRENT_STREAMS", 64)),
 
 		WGHostRouting:        GetEnvAsBool("PG_NODE_WG_HOST_ROUTING", true),
 		WGNATOutputInterface: GetEnv("PG_NODE_WG_NAT_OUTPUT_INTERFACE", ""),
