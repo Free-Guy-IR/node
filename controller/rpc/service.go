@@ -37,6 +37,7 @@ func StartGRPCListener(tlsConfig *tls.Config, addr string, cfg *config.Config) (
 		grpc.Creds(creds),
 		grpc.MaxRecvMsgSize(maxMsgSize),
 		grpc.MaxSendMsgSize(maxMsgSize),
+		grpc.MaxConcurrentStreams(cfg.GrpcMaxConcurrentStreams),
 		grpc.UnaryInterceptor(ConditionalMiddleware(s)),
 		grpc.StreamInterceptor(ConditionalStreamMiddleware(s)),
 	)
