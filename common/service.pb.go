@@ -175,13 +175,16 @@ func (*Empty) Descriptor() ([]byte, []int) {
 
 // Base info response message
 type BaseInfoResponse struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Started           bool                   `protobuf:"varint,1,opt,name=started,proto3" json:"started,omitempty"`
-	CoreVersion       string                 `protobuf:"bytes,2,opt,name=core_version,json=coreVersion,proto3" json:"core_version,omitempty"`
-	NodeVersion       string                 `protobuf:"bytes,3,opt,name=node_version,json=nodeVersion,proto3" json:"node_version,omitempty"`
-	SupportedBackends []string               `protobuf:"bytes,4,rep,name=supported_backends,json=supportedBackends,proto3" json:"supported_backends,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Started             bool                   `protobuf:"varint,1,opt,name=started,proto3" json:"started,omitempty"`
+	CoreVersion         string                 `protobuf:"bytes,2,opt,name=core_version,json=coreVersion,proto3" json:"core_version,omitempty"`
+	NodeVersion         string                 `protobuf:"bytes,3,opt,name=node_version,json=nodeVersion,proto3" json:"node_version,omitempty"`
+	SupportedBackends   []string               `protobuf:"bytes,4,rep,name=supported_backends,json=supportedBackends,proto3" json:"supported_backends,omitempty"`
+	FilterRulesStripped bool                   `protobuf:"varint,5,opt,name=filter_rules_stripped,json=filterRulesStripped,proto3" json:"filter_rules_stripped,omitempty"`
+	FilterStripReason   string                 `protobuf:"bytes,6,opt,name=filter_strip_reason,json=filterStripReason,proto3" json:"filter_strip_reason,omitempty"`
+	StrippedRuleTags    []string               `protobuf:"bytes,7,rep,name=stripped_rule_tags,json=strippedRuleTags,proto3" json:"stripped_rule_tags,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *BaseInfoResponse) Reset() {
@@ -238,6 +241,27 @@ func (x *BaseInfoResponse) GetNodeVersion() string {
 func (x *BaseInfoResponse) GetSupportedBackends() []string {
 	if x != nil {
 		return x.SupportedBackends
+	}
+	return nil
+}
+
+func (x *BaseInfoResponse) GetFilterRulesStripped() bool {
+	if x != nil {
+		return x.FilterRulesStripped
+	}
+	return false
+}
+
+func (x *BaseInfoResponse) GetFilterStripReason() string {
+	if x != nil {
+		return x.FilterStripReason
+	}
+	return ""
+}
+
+func (x *BaseInfoResponse) GetStrippedRuleTags() []string {
+	if x != nil {
+		return x.StrippedRuleTags
 	}
 	return nil
 }
@@ -2511,12 +2535,15 @@ var File_common_service_proto protoreflect.FileDescriptor
 const file_common_service_proto_rawDesc = "" +
 	"\n" +
 	"\x14common/service.proto\x12\aservice\"\a\n" +
-	"\x05Empty\"\xa1\x01\n" +
+	"\x05Empty\"\xb3\x02\n" +
 	"\x10BaseInfoResponse\x12\x18\n" +
 	"\astarted\x18\x01 \x01(\bR\astarted\x12!\n" +
 	"\fcore_version\x18\x02 \x01(\tR\vcoreVersion\x12!\n" +
 	"\fnode_version\x18\x03 \x01(\tR\vnodeVersion\x12-\n" +
-	"\x12supported_backends\x18\x04 \x03(\tR\x11supportedBackends\"\xba\x01\n" +
+	"\x12supported_backends\x18\x04 \x03(\tR\x11supportedBackends\x122\n" +
+	"\x15filter_rules_stripped\x18\x05 \x01(\bR\x13filterRulesStripped\x12.\n" +
+	"\x13filter_strip_reason\x18\x06 \x01(\tR\x11filterStripReason\x12,\n" +
+	"\x12stripped_rule_tags\x18\a \x03(\tR\x10strippedRuleTags\"\xba\x01\n" +
 	"\aBackend\x12(\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x14.service.BackendTypeR\x04type\x12\x16\n" +
 	"\x06config\x18\x02 \x01(\tR\x06config\x12#\n" +

@@ -22,7 +22,7 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.6.19"
+const NodeVersion = "0.6.20"
 
 var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
 
@@ -380,6 +380,13 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	if c.backend != nil {
 		response.Started = c.backend.Started()
 		response.CoreVersion = c.backend.Version()
+
+		if degradable, ok := c.backend.(backend.DegradableBackend); ok {
+			degradation := degradable.StartupDegradation()
+			response.FilterRulesStripped = degradation.FilterRulesStripped
+			response.FilterStripReason = degradation.Reason
+			response.StrippedRuleTags = degradation.StrippedRuleTags
+		}
 	}
 
 	return response

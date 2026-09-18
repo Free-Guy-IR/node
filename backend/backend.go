@@ -38,6 +38,16 @@ type RoutingBackend interface {
 	OverrideBalancerTarget(ctx context.Context, balancerTag, target string) error
 }
 
+type StartupDegradation struct {
+	FilterRulesStripped bool
+	Reason              string
+	StrippedRuleTags    []string
+}
+
+type DegradableBackend interface {
+	StartupDegradation() StartupDegradation
+}
+
 type ConfigKey struct{}
 
 type UsersKey struct{}

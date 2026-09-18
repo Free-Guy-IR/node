@@ -7,20 +7,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
 )
 
 type Xray struct {
-	config     *Config
-	cfg        *config.Config
-	core       *Core
-	handler    *api.XrayHandler
-	metricPort int
-	cancelFunc context.CancelFunc
-	mu         sync.RWMutex
-	syncMu     sync.Mutex
+	config      *Config
+	cfg         *config.Config
+	core        *Core
+	handler     *api.XrayHandler
+	metricPort  int
+	degradation backend.StartupDegradation
+	cancelFunc  context.CancelFunc
+	mu          sync.RWMutex
+	syncMu      sync.Mutex
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
@@ -77,20 +79,16 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 		return nil, err
 	}
 
-	if err = core.Start(xrayConfig, cfg.Debug); err != nil {
-		return nil, err
-	}
-
 	xray.core = core
 
 	handler, err := api.NewXrayAPI(apiPort)
 	if err != nil {
-		xray.Shutdown()
+		xCancel()
 		return nil, err
 	}
 	xray.handler = handler
 
-	if err = xray.checkXrayStatus(ctx); err != nil {
+	if err = xray.startCoreWithFilterFallback(ctx, xrayConfig, xray.startCoreAndWait, core.Stop); err != nil {
 		xray.Shutdown()
 		return nil, err
 	}
@@ -137,6 +135,12 @@ func (x *Xray) setConfig(config *Config) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.config = config
+}
+
+func (x *Xray) activeConfig() *Config {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	return x.config
 }
 
 func (x *Xray) Shutdown() {
