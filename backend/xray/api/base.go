@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/app/proxyman/command"
@@ -18,6 +19,7 @@ type XrayHandler struct {
 	StatsServiceClient   *statsService.StatsServiceClient
 	RoutingServiceClient *routingService.RoutingServiceClient
 	GrpcClient           *grpc.ClientConn
+	revokeUnsupported    atomic.Bool
 }
 
 const maxGRPCMessageSize = 64 * 1024 * 1024 // 64MB
