@@ -31,6 +31,13 @@ jobs:
       - name: Install xray-core
         run: make install_xray
 
+      - name: Replace xray-core with the pinned and patched build the image ships
+        run: |
+          make build_xray XRAY_OUTPUT="$RUNNER_TEMP/xray"
+          make test_xray_patches
+          sudo install -m 0755 "$RUNNER_TEMP/xray" /usr/local/bin/xray
+          /usr/local/bin/xray version
+
       - name: install wg
         run: make install_wg
 
