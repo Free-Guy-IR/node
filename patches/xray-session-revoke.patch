@@ -1,3 +1,29 @@
+diff --git a/app/proxyman/command/command.go b/app/proxyman/command/command.go
+index a86f092..51c2afe 100644
+--- a/app/proxyman/command/command.go
++++ b/app/proxyman/command/command.go
+@@ -62,4 +62,5 @@ func (op *RemoveUserOperation) ApplyInbound(ctx context.Context, handler inbound
+ 		return errors.New("proxy is not a UserManager")
+ 	}
++	retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))
+ 	return um.RemoveUser(ctx, op.Email)
+ }
+diff --git a/app/proxyman/command/retire.go b/app/proxyman/command/retire.go
+new file mode 100644
+index 0000000..7f567c4
+--- /dev/null
++++ b/app/proxyman/command/retire.go
+@@ -0,0 +1,10 @@
++package command
++
++import (
++	"github.com/xtls/xray-core/app/proxyman/sessionrevoke"
++	"github.com/xtls/xray-core/common/protocol"
++)
++
++func retireUser(tag, email string, user *protocol.MemoryUser) {
++	sessionrevoke.Retire(tag, email, user)
++}
 diff --git a/app/proxyman/inbound/revocable.go b/app/proxyman/inbound/revocable.go
 new file mode 100644
 index 0000000..7985060
@@ -229,12 +255,169 @@ index 0000000..197ed94
 +	errors.LogInfo(ctx, "revoked user ", op.Email, " on inbound ", handler.Tag(), ", closed ", closed, " live sessions")
 +	return nil
 +}
+diff --git a/app/proxyman/sessionrevoke/operation_test.go b/app/proxyman/sessionrevoke/operation_test.go
+new file mode 100644
+index 0000000..15360a5
+--- /dev/null
++++ b/app/proxyman/sessionrevoke/operation_test.go
+@@ -0,0 +1,151 @@
++package sessionrevoke_test
++
++import (
++	"context"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/proxyman/command"
++	"github.com/xtls/xray-core/app/proxyman/sessionrevoke"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/proxy"
++	"github.com/xtls/xray-core/proxy/vless"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet/stat"
++)
++
++type memoryInbound struct {
++	mu    sync.Mutex
++	users map[string]*protocol.MemoryUser
++}
++
++func (m *memoryInbound) Network() []net.Network { return []net.Network{net.Network_TCP} }
++
++func (m *memoryInbound) Process(context.Context, net.Network, stat.Connection, routing.Dispatcher) error {
++	return nil
++}
++
++func (m *memoryInbound) AddUser(_ context.Context, user *protocol.MemoryUser) error {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	if _, found := m.users[user.Email]; found {
++		return errors.New("User ", user.Email, " already exists.")
++	}
++	m.users[user.Email] = user
++	return nil
++}
++
++func (m *memoryInbound) RemoveUser(_ context.Context, email string) error {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	if _, found := m.users[email]; !found {
++		return errors.New("User ", email, " not found.")
++	}
++	delete(m.users, email)
++	return nil
++}
++
++func (m *memoryInbound) GetUser(_ context.Context, email string) *protocol.MemoryUser {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	return m.users[email]
++}
++
++func (m *memoryInbound) GetUsers(context.Context) []*protocol.MemoryUser { return nil }
++
++func (m *memoryInbound) GetUsersCount(context.Context) int64 { return 0 }
++
++type memoryHandler struct {
++	tag     string
++	inbound *memoryInbound
++}
++
++func (h *memoryHandler) Start() error                           { return nil }
++func (h *memoryHandler) Close() error                           { return nil }
++func (h *memoryHandler) Tag() string                            { return h.tag }
++func (h *memoryHandler) ReceiverSettings() *serial.TypedMessage { return nil }
++func (h *memoryHandler) ProxySettings() *serial.TypedMessage    { return nil }
++func (h *memoryHandler) GetInbound() proxy.Inbound              { return h.inbound }
++
++type countingDispatcher struct {
++	dispatched int
++}
++
++func (d *countingDispatcher) Type() interface{} { return routing.DispatcherType() }
++func (d *countingDispatcher) Start() error      { return nil }
++func (d *countingDispatcher) Close() error      { return nil }
++
++func (d *countingDispatcher) Dispatch(context.Context, net.Destination) (*transport.Link, error) {
++	d.dispatched++
++	return &transport.Link{}, nil
++}
++
++func (d *countingDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
++	d.dispatched++
++	return nil
++}
++
++type closeRecorder struct {
++	once   sync.Once
++	closed chan struct{}
++}
++
++func (c *closeRecorder) Close() error {
++	c.once.Do(func() { close(c.closed) })
++	return nil
++}
++
++func addUser(t *testing.T, ctx context.Context, handler *memoryHandler, email string) {
++	t.Helper()
++
++	account := serial.ToTypedMessage(&vless.Account{Id: "0b6f2a4e-6a54-4a51-9a3a-6f1e2b1f7c11"})
++	operation := &command.AddUserOperation{User: &protocol.User{Email: email, Account: account}}
++	if err := operation.ApplyInbound(ctx, handler); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestResyncThenRevokeRefusesAConnectionThatHadNotDispatchedYet(t *testing.T) {
++	ctx := context.Background()
++	handler := &memoryHandler{tag: "in-resync", inbound: &memoryInbound{users: make(map[string]*protocol.MemoryUser)}}
++	const email = "resync@revoke-test"
++
++	addUser(t, ctx, handler, email)
++	firstGeneration := handler.inbound.GetUser(ctx, email)
++
++	connCtx, cancel := context.WithCancel(ctx)
++	defer cancel()
++	connCtx = session.ContextWithInbound(connCtx, &session.Inbound{Tag: handler.tag, User: firstGeneration})
++	conn := &closeRecorder{closed: make(chan struct{})}
++	tracked := sessionrevoke.Track(handler.tag, conn, cancel)
++	defer tracked.Release()
++
++	if err := (&command.RemoveUserOperation{Email: email}).ApplyInbound(ctx, handler); err != nil {
++		t.Fatal(err)
++	}
++	addUser(t, ctx, handler, email)
++	if handler.inbound.GetUser(ctx, email) == firstGeneration {
++		t.Fatal("the resync did not replace the user")
++	}
++
++	if err := (&sessionrevoke.RevokeUserOperation{Email: email}).ApplyInbound(ctx, handler); err != nil {
++		t.Fatal(err)
++	}
++
++	inner := &countingDispatcher{}
++	err := tracked.Wrap(inner).DispatchLink(connCtx, net.TCPDestination(net.LocalHostIP, 80), &transport.Link{})
++	if err == nil || inner.dispatched != 0 {
++		t.Fatal("a connection authenticated before a resync was dispatched after the user was revoked")
++	}
++	select {
++	case <-conn.closed:
++	case <-time.After(time.Second):
++		t.Fatal("the refused connection was not closed")
++	}
++}
 diff --git a/app/proxyman/sessionrevoke/session.go b/app/proxyman/sessionrevoke/session.go
 new file mode 100644
-index 0000000..f02fbb5
+index 0000000..e15de0b
 --- /dev/null
 +++ b/app/proxyman/sessionrevoke/session.go
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,225 @@
 +package sessionrevoke
 +
 +import (
@@ -273,21 +456,28 @@ index 0000000..f02fbb5
 +
 +const minPruneThreshold = 1024
 +
++type generations map[weak.Pointer[protocol.MemoryUser]]struct{}
++
 +type registry struct {
 +	sync.Mutex
-+	sessions map[userKey]map[*Session]struct{}
-+	revoked  map[weak.Pointer[protocol.MemoryUser]]struct{}
-+	pruneAt  int
++	sessions       map[userKey]map[*Session]struct{}
++	revoked        generations
++	pruneAt        int
++	retired        map[userKey]generations
++	retiredCount   int
++	retiredPruneAt int
 +}
 +
 +var active = &registry{
-+	sessions: make(map[userKey]map[*Session]struct{}),
-+	revoked:  make(map[weak.Pointer[protocol.MemoryUser]]struct{}),
-+	pruneAt:  minPruneThreshold,
++	sessions:       make(map[userKey]map[*Session]struct{}),
++	revoked:        make(generations),
++	pruneAt:        minPruneThreshold,
++	retired:        make(map[userKey]generations),
++	retiredPruneAt: minPruneThreshold,
 +}
 +
-+func (r *registry) revokeLocked(user *protocol.MemoryUser) {
-+	r.revoked[weak.Make(user)] = struct{}{}
++func (r *registry) markLocked(user weak.Pointer[protocol.MemoryUser]) {
++	r.revoked[user] = struct{}{}
 +	if len(r.revoked) < r.pruneAt {
 +		return
 +	}
@@ -297,6 +487,48 @@ index 0000000..f02fbb5
 +		}
 +	}
 +	r.pruneAt = max(minPruneThreshold, 2*len(r.revoked))
++}
++
++func (r *registry) revokeLocked(user *protocol.MemoryUser) {
++	r.markLocked(weak.Make(user))
++}
++
++func (r *registry) retireLocked(key userKey, user *protocol.MemoryUser) {
++	retired := r.retired[key]
++	if retired == nil {
++		retired = make(generations)
++		r.retired[key] = retired
++	}
++	generation := weak.Make(user)
++	if _, known := retired[generation]; known {
++		return
++	}
++	retired[generation] = struct{}{}
++	r.retiredCount++
++	if r.retiredCount < r.retiredPruneAt {
++		return
++	}
++	for key, retired := range r.retired {
++		for generation := range retired {
++			if generation.Value() == nil {
++				delete(retired, generation)
++				r.retiredCount--
++			}
++		}
++		if len(retired) == 0 {
++			delete(r.retired, key)
++		}
++	}
++	r.retiredPruneAt = max(minPruneThreshold, 2*r.retiredCount)
++}
++
++func Retire(tag, email string, user *protocol.MemoryUser) {
++	if user == nil {
++		return
++	}
++	active.Lock()
++	defer active.Unlock()
++	active.retireLocked(newUserKey(tag, email), user)
 +}
 +
 +func Track(tag string, conn io.Closer, cancel context.CancelFunc) *Session {
@@ -370,12 +602,20 @@ index 0000000..f02fbb5
 +	active.Lock()
 +	defer active.Unlock()
 +
++	key := newUserKey(tag, email)
 +	if current != nil {
 +		active.revokeLocked(current)
 +	}
++	for generation := range active.retired[key] {
++		if generation.Value() != nil {
++			active.markLocked(generation)
++		}
++	}
++	active.retiredCount -= len(active.retired[key])
++	delete(active.retired, key)
 +
 +	closed := 0
-+	for s := range active.sessions[newUserKey(tag, email)] {
++	for s := range active.sessions[key] {
 +		active.revokeLocked(s.user)
 +		if !s.closed {
 +			closed++
@@ -405,10 +645,10 @@ index 0000000..f02fbb5
 +}
 diff --git a/app/proxyman/sessionrevoke/session_test.go b/app/proxyman/sessionrevoke/session_test.go
 new file mode 100644
-index 0000000..8e6c90b
+index 0000000..2b3ba41
 --- /dev/null
 +++ b/app/proxyman/sessionrevoke/session_test.go
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,361 @@
 +package sessionrevoke
 +
 +import (
@@ -633,6 +873,104 @@ index 0000000..8e6c90b
 +	}
 +	if elapsed := time.Since(started); elapsed > 5*time.Second {
 +		t.Fatalf("50000 revocations took %s", elapsed)
++	}
++}
++
++type stalledConn struct {
++	conn    *fakeConn
++	ctx     context.Context
++	session *Session
++	wrapped *fakeDispatcher
++}
++
++func authenticateWithoutDispatch(t *testing.T, tag string, user *protocol.MemoryUser) *stalledConn {
++	t.Helper()
++
++	ctx, cancel := context.WithCancel(context.Background())
++	t.Cleanup(cancel)
++	ctx = session.ContextWithInbound(ctx, &session.Inbound{Tag: tag, User: user})
++
++	conn := newFakeConn()
++	stalled := &stalledConn{conn: conn, ctx: ctx, session: Track(tag, conn, cancel), wrapped: &fakeDispatcher{}}
++	t.Cleanup(stalled.session.Release)
++	return stalled
++}
++
++func (c *stalledConn) dispatch() error {
++	return c.session.Wrap(c.wrapped).DispatchLink(c.ctx, net.TCPDestination(net.LocalHostIP, 80), &transport.Link{})
++}
++
++func TestRetiredGenerationIsRevokedWithTheUser(t *testing.T) {
++	first := memoryUser("resynced@revoke-test")
++	stalled := authenticateWithoutDispatch(t, "in-retired", first)
++
++	Retire("in-retired", first.Email, first)
++	second := memoryUser("resynced@revoke-test")
++	Revoke("in-retired", "RESYNCED@revoke-test", second)
++
++	if err := stalled.dispatch(); err == nil {
++		t.Fatal("a connection authenticated with a retired generation was dispatched after the user was revoked")
++	}
++	if stalled.wrapped.dispatched != 0 {
++		t.Fatal("the stalled connection reached the inner dispatcher")
++	}
++	if !stalled.conn.isClosed(time.Second) {
++		t.Fatal("the stalled connection was not closed")
++	}
++
++	readded, err := openTracked(t, "in-retired", memoryUser("resynced@revoke-test"))
++	if err != nil || readded.wrapped.dispatched != 1 {
++		t.Fatalf("a user added after the revocation was refused: %v", err)
++	}
++}
++
++func TestRetiredGenerationStaysUsableUntilRevoke(t *testing.T) {
++	first := memoryUser("staying@revoke-test")
++	stalled := authenticateWithoutDispatch(t, "in-staying", first)
++
++	Retire("in-staying", first.Email, first)
++
++	if err := stalled.dispatch(); err != nil {
++		t.Fatalf("a resync of a staying user refused its connection: %v", err)
++	}
++	if stalled.conn.isClosed(50 * time.Millisecond) {
++		t.Fatal("a resync of a staying user closed its connection")
++	}
++}
++
++func TestRevokeOnlyUsesTheRevokedKeysRetiredGenerations(t *testing.T) {
++	other := memoryUser("other@revoke-test")
++	stalled := authenticateWithoutDispatch(t, "in-keys", other)
++	Retire("in-keys", other.Email, other)
++	Retire("in-keys-elsewhere", other.Email, other)
++
++	Revoke("in-keys", "someone-else@revoke-test", nil)
++	Revoke("in-keys-other-inbound", other.Email, nil)
++
++	if err := stalled.dispatch(); err != nil {
++		t.Fatalf("revoking another user or another inbound refused this connection: %v", err)
++	}
++}
++
++func TestRetiredGenerationsArePruned(t *testing.T) {
++	for i := 0; i < 64*minPruneThreshold; i++ {
++		if i%minPruneThreshold == 0 {
++			runtime.GC()
++		}
++		Retire("in-retire-prune", "churn@revoke-test", memoryUser("churn@revoke-test"))
++	}
++
++	active.Lock()
++	defer active.Unlock()
++	total := 0
++	for _, retired := range active.retired {
++		total += len(retired)
++	}
++	if total != active.retiredCount {
++		t.Fatalf("retired count %d does not match %d stored generations", active.retiredCount, total)
++	}
++	if total > 4*minPruneThreshold {
++		t.Fatalf("%d retired generations are kept for a user who resynced %d times", total, 64*minPruneThreshold)
 +	}
 +}
 +
