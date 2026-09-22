@@ -149,10 +149,11 @@ build_xray:
 	git -C "$(XRAY_SRC)" checkout -q FETCH_HEAD
 	test "$$(git -C "$(XRAY_SRC)" rev-parse HEAD)" = "$(XRAY_COMMIT)"
 	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done
-	cd "$(XRAY_SRC)" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$(XRAY_OUTPUT)" ./main
+	cd "$(XRAY_SRC)" && echo "xray $(XRAY_COMMIT) needs go $$(sed -n 's/^go //p' go.mod); building with $$(GOTOOLCHAIN=local go version)"
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$(XRAY_OUTPUT)" ./main
 
 test_xray_patches:
-	cd "$(XRAY_SRC)" && go test -count=1 ./app/proxyman/sessionrevoke/...
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)

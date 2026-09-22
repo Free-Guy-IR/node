@@ -33,6 +33,8 @@ jobs:
 
       - name: Replace xray-core with the pinned and patched build the image ships
         run: |
+          cp /usr/local/bin/xray "$RUNNER_TEMP/xray-stock"
+          echo "XRAY_STOCK_EXECUTABLE_PATH=$RUNNER_TEMP/xray-stock" >> "$GITHUB_ENV"
           make build_xray XRAY_OUTPUT="$RUNNER_TEMP/xray"
           make test_xray_patches
           sudo install -m 0755 "$RUNNER_TEMP/xray" /usr/local/bin/xray
