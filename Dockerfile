@@ -67,13 +67,17 @@ RUN apk update && apk add --no-cache git
 
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
- && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go
+ && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && git apply --verbose /patches/xray-session-revoke.patch \
+ && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
+ && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main
