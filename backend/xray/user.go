@@ -119,10 +119,20 @@ func isActiveInbound(inbound *Inbound, inbounds []string, settings api.ProxySett
 	return nil, false
 }
 
-func revokeInboundUser(ctx context.Context, handler *api.XrayHandler, tag, email string) {
-	if err := handler.RevokeInboundUser(ctx, tag, email); errors.Is(err, api.ErrRevokeUnsupported) {
-		_ = handler.RemoveInboundUser(ctx, tag, email)
+func revokeInboundUser(ctx context.Context, handler *api.XrayHandler, tag, email string) error {
+	err := handler.RevokeInboundUser(ctx, tag, email)
+	if errors.Is(err, api.ErrRevokeUnsupported) {
+		err = handler.RemoveInboundUser(ctx, tag, email)
+		if err == nil || api.IsAbsentUser(err, email) {
+			return nil
+		}
+		return fmt.Errorf("remove %s from %s: %w", email, tag, err)
 	}
+	if err == nil || api.IsAbsentUser(err, email) {
+		return nil
+	}
+	_ = handler.RemoveInboundUser(ctx, tag, email)
+	return fmt.Errorf("revoke %s on %s: %w", email, tag, err)
 }
 
 func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
@@ -156,7 +166,10 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 				errMessage.WriteString("\n" + err.Error())
 			}
 		} else {
-			revokeInboundUser(ctx, handler, inbound.Tag, user.Email)
+			if err := revokeInboundUser(ctx, handler, inbound.Tag, user.Email); err != nil {
+				log.Println(err)
+				errMessage.WriteString("\n" + err.Error())
+			}
 			inbound.removeUser(user.GetEmail())
 		}
 	}
@@ -239,7 +252,10 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 		inbound.updateUsers(update.accounts, removeEmails)
 
 		for _, email := range removeEmails {
-			revokeInboundUser(ctx, handler, tag, email)
+			if err := revokeInboundUser(ctx, handler, tag, email); err != nil {
+				log.Println(err)
+				errMessage.WriteString("\n" + err.Error())
+			}
 		}
 
 		for _, account := range update.accounts {

@@ -16,6 +16,15 @@ const revokeUserOperationType = "xray.app.proxyman.sessionrevoke.RevokeUserOpera
 
 var ErrRevokeUnsupported = errors.New("xray core does not support RevokeUserOperation")
 
+func IsAbsentUser(err error, email string) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "User "+email+" not found.") ||
+		strings.Contains(message, "proxy is not a UserManager")
+}
+
 func (x *XrayHandler) AlertInbound(ctx context.Context, tag string, operation *serial.TypedMessage) error {
 	client := *x.HandlerServiceClient
 	_, err := client.AlterInbound(ctx, &command.AlterInboundRequest{Tag: tag, Operation: operation})

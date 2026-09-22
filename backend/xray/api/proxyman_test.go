@@ -122,3 +122,28 @@ func TestRevokeInboundUserReportsOtherFailuresAsIs(t *testing.T) {
 		t.Fatalf("got %d revoke calls, want 2", len(calls))
 	}
 }
+
+func TestIsAbsentUser(t *testing.T) {
+	absent := []error{
+		status.Error(codes.Unknown, "proxy/vless: User 42.alice not found."),
+		status.Error(codes.Unknown, "proxy/vmess/inbound: User 42.alice not found."),
+		status.Error(codes.Unknown, "app/proxyman/command: proxy is not a UserManager"),
+	}
+	for _, err := range absent {
+		if !IsAbsentUser(err, "42.alice") {
+			t.Fatalf("not treated as an absent user: %v", err)
+		}
+	}
+
+	present := []error{
+		nil,
+		status.Error(codes.Unknown, "proxy/vless: User 142.alice not found."),
+		status.Error(codes.Unavailable, "connection reset by peer"),
+		status.Error(codes.Unknown, "app/proxyman/command: failed to get handler: vless"),
+	}
+	for _, err := range present {
+		if IsAbsentUser(err, "42.alice") {
+			t.Fatalf("treated as an absent user: %v", err)
+		}
+	}
+}
