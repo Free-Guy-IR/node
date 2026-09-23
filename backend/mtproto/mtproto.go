@@ -23,7 +23,7 @@ import (
 
 const version = "mtg-fork (Free-Guy-IR)"
 
-const serveExitTimeout = 3 * time.Second
+var serveExitTimeout = 3 * time.Second
 
 var beforeAuthLookup = func() {}
 
