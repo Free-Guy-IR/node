@@ -252,3 +252,34 @@ func TestTrackerRestartedRemovedEntryIsReportedOnceThenDeleted(t *testing.T) {
 		t.Fatal("a removed entry must be deleted once its pending delta was read")
 	}
 }
+
+func TestTrackerDetachMovesEveryEntryAndLeavesTheTrackerEmpty(t *testing.T) {
+	tracker := New()
+	ctx := context.Background()
+
+	applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "moved@example.com", Rx: 1000, Tx: 400})
+	tracker.GetUsersStats(ctx, true)
+	applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "moved@example.com", Rx: 1300, Tx: 500})
+	applyAccountingSample(tracker, Sample{PublicKey: "key2", Email: "other@example.com", Rx: 50, Tx: 60})
+
+	detached := tracker.Detach()
+	if detached == tracker {
+		t.Fatal("Detach must return a different tracker")
+	}
+
+	expectAccountingValues(t, tracker.GetUsersStats(ctx, false), "moved@example.com")
+	if keys := tracker.Keys(); len(keys) != 0 {
+		t.Fatalf("expected the detached-from tracker to be empty, got %v", keys)
+	}
+
+	tracker.RemoveStats("key1")
+	applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "moved@example.com", Rx: 9000, Tx: 9000})
+	tracker.RestartCounters([]string{"key2"})
+
+	resp := detached.GetUsersStats(ctx, true)
+	expectAccountingValues(t, resp, "moved@example.com", 300, 100)
+	expectAccountingValues(t, resp, "other@example.com", 50, 60)
+
+	applyAccountingSample(detached, Sample{PublicKey: "key1", Email: "moved@example.com", Rx: 1310, Tx: 505})
+	expectAccountingValues(t, detached.GetUsersStats(ctx, true), "moved@example.com", 10, 5)
+}

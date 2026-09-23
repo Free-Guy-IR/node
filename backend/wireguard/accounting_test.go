@@ -12,6 +12,7 @@ import (
 
 	"github.com/pasarguard/node/common"
 	nodeconfig "github.com/pasarguard/node/config"
+	"github.com/pasarguard/node/pkg/stats"
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -556,6 +557,45 @@ func TestAccountingHandoverAcrossShutdownAndNew(t *testing.T) {
 	k.setPeer(t, keptKey, 50, 30, time.Now(), loopbackEndpoint())
 	tick(second)
 	expectUserTraffic(t, readAccountingStats(t, second), "kept@example.com", 30, 20)
+}
+
+func TestAccountingOldBackendCannotTouchTheAdoptedTracker(t *testing.T) {
+	k := newAccountingKernel()
+	iface := "wgacct-late"
+	key := mustGeneratePublicKey(t)
+	user := accountingUser(iface, "late@example.com", key, 2)
+	ctx := context.Background()
+
+	first := startAccountingBackend(t, k, iface, []*common.User{user})
+	k.setPeer(t, key, 1000, 400, time.Now(), loopbackEndpoint())
+	tick(first)
+	first.Shutdown()
+
+	second := startAccountingBackend(t, k, iface, []*common.User{user})
+	if first.statsTracker == second.statsTracker {
+		t.Fatal("the stopped backend still holds the tracker the new backend adopted")
+	}
+
+	if err := first.SyncUser(ctx, accountingUserWithoutInbound("late@example.com", key, 2)); err == nil {
+		t.Fatal("expected a sync on the stopped backend to fail")
+	}
+	if err := first.SyncUsers(ctx, nil); err == nil {
+		t.Fatal("expected a full sync on the stopped backend to fail")
+	}
+	if err := first.UpdateUsers(ctx, []*common.User{accountingUserWithoutInbound("late@example.com", key, 2)}); err == nil {
+		t.Fatal("expected an update on the stopped backend to fail")
+	}
+	if err := first.Restart(); err == nil {
+		t.Fatal("expected a restart of the stopped backend to fail")
+	}
+	tick(first)
+	first.cleanupOfflineUsers(ctx)
+	first.statsTracker.RemoveStats(key)
+	first.statsTracker.UpdateStatsBatch([]stats.Sample{{PublicKey: key, Email: "late@example.com", Rx: 5000, Tx: 5000}})
+
+	k.setPeer(t, key, 20, 10, time.Now(), loopbackEndpoint())
+	tick(second)
+	expectUserTraffic(t, readAccountingStats(t, second), "late@example.com", 1020, 410)
 }
 
 func TestAccountingHandoverIsKeyedByInterfaceName(t *testing.T) {

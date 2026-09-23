@@ -139,6 +139,10 @@ func (st *Tracker) RestartCounters(keys []string) {
 	}
 }
 
+func (st *Tracker) Detach() *Tracker {
+	return st
+}
+
 func (st *Tracker) Keys() []string {
 	st.mu.RLock()
 	defer st.mu.RUnlock()

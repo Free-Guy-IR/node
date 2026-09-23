@@ -64,6 +64,7 @@ func TestUpdateConnectedPeersSamplesStaleHandshakePeersQuietly(t *testing.T) {
 		config:       &Config{},
 		peerStore:    peerStore,
 		statsTracker: pkgstats.New(),
+		state:        lifecycleRunning,
 	}
 
 	emailByKey := wg.peerStore.GetEmailMap()
