@@ -46,6 +46,9 @@ type proxyInstance struct {
 }
 
 func (pi *proxyInstance) serve(listener net.Listener) {
+	if pi.streams != nil {
+		listener = pi.streams.track(listener)
+	}
 	done := make(chan struct{})
 	pi.listener = listener
 	pi.serveDone = done
@@ -102,6 +105,10 @@ type Backend struct {
 	outboundTx atomic.Int64
 
 	inboundCounters map[string]*inboundCounter
+
+	accountingMu   sync.Mutex
+	handedOver     bool
+	retiredInbound map[string]*trafficBytes
 }
 
 func logBufferSizeOrDefault(cfg *config.Config) int {
@@ -179,6 +186,7 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 		domain:      inst.FakeTLSDomain,
 		mp:          mp,
 		accumulator: accumulator,
+		streams:     newStreamSet(),
 	}
 
 	pi.serve(listener)
@@ -203,6 +211,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		instances: make(map[string]*proxyInstance, len(mtCfg.Instances)),
 
 		inboundCounters: make(map[string]*inboundCounter, len(mtCfg.Instances)),
+		retiredInbound:  make(map[string]*trafficBytes),
 		startTime:       time.Now(),
 		logsChan:        make(chan string, logBufferSizeOrDefault(nodeCfg)),
 		statsTracker:    stats.New(),
@@ -210,7 +219,13 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 	}
 
 	for _, inst := range mtCfg.Instances {
-		b.instances[inst.Tag] = &proxyInstance{tag: inst.Tag, domain: inst.FakeTLSDomain}
+		counter := &inboundCounter{}
+		b.inboundCounters[inst.Tag] = counter
+		b.instances[inst.Tag] = &proxyInstance{
+			tag:         inst.Tag,
+			domain:      inst.FakeTLSDomain,
+			accumulator: newEventAccumulator(&b.outboundRx, &b.outboundTx, &counter.rx, &counter.tx),
+		}
 	}
 
 	b.applyInitialUsers(users)
@@ -221,6 +236,8 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		return nil, err
 	}
 
+	b.adoptAccounting(takeHandOver())
+
 	order := make([]string, 0, len(mtCfg.Instances))
 
 	for _, inst := range mtCfg.Instances {
@@ -228,9 +245,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		instLogger := newMtgLogger("mtproto."+inst.Tag, b.recordLog)
 
-		counter := &inboundCounter{}
-		b.inboundCounters[inst.Tag] = counter
-		accumulator := newEventAccumulator(&b.outboundRx, &b.outboundTx, &counter.rx, &counter.tx)
+		accumulator := b.instances[inst.Tag].accumulator
 
 		if inst.AdTag != "" {
 			pi, err := b.newMiddleProxyInstance(inst, accumulator)
@@ -394,8 +409,13 @@ func (b *Backend) Shutdown() {
 		}
 		if inst.mp != nil {
 			inst.mp.Shutdown()
+			if !inst.drainStreams() {
+				b.recordLog(fmt.Sprintf("mtproto instance %q: streams did not finish within %s, handing over what they counted", inst.tag, serveExitTimeout))
+			}
 		}
 	}
+
+	b.handOverAccounting()
 
 	b.recordLog("mtproto shutdown complete")
 }
@@ -412,7 +432,7 @@ func (b *Backend) sampleStatsPeriodically(ctx context.Context, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.refreshUserStats()
+			b.sampleUserStats()
 		}
 	}
 }
