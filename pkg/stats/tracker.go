@@ -70,26 +70,23 @@ func (st *Tracker) applySampleLocked(sample Sample, activeAt time.Time) {
 		st.stats[sample.PublicKey] = entry
 	}
 	entry.Email = sample.Email
-	entry.IsDeleted = false
 
 	// Restore pending delta baseline when a deleted entry is re-added.
-	readded := false
-	if entry.LastDeltaRx != 0 || entry.LastDeltaTx != 0 {
-		entry.BaseRx = sample.Rx - entry.LastDeltaRx
-		entry.BaseTx = sample.Tx - entry.LastDeltaTx
-		entry.LastDeltaRx = 0
-		entry.LastDeltaTx = 0
-		readded = true
+	if entry.IsDeleted {
+		restartEntryCounters(entry)
+		entry.IsDeleted = false
 	}
 
 	// Skip update if values haven't changed
 	if entry.CurrentRx == sample.Rx && entry.CurrentTx == sample.Tx {
-		entry.EndpointIP = sample.EndpointIP
+		if !sample.Quiet {
+			entry.EndpointIP = sample.EndpointIP
+		}
 		return
 	}
 
 	// Detect kernel counter rollback/reset and preserve pending deltas
-	if !readded && (sample.Rx < entry.CurrentRx || sample.Tx < entry.CurrentTx) {
+	if sample.Rx < entry.CurrentRx || sample.Tx < entry.CurrentTx {
 		pendingRx := entry.CurrentRx - entry.BaseRx
 		pendingTx := entry.CurrentTx - entry.BaseTx
 		if pendingRx < 0 {
@@ -103,7 +100,7 @@ func (st *Tracker) applySampleLocked(sample Sample, activeAt time.Time) {
 	}
 
 	// Any traffic growth implies peer is active.
-	if sample.Rx > entry.CurrentRx || sample.Tx > entry.CurrentTx {
+	if !sample.Quiet && (sample.Rx > entry.CurrentRx || sample.Tx > entry.CurrentTx) {
 		entry.LastActiveTime = activeAt
 	}
 
@@ -111,7 +108,46 @@ func (st *Tracker) applySampleLocked(sample Sample, activeAt time.Time) {
 	entry.CurrentTx = sample.Tx
 
 	// Update endpoint from periodic check.
-	entry.EndpointIP = sample.EndpointIP
+	if !sample.Quiet {
+		entry.EndpointIP = sample.EndpointIP
+	}
+}
+
+func restartEntryCounters(entry *Entry) {
+	pendingRx := max(entry.CurrentRx-entry.BaseRx, 0)
+	pendingTx := max(entry.CurrentTx-entry.BaseTx, 0)
+	entry.CurrentRx = 0
+	entry.CurrentTx = 0
+	entry.BaseRx = -pendingRx
+	entry.BaseTx = -pendingTx
+	entry.LastDeltaRx = 0
+	entry.LastDeltaTx = 0
+}
+
+func (st *Tracker) RestartCounters(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	for _, key := range keys {
+		if entry, exists := st.stats[key]; exists {
+			restartEntryCounters(entry)
+		}
+	}
+}
+
+func (st *Tracker) Keys() []string {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+
+	keys := make([]string, 0, len(st.stats))
+	for key := range st.stats {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // GetStats returns stats for specific public keys (direct map lookup)
@@ -276,8 +312,6 @@ func (st *Tracker) RemoveStats(publicKey string) {
 	entry.IsDeleted = true
 	entry.LastActiveTime = time.Time{}
 }
-
-func (st *Tracker) RestartCounters(keys []string) {}
 
 // ClearAllStats clears all stats
 func (st *Tracker) ClearAllStats() {
