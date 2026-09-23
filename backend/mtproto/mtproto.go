@@ -25,6 +25,8 @@ import (
 
 const version = "mtg-fork (Free-Guy-IR)"
 
+const serveExitTimeout = 3 * time.Second
+
 var beforeAuthLookup = func() {}
 
 // proxyInstance is one running admin-configured listener: EITHER an
@@ -40,7 +42,33 @@ type proxyInstance struct {
 	proxy       *mtglib.Proxy
 	mp          *middleproxy.Instance
 	listener    net.Listener
+	serveDone   chan struct{}
 	accumulator *eventAccumulator
+}
+
+func (pi *proxyInstance) serve(listener net.Listener) {
+	done := make(chan struct{})
+	pi.listener = listener
+	pi.serveDone = done
+
+	go func() {
+		defer close(done)
+		if pi.mp != nil {
+			_ = pi.mp.Serve(listener)
+			return
+		}
+		_ = pi.proxy.Serve(listener)
+	}()
+}
+
+func (pi *proxyInstance) awaitServeExit() {
+	if pi.serveDone == nil {
+		return
+	}
+	select {
+	case <-pi.serveDone:
+	case <-time.After(serveExitTimeout):
+	}
 }
 
 // Backend is the MTProto-backed implementation of backend.Backend. See the
@@ -177,11 +205,10 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 		tag:         inst.Tag,
 		domain:      inst.FakeTLSDomain,
 		mp:          mp,
-		listener:    listener,
 		accumulator: accumulator,
 	}
 
-	go mp.Serve(listener) //nolint: errcheck
+	pi.serve(listener)
 
 	return pi, nil
 }
@@ -279,15 +306,15 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			return nil, fmt.Errorf("mtproto: failed to listen on instance %q port %d: %w", inst.Tag, inst.Port, err)
 		}
 
-		b.instances[inst.Tag] = &proxyInstance{
+		pi := &proxyInstance{
 			tag:         inst.Tag,
 			domain:      inst.FakeTLSDomain,
 			proxy:       proxy,
-			listener:    listener,
 			accumulator: accumulator,
 		}
+		b.instances[inst.Tag] = pi
 
-		go proxy.Serve(listener) //nolint: errcheck
+		pi.serve(listener)
 
 		b.recordLog(fmt.Sprintf("mtproto instance %q started on port %d (mode=%s domains=%d first=%s)", inst.Tag, inst.Port, inst.Mode, len(inst.Domains()), inst.FakeTLSDomain))
 	}
@@ -349,6 +376,7 @@ func (b *Backend) Restart() error {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
 		}
+		inst.awaitServeExit()
 
 		port := inst.listener.Addr().(*net.TCPAddr).Port //nolint: forcetypeassert
 
@@ -358,13 +386,7 @@ func (b *Backend) Restart() error {
 			continue
 		}
 
-		inst.listener = listener
-
-		if inst.mp != nil {
-			go inst.mp.Serve(listener) //nolint: errcheck
-		} else {
-			go inst.proxy.Serve(listener) //nolint: errcheck
-		}
+		inst.serve(listener)
 	}
 
 	return errors.Join(errs...)
@@ -383,6 +405,7 @@ func (b *Backend) Shutdown() {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
 		}
+		inst.awaitServeExit()
 		if inst.proxy != nil {
 			inst.proxy.Shutdown()
 		}
