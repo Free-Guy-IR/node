@@ -57,12 +57,12 @@ func readSessions(tag string) []l2tpSession {
 	}
 	var out []l2tpSession
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(sessionStateDir, e.Name())
-		s := parseSessionFile(path, e.Name())
-		if s.user == "" || s.ifname == "" || !ownsRecord(s.tag, tag) {
+		s, complete := parseSessionFile(path, e.Name())
+		if !complete || s.user == "" || s.ifname == "" || !ownsRecord(s.tag, tag) {
 			continue
 		}
 		if !sessionIsAlive(s) {
@@ -74,13 +74,14 @@ func readSessions(tag string) []l2tpSession {
 	return out
 }
 
-func parseSessionFile(path, ifname string) l2tpSession {
+func parseSessionFile(path, ifname string) (l2tpSession, bool) {
 	s := l2tpSession{ifname: ifname}
 	f, err := os.Open(path)
 	if err != nil {
-		return s
+		return s, false
 	}
 	defer f.Close()
+	hasStarted := false
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
@@ -100,9 +101,10 @@ func parseSessionFile(path, ifname string) l2tpSession {
 			s.pid, _ = strconv.Atoi(v)
 		case "started":
 			s.started, _ = strconv.ParseInt(v, 10, 64)
+			hasStarted = true
 		}
 	}
-	return s
+	return s, hasStarted
 }
 
 type finalRecord struct {
