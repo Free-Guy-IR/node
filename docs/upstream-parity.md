@@ -137,9 +137,14 @@ Add one trailer line per upstream commit to the porting commit's message, with t
 Upstream: a69d7ed6811af281ffc01e11478638d922130f0d
 ```
 
-A verbatim `git cherry-pick -x` is recognised by both its patch-id and its `(cherry picked from commit ...)` line. A
-partial port, or several upstream commits folded into one, is recognised only by the trailer, so the trailer is
-required whenever the patch is not identical. Record a partial port in the table above.
+`git cherry-pick -x` is always recognised through its `(cherry picked from commit ...)` line. The patch-id alone
+matches only when the fork's diff equals upstream's including the unchanged context lines around each change: a
+cherry-pick of `#88` onto a `go.mod` that does not yet have `#84` and `#85` applies cleanly but has a different
+patch-id. A partial port, or several upstream commits folded into one, is recognised only by the trailer. So write the
+trailer (or use `-x`) on every port, and record a partial port in the table above.
+
+The check trusts the trailer: it does not verify how much of the upstream commit was taken, and a port that is later
+reverted still counts as ported. Reviewers check the ported part against this page.
 
 ### Waiving an upstream commit
 
