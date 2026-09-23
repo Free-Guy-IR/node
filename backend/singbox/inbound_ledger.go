@@ -43,13 +43,14 @@ func (l *inboundLedger) collect(ctx context.Context, client *api.Client, consume
 		return nil, errLedgerNoClient
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	drained, err := client.DrainInboundCounters(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	l.credit(drained)
 
 	prefix := inboundCounterPrefix
