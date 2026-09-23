@@ -140,28 +140,35 @@ func (o *L2TP) running() bool {
 	return o.state == lifecycleRunning
 }
 
+func (o *L2TP) runningTracker() (bool, *stats.Tracker) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.state == lifecycleRunning, o.statsTracker
+}
+
 func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
-	if !o.running() {
+	running, tracker := o.runningTracker()
+	if !running {
 		return nil, errNotStarted
 	}
 	switch request.GetType() {
 	case common.StatType_UserStat:
-		return o.statsTracker.GetStats(ctx, []string{request.GetName()}, request.GetReset_()), nil
+		return tracker.GetStats(ctx, []string{request.GetName()}, request.GetReset_()), nil
 	case common.StatType_UsersStat:
-		return o.statsTracker.GetUsersStats(ctx, request.GetReset_()), nil
+		return tracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
 		o.mu.Lock()
-		totalRx, totalTx := o.totalRx, o.totalTx
+		totalRx, totalTx, inbound := o.totalRx, o.totalTx, o.inboundStats
 		o.mu.Unlock()
-		dRx, dTx := o.inboundStats.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := inbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
 		}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
 		o.mu.Lock()
-		totalRx, totalTx := o.totalRx, o.totalTx
+		totalRx, totalTx, outbound := o.totalRx, o.totalTx, o.interfaceStats
 		o.mu.Unlock()
-		dRx, dTx := o.interfaceStats.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := outbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
 		}, nil
@@ -171,14 +178,15 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 }
 
 func (o *L2TP) GetUserOnlineStats(_ context.Context, email string) (*common.OnlineStatResponse, error) {
-	if !o.running() {
+	running, tracker := o.runningTracker()
+	if !running {
 		return nil, errNotStarted
 	}
 	o.mu.RLock()
 	_, connected := o.onlineIPs[email]
 	o.mu.RUnlock()
 	value := int64(0)
-	if connected || o.statsTracker.AnyActiveSince([]string{email}, time.Now().Add(-onlineActivityThreshold)) {
+	if connected || tracker.AnyActiveSince([]string{email}, time.Now().Add(-onlineActivityThreshold)) {
 		value = 1
 	}
 	return &common.OnlineStatResponse{Name: email, Value: value}, nil
