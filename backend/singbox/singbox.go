@@ -37,6 +37,8 @@ type SingBox struct {
 
 	batchMu sync.Mutex
 	batch   *singBoxPendingBatch
+
+	inbounds inboundLedger
 }
 
 // New builds and starts a sing-box process from sbConfig, syncs the initial

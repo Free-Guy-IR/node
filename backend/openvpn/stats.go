@@ -84,7 +84,15 @@ func (b *Backend) userStat(ctx context.Context, email string, reset bool) *commo
 	return rewriteLinkToTag(b.statsTracker.GetStats(ctx, b.keysForEmail(email), reset))
 }
 
-func (b *Backend) instanceStat(name string, reset bool) (*common.StatResponse, error) {
+func inboundTracker(instance *instanceProcess) *stats.InterfaceCountersTracker {
+	return instance.inboundStatsTracker
+}
+
+func outboundTracker(instance *instanceProcess) *stats.InterfaceCountersTracker {
+	return instance.statsTracker
+}
+
+func (b *Backend) instanceStat(name string, reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker) (*common.StatResponse, error) {
 	b.mu.RLock()
 	instance, ok := b.instances[name]
 	b.mu.RUnlock()
@@ -93,11 +101,11 @@ func (b *Backend) instanceStat(name string, reset bool) (*common.StatResponse, e
 	}
 
 	rx, tx := instance.aggregateStats()
-	deltaRx, deltaTx := instance.statsTracker.DeltaClamped(rx, tx, reset)
+	deltaRx, deltaTx := tracker(instance).DeltaClamped(rx, tx, reset)
 	return &common.StatResponse{Stats: stats.BuildInterfaceStats(name, name, deltaRx, deltaTx)}, nil
 }
 
-func (b *Backend) instancesStat(reset bool) *common.StatResponse {
+func (b *Backend) instancesStat(reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker) *common.StatResponse {
 	b.mu.RLock()
 	instances := make([]*instanceProcess, 0, len(b.instances))
 	for _, instance := range b.instances {
@@ -108,7 +116,7 @@ func (b *Backend) instancesStat(reset bool) *common.StatResponse {
 	out := &common.StatResponse{Stats: make([]*common.Stat, 0, len(instances)*2)}
 	for _, instance := range instances {
 		rx, tx := instance.aggregateStats()
-		deltaRx, deltaTx := instance.statsTracker.DeltaClamped(rx, tx, reset)
+		deltaRx, deltaTx := tracker(instance).DeltaClamped(rx, tx, reset)
 		out.Stats = append(out.Stats, stats.BuildInterfaceStats(instance.tag, instance.tag, deltaRx, deltaTx)...)
 	}
 	return out
@@ -137,13 +145,13 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	case common.StatType_UsersStat:
 		return rewriteLinkToTag(b.statsTracker.GetUsersStats(ctx, request.GetReset_())), nil
 	case common.StatType_Inbound:
-		return b.instanceStat(request.GetName(), request.GetReset_())
+		return b.instanceStat(request.GetName(), request.GetReset_(), inboundTracker)
 	case common.StatType_Inbounds:
-		return b.instancesStat(request.GetReset_()), nil
+		return b.instancesStat(request.GetReset_(), inboundTracker), nil
 	case common.StatType_Outbound:
-		return b.instanceStat(request.GetName(), request.GetReset_())
+		return b.instanceStat(request.GetName(), request.GetReset_(), outboundTracker)
 	case common.StatType_Outbounds:
-		return b.instancesStat(request.GetReset_()), nil
+		return b.instancesStat(request.GetReset_(), outboundTracker), nil
 	default:
 		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}

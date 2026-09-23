@@ -26,14 +26,14 @@ func (s *SingBox) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	// own reset cycle separate from "user>>>"'s - safe to reset here
 	// without affecting per-user billing accuracy.
 	case common.StatType_Outbounds:
-		return s.client.GetInboundsStats(ctx, request.GetReset_())
+		return s.inbounds.collect(ctx, s.client, consumerOutbounds, "", request.GetReset_())
 	case common.StatType_Outbound:
-		return s.client.GetInboundStats(ctx, request.GetName(), request.GetReset_())
+		return s.inbounds.collectTag(ctx, s.client, consumerOutbounds, request.GetName(), request.GetReset_())
 
 	case common.StatType_Inbounds:
-		return s.client.GetInboundsStats(ctx, request.GetReset_())
+		return s.inbounds.collect(ctx, s.client, consumerInbounds, "", request.GetReset_())
 	case common.StatType_Inbound:
-		return s.client.GetInboundStats(ctx, request.GetName(), request.GetReset_())
+		return s.inbounds.collectTag(ctx, s.client, consumerInbounds, request.GetName(), request.GetReset_())
 
 	case common.StatType_UsersStat:
 		return s.client.GetUsersStats(ctx, request.GetReset_())

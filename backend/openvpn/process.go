@@ -36,7 +36,8 @@ type instanceProcess struct {
 	logsChan       chan string
 	startupLogSize int
 
-	statsTracker *stats.InterfaceCountersTracker
+	statsTracker        *stats.InterfaceCountersTracker
+	inboundStatsTracker *stats.InterfaceCountersTracker
 
 	mu           sync.Mutex
 	state        atomic.Pointer[processState]
@@ -69,13 +70,14 @@ func newInstanceProcess(inst *InstanceConfig, pki PKI, tunIndex int, baseDir, ex
 		// Notably, Unix domain socket paths are capped at ~108 bytes on
 		// Linux, and a long or unusually-charactered tag could blow that
 		// budget or need escaping otherwise.
-		configDir:      filepath.Join(baseDir, fmt.Sprintf("instance-%d", tunIndex)),
-		executablePath: executablePath,
-		auth:           newAuthStore(),
-		logs:           newLogRing(startupLogTailSize),
-		logsChan:       logsChan,
-		startupLogSize: startupLogTailSize,
-		statsTracker:   stats.NewInterfaceCountersTracker(),
+		configDir:           filepath.Join(baseDir, fmt.Sprintf("instance-%d", tunIndex)),
+		executablePath:      executablePath,
+		auth:                newAuthStore(),
+		logs:                newLogRing(startupLogTailSize),
+		logsChan:            logsChan,
+		startupLogSize:      startupLogTailSize,
+		statsTracker:        stats.NewInterfaceCountersTracker(),
+		inboundStatsTracker: stats.NewInterfaceCountersTracker(),
 	}
 }
 

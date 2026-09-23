@@ -72,6 +72,14 @@ func (c *Client) GetInboundsStats(ctx context.Context, reset bool) (*common.Stat
 	return buildStatResponse(resp.GetStat()), nil
 }
 
+func (c *Client) DrainInboundCounters(ctx context.Context) ([]*statscmd.Stat, error) {
+	resp, err := c.QueryStats(ctx, "inbound>>>", true)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetStat(), nil
+}
+
 func (c *Client) GetOutboundsStats(ctx context.Context, reset bool) (*common.StatResponse, error) {
 	resp, err := c.QueryStats(ctx, "outbound>>>", reset)
 	if err != nil {
@@ -111,6 +119,10 @@ func (c *Client) GetOutboundStats(ctx context.Context, tag string, reset bool) (
 		return nil, err
 	}
 	return buildStatResponse(resp.GetStat()), nil
+}
+
+func BuildStatResponse(stats []*statscmd.Stat) *common.StatResponse {
+	return buildStatResponse(stats)
 }
 
 func buildStatResponse(stats []*statscmd.Stat) *common.StatResponse {
