@@ -58,6 +58,10 @@ func (wg *WireGuard) syncUsersPartialReconcile(users []*common.User) error {
 		manager := wg.manager
 		wg.mu.RUnlock()
 
+		if len(diff.RemoveKeys) > 0 {
+			wg.flushPeerStats(manager)
+		}
+
 		if err := manager.ApplyPeers(diff.PeerConfigs); err != nil {
 			return fmt.Errorf("failed to apply peer changes: %w", err)
 		}

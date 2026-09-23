@@ -10,7 +10,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func TestUpdateConnectedPeersSkipsStaleHandshakePeers(t *testing.T) {
+func TestUpdateConnectedPeersSamplesStaleHandshakePeersQuietly(t *testing.T) {
 	_, recentPub, err := GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("failed to generate recent key pair: %v", err)
@@ -64,6 +64,7 @@ func TestUpdateConnectedPeersSkipsStaleHandshakePeers(t *testing.T) {
 		config:       &Config{},
 		peerStore:    peerStore,
 		statsTracker: pkgstats.New(),
+		state:        lifecycleRunning,
 	}
 
 	emailByKey := wg.peerStore.GetEmailMap()
@@ -77,25 +78,27 @@ func TestUpdateConnectedPeersSkipsStaleHandshakePeers(t *testing.T) {
 	wg.updateConnectedPeers(context.Background())
 
 	entries := wg.statsTracker.GetStatsEntries([]string{recentKey.String(), staleKey.String()})
-	if len(entries) != 1 {
-		t.Fatalf("expected one tracked peer entry, got %d", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("expected both peers to be tracked, got %d", len(entries))
 	}
-	if _, ok := entries[recentKey.String()]; !ok {
-		t.Fatalf("expected recent peer to be tracked, but it was not")
+	if entries[recentKey.String()].LastActiveTime.IsZero() {
+		t.Fatal("expected the recent peer to be marked active")
 	}
-	if _, ok := entries[staleKey.String()]; ok {
-		t.Fatalf("expected stale peer to be excluded from tracking")
+	if !entries[staleKey.String()].LastActiveTime.IsZero() {
+		t.Fatal("expected the stale peer to stay inactive")
 	}
 
 	resp := wg.statsTracker.GetUsersStats(context.Background(), false)
 
-	if len(resp.GetStats()) != 2 {
-		t.Fatalf("expected stats only for one active peer (2 entries), got %d", len(resp.GetStats()))
+	if len(resp.GetStats()) != 4 {
+		t.Fatalf("expected stats for both peers (4 entries), got %d", len(resp.GetStats()))
 	}
 
+	totals := map[string]int64{}
 	for _, stat := range resp.GetStats() {
-		if stat.GetName() != "recent@example.com" {
-			t.Fatalf("unexpected user in stats: got %s, expected only recent@example.com", stat.GetName())
-		}
+		totals[stat.GetName()] += stat.GetValue()
+	}
+	if totals["recent@example.com"] != 200 || totals["stale@example.com"] != 500 {
+		t.Fatalf("unexpected per-user totals: %v", totals)
 	}
 }

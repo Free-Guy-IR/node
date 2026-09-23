@@ -35,9 +35,13 @@ func (wg *WireGuard) syncUsersFull(users []*common.User) error {
 	manager := wg.manager
 	wg.mu.RUnlock()
 
+	wg.flushPeerStats(manager)
+
 	if err := manager.ApplyPeersReplaceAll(peerConfigs); err != nil {
 		return fmt.Errorf("failed to apply full peer snapshot: %w", err)
 	}
+
+	wg.statsTracker.RestartCounters(peerConfigKeys(peerConfigs))
 
 	var validTargetPeers []*PeerInfo
 	for key, peer := range diff.TargetPeers {

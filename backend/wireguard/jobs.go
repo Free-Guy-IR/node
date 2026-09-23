@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pasarguard/node/pkg/stats"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const statsDeviceErrorLogInterval = time.Minute
@@ -37,25 +38,32 @@ func (wg *WireGuard) runStatsUpdateLoop(ctx context.Context) {
 
 // updateConnectedPeers updates stats for connected users only
 func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
-	select {
-	case <-ctx.Done():
+	wg.syncMu.Lock()
+	defer wg.syncMu.Unlock()
+
+	if ctx.Err() != nil {
 		return
-	default:
 	}
 
 	wg.mu.RLock()
 	mgr := wg.manager
 	cfg := wg.config
+	state := wg.state
 	wg.mu.RUnlock()
 
-	if mgr == nil || cfg == nil {
+	if mgr == nil || cfg == nil || state != lifecycleRunning {
 		return
 	}
 
+	if err := wg.samplePeers(mgr); err != nil {
+		wg.logStatsDeviceReadError(err)
+	}
+}
+
+func (wg *WireGuard) samplePeers(mgr *Manager) error {
 	device, err := mgr.GetDevice()
 	if err != nil {
-		wg.logStatsDeviceReadError(err)
-		return
+		return err
 	}
 
 	activeHandshakeCutoff := time.Now().Add(-onlineActivityThreshold)
@@ -64,19 +72,6 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 	samples := make([]stats.Sample, 0, len(device.Peers))
 
 	for _, peer := range device.Peers {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		if peer.LastHandshakeTime.IsZero() {
-			continue // never connected
-		}
-		if peer.LastHandshakeTime.Before(activeHandshakeCutoff) {
-			continue // stale/offline peer
-		}
-
 		peerKey := peer.PublicKey.String()
 		email, ok := emailByKey[peerKey]
 		if !ok {
@@ -94,10 +89,26 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 			Rx:         peer.ReceiveBytes,
 			Tx:         peer.TransmitBytes,
 			EndpointIP: endpointIP,
+			Quiet:      peer.LastHandshakeTime.IsZero() || peer.LastHandshakeTime.Before(activeHandshakeCutoff),
 		})
 	}
 
 	wg.statsTracker.UpdateStatsBatch(samples)
+	return nil
+}
+
+func (wg *WireGuard) flushPeerStats(mgr *Manager) {
+	if err := wg.samplePeers(mgr); err != nil {
+		wg.logStatsDeviceReadError(err)
+	}
+}
+
+func peerConfigKeys(peerConfigs []wgtypes.PeerConfig) []string {
+	keys := make([]string, 0, len(peerConfigs))
+	for _, peerConfig := range peerConfigs {
+		keys = append(keys, peerConfig.PublicKey.String())
+	}
+	return keys
 }
 
 func (wg *WireGuard) logStatsDeviceReadError(err error) {
@@ -117,6 +128,9 @@ func (wg *WireGuard) logStatsDeviceReadError(err error) {
 
 // cleanupOfflineUsers removes deleted stats entries once their traffic has been reported.
 func (wg *WireGuard) cleanupOfflineUsers(ctx context.Context) {
+	wg.syncMu.Lock()
+	defer wg.syncMu.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return
