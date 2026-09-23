@@ -53,6 +53,19 @@ func TestStartingAnAdTagInstanceDoesNotLeakGoroutines(t *testing.T) {
 	assertNoGoroutineGrowth(t, before, "starting and stopping an ad_tag instance")
 }
 
+func TestStartingAFakeTLSInstanceDoesNotLeakGoroutines(t *testing.T) {
+	warm := startBackend(t, faketlsConfigOnFreshPort(t), nil)
+	warm.Shutdown()
+	before := settledGoroutines(0)
+
+	for range lifecycleLeakRounds {
+		backend := startBackend(t, faketlsConfigOnFreshPort(t), nil)
+		backend.Shutdown()
+	}
+
+	assertNoGoroutineGrowth(t, before, "starting and stopping a faketls instance")
+}
+
 func TestFailingToListenDoesNotLeakTheBuiltProxy(t *testing.T) {
 	port := unusedListenPorts(t, 1)[0]
 	occupant, err := net.Listen("tcp", ":"+strconv.Itoa(port))
