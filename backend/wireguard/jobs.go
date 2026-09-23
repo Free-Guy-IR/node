@@ -48,9 +48,10 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 	wg.mu.RLock()
 	mgr := wg.manager
 	cfg := wg.config
+	state := wg.state
 	wg.mu.RUnlock()
 
-	if mgr == nil || cfg == nil {
+	if mgr == nil || cfg == nil || state != lifecycleRunning {
 		return
 	}
 

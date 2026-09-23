@@ -140,7 +140,12 @@ func (st *Tracker) RestartCounters(keys []string) {
 }
 
 func (st *Tracker) Detach() *Tracker {
-	return st
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	detached := &Tracker{stats: st.stats}
+	st.stats = make(map[string]*Entry)
+	return detached
 }
 
 func (st *Tracker) Keys() []string {

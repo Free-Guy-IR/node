@@ -37,7 +37,7 @@ func (wg *WireGuard) depositAccountingLocked() {
 	}
 
 	interfaceName := wg.config.InterfaceName
-	if depositAccounting(interfaceName, wg.statsTracker) {
+	if depositAccounting(interfaceName, wg.statsTracker.Detach()) {
 		message := fmt.Sprintf("wireguard accounting hand-over for %s replaced one that no backend took", interfaceName)
 		log.Printf("%s", message)
 		wg.emitLogLocked(logSeverityError, message)
