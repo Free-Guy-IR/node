@@ -133,8 +133,8 @@ func (a *eventAccumulator) snapshot(tag string) []stats.Sample {
 		out = append(out, stats.Sample{
 			PublicKey: statsKey(tag, username),
 			Email:     a.email[username],
-			Rx:        a.cumulativeRx[username],
-			Tx:        a.cumulativeTx[username],
+			Rx:        a.cumulativeTx[username],
+			Tx:        a.cumulativeRx[username],
 		})
 	}
 
@@ -269,7 +269,7 @@ func (b *Backend) inboundStat(reset bool) *common.StatResponse {
 			rx = counter.rx.Load()
 			tx = counter.tx.Load()
 		}
-		response.Stats = append(response.Stats, stats.BuildInterfaceStats(tag, tag, rx, tx)...)
+		response.Stats = append(response.Stats, stats.BuildInterfaceStats(tag, tag, tx, rx)...)
 	}
 	return response
 }
@@ -283,7 +283,7 @@ func (b *Backend) outboundStat(reset bool) *common.StatResponse {
 		rx = b.outboundRx.Load()
 		tx = b.outboundTx.Load()
 	}
-	return &common.StatResponse{Stats: stats.BuildInterfaceStats("mtproto", "mtproto", rx, tx)}
+	return &common.StatResponse{Stats: stats.BuildInterfaceStats("mtproto", "mtproto", tx, rx)}
 }
 
 func (b *Backend) usernameForEmail(email string) (string, bool) {
