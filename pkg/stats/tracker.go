@@ -29,6 +29,7 @@ type Sample struct {
 	Rx         int64
 	Tx         int64
 	EndpointIP string
+	Quiet      bool
 }
 
 // Tracker manages stats
@@ -275,6 +276,8 @@ func (st *Tracker) RemoveStats(publicKey string) {
 	entry.IsDeleted = true
 	entry.LastActiveTime = time.Time{}
 }
+
+func (st *Tracker) RestartCounters(keys []string) {}
 
 // ClearAllStats clears all stats
 func (st *Tracker) ClearAllStats() {
