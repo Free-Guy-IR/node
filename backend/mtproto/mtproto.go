@@ -87,6 +87,8 @@ type Backend struct {
 	mu          sync.RWMutex
 	secretsByID map[string]secretEntry
 
+	lifecycle sync.Mutex
+
 	cancelFunc context.CancelFunc
 
 	// outboundRx/outboundTx are the node-wide traffic totals GetStats'
@@ -364,6 +366,9 @@ func (b *Backend) Logs() <-chan string {
 // object, which keeps all currently-authorized secrets intact (no need to
 // rebuild ProxyOpts or replay SyncUsers).
 func (b *Backend) Restart() error {
+	b.lifecycle.Lock()
+	defer b.lifecycle.Unlock()
+
 	b.mu.RLock()
 	instances := make([]*proxyInstance, 0, len(b.instances))
 	for _, inst := range b.instances {
@@ -393,15 +398,21 @@ func (b *Backend) Restart() error {
 }
 
 func (b *Backend) Shutdown() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.lifecycle.Lock()
+	defer b.lifecycle.Unlock()
 
+	b.mu.Lock()
 	if b.cancelFunc != nil {
 		b.cancelFunc()
 		b.cancelFunc = nil
 	}
-
+	instances := make([]*proxyInstance, 0, len(b.instances))
 	for _, inst := range b.instances {
+		instances = append(instances, inst)
+	}
+	b.mu.Unlock()
+
+	for _, inst := range instances {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
 		}
