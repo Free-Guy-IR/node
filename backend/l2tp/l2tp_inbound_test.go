@@ -27,9 +27,9 @@ func read(t *testing.T, o *L2TP, typ common.StatType, reset bool) (int64, int64)
 	var rx, tx int64
 	for _, s := range resp.GetStats() {
 		switch s.GetType() {
-		case "downlink":
-			rx = s.GetValue()
 		case "uplink":
+			rx = s.GetValue()
+		case "downlink":
 			tx = s.GetValue()
 		}
 	}
