@@ -59,13 +59,15 @@ func (pi *proxyInstance) serve(listener net.Listener) {
 	}()
 }
 
-func (pi *proxyInstance) awaitServeExit() {
+func (pi *proxyInstance) awaitServeExit() bool {
 	if pi.serveDone == nil {
-		return
+		return true
 	}
 	select {
 	case <-pi.serveDone:
+		return true
 	case <-time.After(serveExitTimeout):
+		return false
 	}
 }
 
@@ -344,7 +346,9 @@ func (b *Backend) Restart() error {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
 		}
-		inst.awaitServeExit()
+		if !inst.awaitServeExit() {
+			b.recordLog(fmt.Sprintf("mtproto instance %q: serve did not stop within %s, restarting anyway", inst.tag, serveExitTimeout))
+		}
 
 		port := inst.listener.Addr().(*net.TCPAddr).Port //nolint: forcetypeassert
 
@@ -381,7 +385,9 @@ func (b *Backend) Shutdown() {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
 		}
-		inst.awaitServeExit()
+		if !inst.awaitServeExit() {
+			b.recordLog(fmt.Sprintf("mtproto instance %q: serve did not stop within %s, shutting down anyway", inst.tag, serveExitTimeout))
+		}
 		if inst.proxy != nil {
 			inst.proxy.Shutdown()
 		}
