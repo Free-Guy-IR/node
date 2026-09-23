@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pasarguard/node/pkg/stats"
@@ -20,6 +21,18 @@ type accountingHandOver struct {
 	statsTracker *stats.Tracker
 	outbound     trafficBytes
 	inbound      map[string]trafficBytes
+	retired      []*retiredSource
+}
+
+type retiredSource struct {
+	tag         string
+	accumulator *eventAccumulator
+	streams     *streamSet
+	marks       map[string]trafficBytes
+}
+
+func (s *retiredSource) exited() bool {
+	return (s.streams == nil || s.streams.empty()) && s.accumulator.idle()
 }
 
 var handOver struct {
@@ -53,7 +66,7 @@ func (h *accountingHandOver) addInbound(tag string, bytes trafficBytes) {
 	h.inbound[tag] = sum
 }
 
-func (b *Backend) handOverAccounting() {
+func (b *Backend) handOverAccounting(running []*proxyInstance) {
 	b.accountingMu.Lock()
 	defer b.accountingMu.Unlock()
 
@@ -62,12 +75,28 @@ func (b *Backend) handOverAccounting() {
 	}
 	b.handedOver = true
 
+	b.drainRetiredSources()
 	b.refreshUserStats()
+
+	retired := b.retiredSources
+	b.retiredSources = nil
+	b.retiredSinks = nil
+	for _, inst := range running {
+		samples, marks := inst.accumulator.snapshotAndMark(inst.tag)
+		b.statsTracker.UpdateStatsBatch(samples)
+		retired = append(retired, &retiredSource{
+			tag:         inst.tag,
+			accumulator: inst.accumulator,
+			streams:     inst.streams,
+			marks:       marks,
+		})
+	}
 
 	h := &accountingHandOver{
 		statsTracker: b.statsTracker.Detach(),
 		outbound:     trafficBytes{rx: b.outboundRx.Swap(0), tx: b.outboundTx.Swap(0)},
 		inbound:      make(map[string]trafficBytes, len(b.inboundCounters)+len(b.retiredInbound)),
+		retired:      retired,
 	}
 	for tag, counter := range b.inboundCounters {
 		h.addInbound(tag, trafficBytes{rx: counter.rx.Swap(0), tx: counter.tx.Swap(0)})
@@ -95,8 +124,9 @@ func (b *Backend) adoptAccounting(h *accountingHandOver) {
 			counter.tx.Add(bytes.tx)
 			continue
 		}
-		b.retiredInbound[tag] = &trafficBytes{rx: bytes.rx, tx: bytes.tx}
+		b.addRetiredInbound(tag, bytes)
 	}
+	b.retiredSources = append(b.retiredSources, h.retired...)
 
 	live := b.liveStatsKeys()
 	restart := make([]string, 0, len(live))
@@ -111,6 +141,99 @@ func (b *Backend) adoptAccounting(h *accountingHandOver) {
 	b.statsTracker = h.statsTracker
 
 	b.recordLog("mtproto: carried the unread accounting over from the previous backend")
+}
+
+func (b *Backend) addRetiredInbound(tag string, bytes trafficBytes) {
+	if bytes.rx == 0 && bytes.tx == 0 {
+		return
+	}
+	if b.retiredInbound == nil {
+		b.retiredInbound = make(map[string]*trafficBytes)
+	}
+	carried, ok := b.retiredInbound[tag]
+	if !ok {
+		carried = &trafficBytes{}
+		b.retiredInbound[tag] = carried
+	}
+	carried.rx += bytes.rx
+	carried.tx += bytes.tx
+}
+
+func (b *Backend) drainRetiredSources() {
+	if len(b.retiredSources) == 0 {
+		return
+	}
+
+	kept := make([]*retiredSource, 0, len(b.retiredSources))
+	for _, source := range b.retiredSources {
+		exited := source.exited()
+		b.drainRetiredSource(source)
+		if !exited {
+			kept = append(kept, source)
+		}
+	}
+	b.retiredSources = kept
+	b.releaseIdleSinks()
+}
+
+func (b *Backend) drainRetiredSource(source *retiredSource) {
+	sink := b.sinkFor(source.tag)
+	for username, grown := range source.accumulator.growthSince(source.marks) {
+		sink.fold(username, grown.email, grown.bytes)
+	}
+
+	from := source.accumulator
+	b.outboundRx.Add(from.outboundRx.Swap(0))
+	b.outboundTx.Add(from.outboundTx.Swap(0))
+	inbound := trafficBytes{rx: from.inboundRx.Swap(0), tx: from.inboundTx.Swap(0)}
+	if counter, ok := b.inboundCounters[source.tag]; ok {
+		counter.rx.Add(inbound.rx)
+		counter.tx.Add(inbound.tx)
+		return
+	}
+	b.addRetiredInbound(source.tag, inbound)
+}
+
+func (b *Backend) sinkFor(tag string) *eventAccumulator {
+	b.mu.RLock()
+	inst, ok := b.instances[tag]
+	b.mu.RUnlock()
+	if ok && inst.accumulator != nil {
+		return inst.accumulator
+	}
+
+	if b.retiredSinks == nil {
+		b.retiredSinks = make(map[string]*eventAccumulator)
+	}
+	sink, ok := b.retiredSinks[tag]
+	if !ok {
+		sink = newEventAccumulator(new(atomic.Int64), new(atomic.Int64), new(atomic.Int64), new(atomic.Int64))
+		b.retiredSinks[tag] = sink
+	}
+	return sink
+}
+
+func (b *Backend) releaseIdleSinks() {
+	for tag, sink := range b.retiredSinks {
+		if b.feedsSink(tag) {
+			continue
+		}
+		samples := sink.snapshot(tag)
+		b.statsTracker.UpdateStatsBatch(samples)
+		for _, sample := range samples {
+			b.statsTracker.RemoveStats(sample.PublicKey)
+		}
+		delete(b.retiredSinks, tag)
+	}
+}
+
+func (b *Backend) feedsSink(tag string) bool {
+	for _, source := range b.retiredSources {
+		if source.tag == tag {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Backend) liveStatsKeys() map[string]struct{} {

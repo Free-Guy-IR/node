@@ -109,6 +109,8 @@ type Backend struct {
 	accountingMu   sync.Mutex
 	handedOver     bool
 	retiredInbound map[string]*trafficBytes
+	retiredSources []*retiredSource
+	retiredSinks   map[string]*eventAccumulator
 }
 
 func logBufferSizeOrDefault(cfg *config.Config) int {
@@ -397,6 +399,7 @@ func (b *Backend) Shutdown() {
 	}
 	b.mu.Unlock()
 
+	var running []*proxyInstance
 	for _, inst := range instances {
 		if inst.listener != nil {
 			inst.listener.Close() //nolint: errcheck
@@ -410,12 +413,13 @@ func (b *Backend) Shutdown() {
 		if inst.mp != nil {
 			inst.mp.Shutdown()
 			if !inst.drainStreams() {
-				b.recordLog(fmt.Sprintf("mtproto instance %q: streams did not finish within %s, handing over what they counted", inst.tag, serveExitTimeout))
+				b.recordLog(fmt.Sprintf("mtproto instance %q: streams did not finish within %s, the next backend bills what they still relay", inst.tag, serveExitTimeout))
+				running = append(running, inst)
 			}
 		}
 	}
 
-	b.handOverAccounting()
+	b.handOverAccounting(running)
 
 	b.recordLog("mtproto shutdown complete")
 }

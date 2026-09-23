@@ -124,18 +124,72 @@ func (a *eventAccumulator) idle() bool {
 func (a *eventAccumulator) snapshot(tag string) []stats.Sample {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.snapshotLocked(tag)
+}
 
-	out := make([]stats.Sample, 0, len(a.cumulativeRx)+len(a.cumulativeTx))
+func (a *eventAccumulator) snapshotAndMark(tag string) ([]stats.Sample, map[string]trafficBytes) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.snapshotLocked(tag), a.cumulativeLocked()
+}
+
+func (a *eventAccumulator) cumulativeLocked() map[string]trafficBytes {
+	out := make(map[string]trafficBytes, len(a.cumulativeRx)+len(a.cumulativeTx))
+	for username := range a.usernamesLocked() {
+		out[username] = trafficBytes{rx: a.cumulativeRx[username], tx: a.cumulativeTx[username]}
+	}
+	return out
+}
+
+func (a *eventAccumulator) usernamesLocked() map[string]struct{} {
 	seen := make(map[string]struct{}, len(a.cumulativeRx))
-
 	for username := range a.cumulativeRx {
 		seen[username] = struct{}{}
 	}
 	for username := range a.cumulativeTx {
 		seen[username] = struct{}{}
 	}
+	return seen
+}
 
-	for username := range seen {
+type userGrowth struct {
+	email string
+	bytes trafficBytes
+}
+
+func (a *eventAccumulator) growthSince(marks map[string]trafficBytes) map[string]userGrowth {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	out := make(map[string]userGrowth)
+	for username := range a.usernamesLocked() {
+		current := trafficBytes{rx: a.cumulativeRx[username], tx: a.cumulativeTx[username]}
+		mark := marks[username]
+		grown := trafficBytes{rx: current.rx - mark.rx, tx: current.tx - mark.tx}
+		if grown.rx == 0 && grown.tx == 0 {
+			continue
+		}
+		marks[username] = current
+		out[username] = userGrowth{email: a.email[username], bytes: grown}
+	}
+	return out
+}
+
+func (a *eventAccumulator) fold(username, email string, bytes trafficBytes) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.cumulativeRx[username] += bytes.rx
+	a.cumulativeTx[username] += bytes.tx
+	if _, known := a.email[username]; !known {
+		a.email[username] = email
+	}
+}
+
+func (a *eventAccumulator) snapshotLocked(tag string) []stats.Sample {
+	out := make([]stats.Sample, 0, len(a.cumulativeRx)+len(a.cumulativeTx))
+
+	for username := range a.usernamesLocked() {
 		out = append(out, stats.Sample{
 			PublicKey: statsKey(tag, username),
 			Email:     a.email[username],
@@ -196,6 +250,9 @@ func (b *Backend) refreshUserStats() {
 		}
 		samples = append(samples, inst.accumulator.snapshot(inst.tag)...)
 	}
+	for tag, sink := range b.retiredSinks {
+		samples = append(samples, sink.snapshot(tag)...)
+	}
 
 	b.statsTracker.UpdateStatsBatch(samples)
 }
@@ -207,6 +264,7 @@ func (b *Backend) sampleUserStats() {
 	if b.handedOver {
 		return
 	}
+	b.drainRetiredSources()
 	b.refreshUserStats()
 }
 
@@ -244,6 +302,7 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	if b.handedOver {
 		return nil, errAccountingHandedOver
 	}
+	b.drainRetiredSources()
 	b.refreshUserStats()
 
 	switch request.GetType() {
