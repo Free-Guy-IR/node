@@ -166,7 +166,7 @@ on the new digest, and usage keeps arriving (quickstart.md section 6).
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [X] T044 [owner] Decide whether to promote the pre-release to a full release and whether `latest` should move now that the fleet is on the digest. **Answer (owner, 2026-09-23): do NOT move `:latest`.** Files: none
+- [ ] T044 [owner] Decide whether to promote the pre-release to a full release and whether `latest` should move now that the fleet is on the digest. Open until the rollout is complete and the promotion decision is recorded. Separate note (owner, 2026-09-23): do not move `:latest` during the rollout. Files: none
 - [ ] T045 [ops] Record in the KG entity "node 0.6.21 release 2026-09-23": image digest, per-node before/after digests and backup paths, gate results, T035 timings, T042 ratios, any rollback; add an observation to "Node fleet map 2026-09-23" that its production nodes now run 0.6.21. Files: none
 - [ ] T046 [release] Delete scratch worktrees and local xray build directories created by T002, T010 and T017; leave the main tree untouched. Files: none
 
