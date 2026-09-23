@@ -51,6 +51,8 @@ func validateApiKey(ctx context.Context, s *Service) error {
 	switch {
 	case err != nil:
 		return status.Errorf(codes.InvalidArgument, "invalid api key format: must be a valid UUID")
+	case apiKey == uuid.Nil:
+		return status.Errorf(codes.Unauthenticated, "node api key is not configured")
 	case key != apiKey:
 		return status.Errorf(codes.PermissionDenied, "api key mismatch")
 	}
