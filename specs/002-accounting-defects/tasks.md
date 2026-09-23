@@ -87,6 +87,8 @@ No shared prerequisite: each story owns disjoint files (see plan.md, Source Code
 - [X] T036 Scope extension (owner rule: no known bug): MTProto and OpenVPN hand unread accounting to the next backend on every Start, exactly once across consecutive Starts (1bc4766 tests, e55fd11 `CountFromZero`, 472d2d7, 143c253)
 - [X] T037 Real-kernel check on the shared test host (NET_ADMIN-only container): `wg setconf` (ReplacePeers) restarts peer counters and handshake to zero; the four netns end-to-end WireGuard tests need CAP_SYS_ADMIN and run in the release pull request CI
 
+- [X] T038 Second review round, residuals closed by owner decision: MTProto middle-proxy relays still running after the bounded Shutdown drain are carried as retired sources and drained into the next backend's ledger exactly once (c1ab389 tests, 217ea7c); OpenVPN live check with a real openvpn 2.6.20 server and client (udp and tcp) on the shared test host: SIGTERM emits CLIENT:DISCONNECT with bytes_sent/bytes_received immediately (server exit 22/42 ms), and those totals exceed the last BYTECOUNT_CLI, so the bounded management drain captures the exact final tail and no status snapshot is needed
+
 ## Dependencies & Execution Order
 
 - T001-T002 first. Phases 3, 4, 5 and 6 run in parallel (disjoint files) once T001 is done.

@@ -41,7 +41,9 @@ package owns its own registry; nothing is shared between packages.
 - New takes the hand-over before any listener accepts connections: carried node-level and per-inbound
   bytes are added to the new counters (a tag that is gone is reported once under its name, then dropped);
   adopted per-user keys of configured tags and authorised users restart at zero, the rest are removed
-  (reported once).
+  (reported once). A middle-proxy relay still running after the bounded drain is carried as a retired
+  source: the next backend drains its later growth (per user, node level, per inbound) on every stats
+  read and sampler tick until its streams have closed, exactly once.
 
 ## OpenVPN adoption
 
