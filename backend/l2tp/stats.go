@@ -12,7 +12,10 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 )
 
-var beforeApplySamples = func() {}
+var (
+	beforeApplySamples = func() {}
+	removeFinalRecord  = os.Remove
+)
 
 func (o *L2TP) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(o.updateInterval)
@@ -64,7 +67,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		if _, live := perUser[rec.user]; !live {
 			perUser[rec.user] = nil
 		}
-		_ = os.Remove(rec.path)
+		_ = removeFinalRecord(rec.path)
 	}
 
 	live := make(map[sessionIdentity]struct{}, len(sessions))

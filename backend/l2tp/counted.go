@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const countedStateVersion = "v1"
+const (
+	countedStateVersion = "v1"
+	countedGraceRounds  = 30
+)
 
 type sessionIdentity struct {
 	ifname  string
