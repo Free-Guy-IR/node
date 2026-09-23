@@ -63,8 +63,6 @@ func New(cfg *config.Config) *Controller {
 }
 
 func (c *Controller) ApiKey() uuid.UUID {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.cfg.ApiKey
 }
 

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/tap"
 )
 
 func clientIPFromContext(ctx context.Context) string {
@@ -36,7 +37,20 @@ func validateApiKey(ctx context.Context, s *Service) error {
 	if !ok {
 		return status.Errorf(codes.Unauthenticated, "missing metadata")
 	}
+	return checkApiKey(md, s)
+}
 
+func authenticateStream(s *Service) tap.ServerInHandle {
+	return func(ctx context.Context, info *tap.Info) (context.Context, error) {
+		if err := checkApiKey(info.Header, s); err != nil {
+			logRequest(ctx, info.FullMethodName, err)
+			return nil, err
+		}
+		return ctx, nil
+	}
+}
+
+func checkApiKey(md metadata.MD, s *Service) error {
 	// Extract x-api-key header
 	apiKeys, ok := md["x-api-key"]
 	if !ok || len(apiKeys) == 0 {
