@@ -68,6 +68,16 @@ func controllerWithExtras(primary backend.Backend, primaryType common.BackendTyp
 	return &Controller{backend: primary, primaryType: primaryType, extras: extras}
 }
 
+type queueingBackend struct {
+	recordingBackend
+	queued []*common.User
+}
+
+func (q *queueingBackend) QueueUser(_ context.Context, u *common.User) error {
+	q.queued = append(q.queued, u)
+	return nil
+}
+
 func TestSingleBackendFansOutToExactlyOneBackend(t *testing.T) {
 	primary := &recordingBackend{name: "primary"}
 	c := controllerWithExtras(primary, common.BackendType_XRAY)
@@ -126,6 +136,30 @@ func TestUserSyncReachesEveryBackend(t *testing.T) {
 		if len(b.updatedUsers) != 1 {
 			t.Fatalf("%s did not receive the chunked update", b.name)
 		}
+	}
+}
+
+func TestQueueUserAllReachesEveryBackend(t *testing.T) {
+	primary := &queueingBackend{}
+	extraQueued := &queueingBackend{}
+	extraPlain := &recordingBackend{}
+	c := controllerWithExtras(primary, common.BackendType_SING_BOX,
+		extraBackend{backendType: common.BackendType_L2TP, backend: extraQueued},
+		extraBackend{backendType: common.BackendType_MTPROTO, backend: extraPlain})
+
+	user := &common.User{Email: "a@b"}
+	if err := c.QueueUserAll(context.Background(), user); err != nil {
+		t.Fatalf("QueueUserAll: %v", err)
+	}
+
+	if len(primary.queued) != 1 || len(extraQueued.queued) != 1 {
+		t.Fatalf("queue-capable backends must receive the queued user, got %d and %d", len(primary.queued), len(extraQueued.queued))
+	}
+	if len(primary.syncedSingles) != 0 || len(extraQueued.syncedSingles) != 0 {
+		t.Fatal("queue-capable backends must not also receive a blocking SyncUser")
+	}
+	if len(extraPlain.syncedSingles) != 1 {
+		t.Fatal("a backend without QueueUser must receive a blocking SyncUser")
 	}
 }
 
