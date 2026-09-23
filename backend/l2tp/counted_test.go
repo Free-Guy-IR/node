@@ -638,3 +638,23 @@ func TestFinalRecordStillBeingWrittenIsLeftAlone(t *testing.T) {
 		t.Fatalf("a record still being written must be left in place: %v", err)
 	}
 }
+
+func TestOccupiedHandOverIsReplacedLoudly(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 1000, 500)
+	older := e.instance("7")
+	newer := e.instance("7")
+	older.poll()
+	stopAccounting(older)
+
+	e.counters("ppp0", 1100, 600)
+	newer.poll()
+	drainLogs(newer)
+	stopAccounting(newer)
+	if logs := drainLogs(newer); len(logs) != 1 || !strings.Contains(logs[0], "[Error]") {
+		t.Fatalf("a deposit on an occupied tag must log one error line, got %v", logs)
+	}
+
+	next := e.instance("7")
+	expectUsers(t, "the newer deposit replaces the older", takeUsers(t, next), map[string]int64{"7": 1700})
+}
