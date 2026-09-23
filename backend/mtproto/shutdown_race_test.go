@@ -19,7 +19,7 @@ const shutdownRaceRounds = 50
 
 func faketlsConfigOnFreshPort(t *testing.T) string {
 	t.Helper()
-	port := unusedLoopbackPorts(t, 1)[0]
+	port := unusedListenPorts(t, 1)[0]
 	return fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"}]}`, port)
 }
 
@@ -42,7 +42,7 @@ func TestShutdownAfterRestartDoesNotRaceServe(t *testing.T) {
 }
 
 func TestRestartKeepsServingAndShutdownStopsListening(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg-plain","port":%d,"mode":"plain"}]}`, ports[0])
 
 	backend := startBackend(t, raw, []*common.User{
@@ -120,7 +120,7 @@ func TestShutdownDoesNotDeadlockWithAStreamThatJustAuthenticated(t *testing.T) {
 	defer func() { beforeAuthLookup = previous }()
 	defer releaseAuthLookup()
 
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg-plain","port":%d,"mode":"plain"}]}`, ports[0])
 	backend := startBackend(t, raw, []*common.User{
 		credentialedUser("a@x", initialSecretA, "mtproto-tg-plain"),
@@ -145,5 +145,21 @@ func TestShutdownDoesNotDeadlockWithAStreamThatJustAuthenticated(t *testing.T) {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown did not return within 3s: it deadlocked with a stream that authenticated while the proxy was stopping")
+	}
+}
+
+func TestConcurrentShutdownCallsStopEveryInstanceOnce(t *testing.T) {
+	for range shutdownRaceRounds {
+		ports := unusedListenPorts(t, 2)
+		raw := fmt.Sprintf(`{"instances":[`+
+			`{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"},`+
+			`{"tag":"mtproto-tg-ad","port":%d,"fake_tls_domain":"localhost","ad_tag":%q}]}`, ports[0], ports[1], testAdTag)
+		backend := startBackend(t, raw, nil)
+
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(backend.Shutdown)
+		}
+		wg.Wait()
 	}
 }

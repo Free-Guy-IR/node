@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
@@ -30,7 +31,12 @@ const (
 	handshakeRefused  = "refused"
 )
 
-func unusedLoopbackPorts(t *testing.T, n int) []int {
+const (
+	firstTestPort = 20000
+	testPortSpan  = 10000
+)
+
+func unusedListenPorts(t *testing.T, n int) []int {
 	t.Helper()
 	listeners := make([]net.Listener, 0, n)
 	defer func() {
@@ -40,13 +46,17 @@ func unusedLoopbackPorts(t *testing.T, n int) []int {
 	}()
 
 	ports := make([]int, 0, n)
-	for range n {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
+	for attempt := 0; len(ports) < n; attempt++ {
+		if attempt == 1000 {
+			t.Fatal("cannot find an unused listen port")
+		}
+		port := firstTestPort + rand.IntN(testPortSpan)
+		l, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 		if err != nil {
-			t.Fatalf("cannot reserve a loopback port: %v", err)
+			continue
 		}
 		listeners = append(listeners, l)
-		ports = append(ports, l.Addr().(*net.TCPAddr).Port)
+		ports = append(ports, port)
 	}
 	return ports
 }
@@ -224,7 +234,7 @@ func plainHandshakeOutcome(t *testing.T, backend *Backend, port int, secret stri
 }
 
 func TestNewAuthorisesInitialUsersOnFakeTLSInstance(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"}]}`, ports[0])
 
 	backend := startBackend(t, raw, []*common.User{
@@ -241,7 +251,7 @@ func TestNewAuthorisesInitialUsersOnFakeTLSInstance(t *testing.T) {
 }
 
 func TestNewAuthorisesInitialUsersOnMiddleProxyInstance(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg-ad","port":%d,"fake_tls_domain":"localhost","ad_tag":%q}]}`, ports[0], testAdTag)
 
 	backend := startBackend(t, raw, []*common.User{
@@ -260,7 +270,7 @@ func TestNewAuthorisesInitialUsersOnMiddleProxyInstance(t *testing.T) {
 }
 
 func TestNewWithoutInitialUsersAuthorisesNobody(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"}]}`, ports[0])
 
 	backend := startBackend(t, raw, nil)
@@ -276,7 +286,7 @@ func TestNewWithoutInitialUsersAuthorisesNobody(t *testing.T) {
 }
 
 func TestNewAuthorisesUserListedOnlyOnTheSecondInstance(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 2)
+	ports := unusedListenPorts(t, 2)
 	raw := fmt.Sprintf(`{"instances":[`+
 		`{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"},`+
 		`{"tag":"mtproto-tg-plain","port":%d,"mode":"plain"}]}`, ports[0], ports[1])
@@ -300,7 +310,7 @@ func TestNewAuthorisesUserListedOnlyOnTheSecondInstance(t *testing.T) {
 }
 
 func TestNewPlainInstanceAcceptsInitialUserHandshakeWithoutAResync(t *testing.T) {
-	ports := unusedLoopbackPorts(t, 1)
+	ports := unusedListenPorts(t, 1)
 	raw := fmt.Sprintf(`{"instances":[{"tag":"mtproto-tg-plain","port":%d,"mode":"plain"}]}`, ports[0])
 
 	backend := startBackend(t, raw, []*common.User{
