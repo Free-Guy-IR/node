@@ -19,8 +19,8 @@ phases assert per-user totals or value sets, never which label carries which val
 
 ## Phase 1: Setup
 
-- [ ] T001 Create worktrees `work/node-acct-{mtproto,l2tp,wg,dir}` on branches `release/v0.6.21-acct-{mtproto,l2tp,wg,dir}` from `eab2601` via `git -C <node main repo> worktree add`
-- [ ] T002 Record the base test state of `./pkg/stats ./backend/mtproto ./backend/wireguard` (local) and `./backend/l2tp ./backend/openvpn` (Linux test binaries) on `eab2601` in the KG entity "node 0.6.21 release 2026-09-23"
+- [X] T001 Create worktrees `work/node-acct-{mtproto,l2tp,wg,dir}` on branches `release/v0.6.21-acct-{mtproto,l2tp,wg,dir}` from `eab2601` via `git -C <node main repo> worktree add`
+- [X] T002 Record the base test state of `./pkg/stats ./backend/mtproto ./backend/wireguard` (local) and `./backend/l2tp ./backend/openvpn` (Linux test binaries) on `eab2601` in the KG entity "node 0.6.21 release 2026-09-23"
 
 ## Phase 2: Foundational
 
@@ -30,53 +30,62 @@ No shared prerequisite: each story owns disjoint files (see plan.md, Source Code
 
 **Goal**: FR-005. **Independent test**: real `New()` with instances and users; no later sync call.
 
-- [ ] T003 [US1] Write RED tests in a new file `backend/mtproto/new_users_test.go`: through the real `New()` with one faketls instance (free 127.0.0.1 port) and a user whose inbounds carry that instance tag, the user's secret is in `secretsByID` and in `secretsForInstance(domain)` right after `New()`; a user with MTProto credentials but only foreign inbounds is not; a middle-proxy (ad_tag) instance's secrets closure lists the user right after `New()`; zero users gives an empty set; `Shutdown()` after each test
-- [ ] T004 [US1] Run T003 on `eab2601` and keep the failing output (expected: user missing after `New()`)
-- [ ] T005 [US1] Fix `backend/mtproto/mtproto.go` / `backend/mtproto/user.go` so the configured instance tags are known before the initial users are seeded and the first `ProxyOpts.Secrets` carries them; keep the scoping of `wantsUser` for `SyncUser`, `UpdateUsers`, `SyncUsers`
-- [ ] T006 [US1] Run T003 and the whole `./backend/mtproto` package GREEN, then with `-race`; commit tests and fix separately
+- [X] T003 [US1] Write RED tests in a new file `backend/mtproto/new_users_test.go`: through the real `New()` with one faketls instance (free 127.0.0.1 port) and a user whose inbounds carry that instance tag, the user's secret is in `secretsByID` and in `secretsForInstance(domain)` right after `New()`; a user with MTProto credentials but only foreign inbounds is not; a middle-proxy (ad_tag) instance's secrets closure lists the user right after `New()`; zero users gives an empty set; `Shutdown()` after each test
+- [X] T004 [US1] Run T003 on `eab2601` and keep the failing output (expected: user missing after `New()`)
+- [X] T005 [US1] Fix `backend/mtproto/mtproto.go` / `backend/mtproto/user.go` so the configured instance tags are known before the initial users are seeded and the first `ProxyOpts.Secrets` carries them; keep the scoping of `wantsUser` for `SyncUser`, `UpdateUsers`, `SyncUsers`
+- [X] T006 [US1] Run T003 and the whole `./backend/mtproto` package GREEN, then with `-race`; commit tests and fix separately
 
 ## Phase 4: User Story 2 - L2TP billed once across restarts (P1) - owner: L2TP agent
 
 **Goal**: FR-001..FR-004. **Independent test**: temporary session/final directories and fake counters.
 
-- [ ] T007 [US2] Make the run directories and the interface counter reader overridable from tests if they are not already (package variables in `backend/l2tp/sessions.go`), without changing production values
-- [ ] T008 [US2] Write RED tests in a new file `backend/l2tp/counted_test.go`: restart re-count of a live session (scenario 1), final record written after the old instance's last poll (scenario 2), never-seen session (scenario 3), final record and still-listed live session in the same poll (scenario 4), interface name reused after a session vanished without a final record (scenario 5), process restart with a persisted counted-state file, unreadable counted-state file, old-format final record without identity, Start hand-over of counted-but-unread per-user deltas
-- [ ] T009 [US2] Run T008 on `eab2601` (with only the test seam of T007 applied if needed, recorded) and keep the failing output
-- [ ] T010 [US2] Add the session identity (`pid`, `started`) to the final record written by the ip-down script in `backend/l2tp/serverconf.go`
-- [ ] T011 [US2] Implement the counted state (`(ifname, pid, started)` -> rx/tx; file format `v1` of contracts/l2tp-counted-state.md; atomic write, mode `0600`; missing file = nothing counted; unreadable = everything present counted up to its current value, one log line; a failed write logs once per failure streak, keeps the in-memory state and retries at the next changing poll) in a new file `backend/l2tp/counted.go`
-- [ ] T012 [US2] Rewrite `poll` in `backend/l2tp/stats.go` to the contract's five steps; make it callable with the lock held for the final poll in `Shutdown`
-- [ ] T013 [US2] Implement the hand-over registry (deposit, take, put back; occupied key logs an error) in a new file `backend/l2tp/handover.go` and wire it into `New` and `Shutdown` in `backend/l2tp/l2tp.go`; forget users absent from the new user list
-- [ ] T014 [US2] Run T008 and the whole `./backend/l2tp` package GREEN (Linux test binary), then with `-race`; commit tests and fix separately
+- [X] T007 [US2] Make the run directories and the interface counter reader overridable from tests if they are not already (package variables in `backend/l2tp/sessions.go`), without changing production values
+- [X] T008 [US2] Write RED tests in a new file `backend/l2tp/counted_test.go`: restart re-count of a live session (scenario 1), final record written after the old instance's last poll (scenario 2), never-seen session (scenario 3), final record and still-listed live session in the same poll (scenario 4), interface name reused after a session vanished without a final record (scenario 5), process restart with a persisted counted-state file, unreadable counted-state file, old-format final record without identity, Start hand-over of counted-but-unread per-user deltas
+- [X] T009 [US2] Run T008 on `eab2601` (with only the test seam of T007 applied if needed, recorded) and keep the failing output
+- [X] T010 [US2] Add the session identity (`pid`, `started`) to the final record written by the ip-down script in `backend/l2tp/serverconf.go`
+- [X] T011 [US2] Implement the counted state (`(ifname, pid, started)` -> rx/tx; file format of contracts/l2tp-counted-state.md (shipped as `v2`, see T033); atomic write, mode `0600`; missing file = nothing counted; unreadable = everything present counted up to its current value, one log line; a failed write logs once per failure streak, keeps the in-memory state and retries at the next changing poll) in a new file `backend/l2tp/counted.go`
+- [X] T012 [US2] Rewrite `poll` in `backend/l2tp/stats.go` to the contract's five steps; make it callable with the lock held for the final poll in `Shutdown`
+- [X] T013 [US2] Implement the hand-over registry (deposit, take, put back; occupied key logs an error) in a new file `backend/l2tp/handover.go` and wire it into `New` and `Shutdown` in `backend/l2tp/l2tp.go`; forget users absent from the new user list
+- [X] T014 [US2] Run T008 and the whole `./backend/l2tp` package GREEN (Linux test binary), then with `-race`; commit tests and fix separately
 
 ## Phase 5: User Story 3 - WireGuard billed for every byte (P2) - owner: WireGuard agent
 
 **Goal**: FR-006..FR-009b. **Independent test**: fake device, fake manager.
 
-- [ ] T015 [US3] Write RED tests in new files `backend/wireguard/accounting_test.go` and `pkg/stats/tracker_accounting_test.go`: growth on a peer with a handshake older than 45 s is reported; online status and IP list unchanged for such a peer; unsampled growth survives a partial-sync removal; a full sync (replace) and a restart flush first and count later growth from zero (including growth larger than the old counter); Shutdown then New for the same interface reports flushed plus unread deltas once and releases peers no longer configured; `Sample.Quiet` and `RestartCounters` semantics in `pkg/stats`
-- [ ] T016 [US3] Run T015 on `eab2601` and keep the failing output (compile failures of not-yet-existing API are recorded as such; each behavioural test must also fail behaviourally once the API exists without the behaviour)
-- [ ] T017 [US3] Add `Sample.Quiet` and `(*Tracker).RestartCounters` to `pkg/stats/tracker.go` (zero value keeps today's behaviour); a sample for an entry marked removed comes from a new source whose counters started at zero, so it keeps the pending delta and counts the sample from zero (today the re-add path counts only the pending delta and drops the first sample's bytes)
-- [ ] T018 [US3] Sample every peer every tick in `backend/wireguard/jobs.go` with `Quiet` for zero or older-than-45 s handshakes; serialise the sampler with `syncMu`
-- [ ] T019 [US3] Flush before removal (`backend/wireguard/user_partial_sync.go`), before replace plus `RestartCounters` only after a successful replace (`backend/wireguard/user_full_sync.go`, `restartLocked` in `backend/wireguard/wireguard.go`), and before `Close` in `Shutdown`; keep the documented lock order `syncMu` -> `wg.mu` -> `m.mu` (a Shutdown that serialises with syncs takes `syncMu` before `wg.mu`); a failed kernel call restarts nothing
-- [ ] T020 [US3] Implement the hand-over registry in a new file `backend/wireguard/handover.go`; adopt in `newWithManagerFactory` after the interface exists (restart counters, remove entries for unconfigured keys), put back on failure
-- [ ] T021 [US3] Update `backend/wireguard/jobs_test.go` only where it pins the old 45 s gate; run T015 and the packages `./backend/wireguard ./pkg/stats` GREEN, then with `-race`; commit tests and fix separately
+- [X] T015 [US3] Write RED tests in new files `backend/wireguard/accounting_test.go` and `pkg/stats/tracker_accounting_test.go`: growth on a peer with a handshake older than 45 s is reported; online status and IP list unchanged for such a peer; unsampled growth survives a partial-sync removal; a full sync (replace) and a restart flush first and count later growth from zero (including growth larger than the old counter); Shutdown then New for the same interface reports flushed plus unread deltas once and releases peers no longer configured; `Sample.Quiet` and `RestartCounters` semantics in `pkg/stats`
+- [X] T016 [US3] Run T015 on `eab2601` and keep the failing output (compile failures of not-yet-existing API are recorded as such; each behavioural test must also fail behaviourally once the API exists without the behaviour)
+- [X] T017 [US3] Add `Sample.Quiet` and `(*Tracker).RestartCounters` to `pkg/stats/tracker.go` (zero value keeps today's behaviour); a sample for an entry marked removed comes from a new source whose counters started at zero, so it keeps the pending delta and counts the sample from zero (today the re-add path counts only the pending delta and drops the first sample's bytes)
+- [X] T018 [US3] Sample every peer every tick in `backend/wireguard/jobs.go` with `Quiet` for zero or older-than-45 s handshakes; serialise the sampler with `syncMu`
+- [X] T019 [US3] Flush before removal (`backend/wireguard/user_partial_sync.go`), before replace plus `RestartCounters` only after a successful replace (`backend/wireguard/user_full_sync.go`, `restartLocked` in `backend/wireguard/wireguard.go`), and before `Close` in `Shutdown`; keep the documented lock order `syncMu` -> `wg.mu` -> `m.mu` (a Shutdown that serialises with syncs takes `syncMu` before `wg.mu`); a failed kernel call restarts nothing
+- [X] T020 [US3] Implement the hand-over registry in a new file `backend/wireguard/handover.go`; adopt in `newWithManagerFactory` after the interface exists (restart counters, remove entries for unconfigured keys), put back on failure
+- [X] T021 [US3] Update `backend/wireguard/jobs_test.go` only where it pins the old 45 s gate; run T015 and the packages `./backend/wireguard ./pkg/stats` GREEN, then with `-race`; commit tests and fix separately
 
 ## Phase 6: User Story 4 - Uplink means client to server (P3) - owner: Direction agent
 
 **Goal**: FR-010..FR-012. **Independent test**: known rx/tx per backend.
 
-- [ ] T022 [US4] Write RED tests in new files `pkg/stats/direction_test.go`, `backend/wireguard/direction_test.go`, `backend/l2tp/direction_test.go`, `backend/openvpn/direction_test.go`: uplink equals client-to-server bytes per user, per interface/instance and node level; for every case the per-name sum equals `rx+tx` and the value set equals `{rx, tx}`; an MTProto case in `backend/mtproto/direction_test.go` pins today's (correct) labels
-- [ ] T023 [US4] Run T022 on `eab2601` and keep the failing output (MTProto case passes on both)
-- [ ] T024 [US4] Swap the labels in `buildDeltaStats` in `pkg/stats/interface_counters.go`; swap the values MTProto passes in `backend/mtproto/stats.go` (per-user sample, per-inbound, node-level)
-- [ ] T025 [US4] Update label assertions that pinned the old mapping in `pkg/stats/interface_counters_test.go`, `pkg/stats/tracker_test.go`, `backend/wireguard/stats_outbound_test.go`, `backend/l2tp/l2tp_inbound_test.go`, `backend/openvpn/stats_trackers_test.go` (and any other failing label assertion outside the other agents' files); leave `backend/mtproto/inbound_stats_test.go` unchanged and green
-- [ ] T026 [US4] Run the affected packages GREEN and with `-race`; commit tests and fix separately
+- [X] T022 [US4] Write RED tests in new files `pkg/stats/direction_test.go`, `backend/wireguard/direction_test.go`, `backend/l2tp/direction_test.go`, `backend/openvpn/direction_test.go`: uplink equals client-to-server bytes per user, per interface/instance and node level; for every case the per-name sum equals `rx+tx` and the value set equals `{rx, tx}`; an MTProto case in `backend/mtproto/direction_test.go` pins today's (correct) labels
+- [X] T023 [US4] Run T022 on `eab2601` and keep the failing output (MTProto case passes on both)
+- [X] T024 [US4] Swap the labels in `buildDeltaStats` in `pkg/stats/interface_counters.go`; swap the values MTProto passes in `backend/mtproto/stats.go` (per-user sample, per-inbound, node-level)
+- [X] T025 [US4] Update label assertions that pinned the old mapping in `pkg/stats/interface_counters_test.go`, `pkg/stats/tracker_test.go`, `backend/wireguard/stats_outbound_test.go`, `backend/l2tp/l2tp_inbound_test.go`, `backend/openvpn/stats_trackers_test.go` (and any other failing label assertion outside the other agents' files); leave `backend/mtproto/inbound_stats_test.go` unchanged and green
+- [X] T026 [US4] Run the affected packages GREEN and with `-race`; commit tests and fix separately
 
 ## Phase 7: Integration, verification, hand-back - owner: lead
 
-- [ ] T027 Scan each agent branch diff for added comment lines, IPv4 literals other than 127.0.0.1 and AI/vendor names, and check `controller.NodeVersion` is still 0.6.21; reject and return on any hit
-- [ ] T028 Merge `release/v0.6.21-acct-{mtproto,l2tp,wg,dir}` into `release/v0.6.21` with `--no-ff` as Free-Guy-IR; resolve nothing by hand (disjoint files); if a combined test breaks, fix it on `release/v0.6.21` with a test
+- [X] T027 Scan each agent branch diff for added comment lines, IPv4 literals other than 127.0.0.1 and AI/vendor names, and check `controller.NodeVersion` is still 0.6.21; reject and return on any hit
+- [X] T028 Merge `release/v0.6.21-acct-{mtproto,l2tp,wg,dir}` into `release/v0.6.21` with `--no-ff` as Free-Guy-IR; resolve nothing by hand (disjoint files); if a combined test breaks, fix it on `release/v0.6.21` with a test
 - [ ] T029 Full gate on the shared test host in one throwaway `golang:1.26.3-alpine` container (`--memory 1500m --init`, `free -m` first, one heavy container at a time): `make build_xray`, `make test_xray_patches`, `TEST_INTEGRATION=true go test ./... -p 1`, `-race` on the changed packages, `go vet ./...`, `gofmt -l`
-- [ ] T030 Independent verifier (did not write the code) re-derives RED on `eab2601` and GREEN on the merged head for every fix, and checks that the Xray and sing-box per-user paths are byte-identical to `eab2601` (`git diff eab2601..HEAD -- backend/xray backend/singbox` empty) and OpenVPN's per-user path changed only by the label function
-- [ ] T031 Clean the shared test host (containers, `/root/dev/node-acct-*`), remove the extra worktrees after merging, record everything in the KG entity "node 0.6.21 release 2026-09-23", and hand back: per defect root cause (file:line), fix, RED/GREEN evidence, merged HEAD, gate and race results, verifier verdict, cleanup state, residuals (inverted historical charts for WireGuard, L2TP, OpenVPN; carry-over for Xray, sing-box, OpenVPN, MTProto out of scope)
+- [ ] T030 Independent verifier (did not write the code) re-derives RED on `eab2601` and GREEN on the merged head for every fix, and checks that the Xray and sing-box per-user paths are byte-identical to `eab2601` (`git diff eab2601..HEAD -- backend/xray backend/singbox` empty) and OpenVPN's per-user path changed only by the label function and the Start hand-over (T036)
+- [ ] T031 Clean the shared test host (containers, `/root/dev/node-acct-*`), remove the extra worktrees after merging, record everything in the KG entity "node 0.6.21 release 2026-09-23", and hand back: per defect root cause (file:line), fix, RED/GREEN evidence, merged HEAD, gate and race results, verifier verdict, cleanup state, residuals (inverted historical charts for WireGuard, L2TP, OpenVPN; carry-over for Xray and sing-box out of scope)
+
+## Phase 8: Findings added during implementation and review (all test-first, RED recorded)
+
+- [X] T032 Tracker re-add dropped the first sample of a re-added removed entry (`pkg/stats/tracker.go`, fixed with T017); L2TP samples applied and users forgotten outside the instance lock could re-bill a stale sample (`backend/l2tp/stats.go`, d17ce22); a stopped L2TP/WireGuard instance kept pointers to handed-over trackers (01e3e52, 054d4ac)
+- [X] T033 L2TP watermark grace for sessions reaped before their final record, final records billed only after a successful remove (b9d0b64); consumed finals keep their values as watermarks and ip-up writes session files atomically (0571426, 529b669); old-format finals never match consumed watermarks, counted state `v2` with `consumed` and `final` lines (e4bfe3e)
+- [X] T034 Tracker rollback rebases only the dipped direction (17dfdf5)
+- [X] T035 MTProto lifecycle: Serve/Shutdown WaitGroup race contained node-side, Shutdown no longer holds the backend lock while proxies drain (4e43484, 0e84d61); goroutine leak per Start from the mtg allowlist, bind-failure proxy leak, Started/Restart listener race (a6a8237); bounded Serve wait logged (0aff517); test port helper probes loopback (685dcfa)
+- [X] T036 Scope extension (owner rule: no known bug): MTProto and OpenVPN hand unread accounting to the next backend on every Start, exactly once across consecutive Starts (1bc4766 tests, e55fd11 `CountFromZero`, 472d2d7, 143c253)
+- [X] T037 Real-kernel check on the shared test host (NET_ADMIN-only container): `wg setconf` (ReplacePeers) restarts peer counters and handshake to zero; the four netns end-to-end WireGuard tests need CAP_SYS_ADMIN and run in the release pull request CI
 
 ## Dependencies & Execution Order
 

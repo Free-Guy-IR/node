@@ -279,5 +279,6 @@ server-to-client amount and check the labels and that the per-user sum is unchan
   the panel) remain lost, as for every other backend; the hand-over covers the in-process Start path.
 - Historical per-user and per-node charts written before this release are inverted for WireGuard, L2TP
   and OpenVPN; they are not rewritten.
-- Carrying accounting across a Start for Xray, sing-box, OpenVPN and MTProto (whose counters live in the
-  core process that the Start replaces) is out of scope.
+- Carrying accounting across a Start for Xray and sing-box (whose counters live in the core process that
+  the Start replaces) is out of scope. MTProto and OpenVPN keep their counters in the node process and,
+  by a scope decision on 2026-09-23, hand their unread accounting over like L2TP and WireGuard.

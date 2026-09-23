@@ -1,7 +1,8 @@
 # Contract: accounting hand-over across a Start
 
-Scope: `backend/l2tp` (key: inbound tag) and `backend/wireguard` (key: interface name). Each package
-owns its own registry; nothing is shared between packages.
+Scope: `backend/l2tp` (key: inbound tag), `backend/wireguard` (key: interface name), and, added by the
+2026-09-23 scope decision, `backend/mtproto` and `backend/openvpn` (one backend per node, fixed key). Each
+package owns its own registry; nothing is shared between packages.
 
 | Operation | Caller | Effect |
 |-----------|--------|--------|
@@ -31,3 +32,22 @@ owns its own registry; nothing is shared between packages.
   are left untouched. Zero value keeps today's behaviour for every existing caller.
 - `(*Tracker).RestartCounters(keys []string)`: for each existing key, keeps the pending delta
   (`Current - Base`, floored at zero) and restarts `Current` at zero.
+
+## MTProto adoption
+
+- Shutdown stops every proxy (streams drained, middle-proxy connections force-closed and waited for),
+  takes a final sample and deposits the detached per-user tracker plus the unread node-level outbound and
+  per-inbound counters (read with swap-to-zero). A stopped backend answers stats with an error.
+- New takes the hand-over before any listener accepts connections: carried node-level and per-inbound
+  bytes are added to the new counters (a tag that is gone is reported once under its name, then dropped);
+  adopted per-user keys of configured tags and authorised users restart at zero, the rest are removed
+  (reported once).
+
+## OpenVPN adoption
+
+- Shutdown stops the supervisor, stops each process with a bounded management-socket drain (sessions
+  without a DISCONNECT are settled with their last byte-count sample), takes a final sample and deposits
+  the detached per-user tracker, the unread part of both per-instance trackers and the last known IPs.
+- New takes the hand-over before the first process starts: every per-instance tracker counts from zero
+  with the carried unread bytes (`InterfaceCountersTracker.CountFromZero`), adopted per-user keys restart
+  at zero or are removed as for MTProto, and a gone tag is reported once, then dropped.
