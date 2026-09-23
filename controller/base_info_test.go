@@ -75,3 +75,9 @@ func TestBaseInfoResponseWithoutDegradation(t *testing.T) {
 		t.Fatalf("StrippedRuleTags = %v, want empty", response.GetStrippedRuleTags())
 	}
 }
+
+func TestNodeVersionIsPinned(t *testing.T) {
+	if NodeVersion != "0.6.21" {
+		t.Fatalf("NodeVersion = %q, want %q", NodeVersion, "0.6.21")
+	}
+}
