@@ -16,6 +16,11 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
+const (
+	maxRecvMsgSize = 48 * 1024 * 1024
+	maxSendMsgSize = 64 * 1024 * 1024
+)
+
 var (
 	panelKeepaliveEnforcement = keepalive.EnforcementPolicy{MinTime: 5 * time.Second, PermitWithoutStream: true}
 	panelKeepalive            = keepalive.ServerParameters{Time: 30 * time.Second, Timeout: 10 * time.Second}
@@ -38,15 +43,14 @@ func StartGRPCListener(tlsConfig *tls.Config, addr string, cfg *config.Config) (
 	creds := credentials.NewTLS(tlsConfig)
 
 	// Create the gRPC server with conditional middleware
-	// Set max message size to 64MB to handle large configs and user data
-	const maxMsgSize = 64 * 1024 * 1024 // 64MB
 	grpcServer := grpc.NewServer(
 		grpc.Creds(creds),
-		grpc.MaxRecvMsgSize(maxMsgSize),
-		grpc.MaxSendMsgSize(maxMsgSize),
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
+		grpc.MaxSendMsgSize(maxSendMsgSize),
 		grpc.MaxConcurrentStreams(cfg.GrpcMaxConcurrentStreams),
 		grpc.KeepaliveEnforcementPolicy(panelKeepaliveEnforcement),
 		grpc.KeepaliveParams(panelKeepalive),
+		grpc.InTapHandle(authenticateStream(s)),
 		grpc.UnaryInterceptor(ConditionalMiddleware(s)),
 		grpc.StreamInterceptor(ConditionalStreamMiddleware(s)),
 	)

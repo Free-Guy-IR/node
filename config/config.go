@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -39,6 +41,14 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	cfg, err := fromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func fromEnv() (*Config, error) {
 	err := godotenv.Load()
 	if err != nil {
 		log.Printf("[Warning] Failed to load env file, if you're using 'Docker' and you set 'environment' or 'env_file' variable, don't worry, everything is fine. Error: %v", err)
@@ -74,9 +84,12 @@ func Load() (*Config, error) {
 		cfg.LogBufferSize = 1
 	}
 
-	cfg.ApiKey, err = GetEnvAsUUID("API_KEY")
-	if err != nil {
-		log.Printf("[Error] Failed to load API Key, error: %v", err)
+	var keyErr error
+	cfg.ApiKey, keyErr = GetEnvAsUUID("API_KEY")
+	if keyErr != nil {
+		keyErr = fmt.Errorf("failed to load API Key: %w", keyErr)
+	} else if cfg.ApiKey == uuid.Nil {
+		keyErr = errors.New("API_KEY must not be the nil UUID")
 	}
 
 	nodeHostStr := GetEnv("NODE_HOST", "0.0.0.0")
@@ -90,12 +103,12 @@ func Load() (*Config, error) {
 		cfg.NodeHost = "127.0.0.1"
 	}
 
-	return cfg, nil
+	return cfg, keyErr
 }
 
 // NewTestConfig creates a config for testing
 func NewTestConfig(generatedConfigPath string, key uuid.UUID) *Config {
-	cfg, _ := Load()
+	cfg, _ := fromEnv()
 	cfg.GeneratedConfigPath = generatedConfigPath
 	cfg.ApiKey = key
 	return cfg

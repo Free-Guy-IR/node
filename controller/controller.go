@@ -24,6 +24,8 @@ import (
 
 const NodeVersion = "0.6.21"
 
+const keepAliveGrace = 5 * time.Second
+
 var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
 
 type Service interface {
@@ -63,8 +65,6 @@ func New(cfg *config.Config) *Controller {
 }
 
 func (c *Controller) ApiKey() uuid.UUID {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.cfg.ApiKey
 }
 
@@ -90,7 +90,13 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 }
 
 func (c *Controller) Disconnect() {
-	c.cancelFunc()
+	c.mu.RLock()
+	cancelFunc := c.cancelFunc
+	c.mu.RUnlock()
+
+	if cancelFunc != nil {
+		cancelFunc()
+	}
 
 	c.shutdownExtras()
 
@@ -195,16 +201,19 @@ func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPor
 func (c *Controller) StartBackend(ctx context.Context, b *common.Backend) error {
 	c.shutdownExtras()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	apiPort, metricPort := c.apiPort, c.metricPort
+	c.mu.RUnlock()
 
-	newBackend, err := c.buildBackend(ctx, b, c.apiPort, c.metricPort)
+	newBackend, err := c.buildBackend(ctx, b, apiPort, metricPort)
 	if err != nil {
 		return err
 	}
 
+	c.mu.Lock()
 	c.backend = newBackend
 	c.primaryType = b.GetType()
+	c.mu.Unlock()
 	return nil
 }
 
@@ -223,15 +232,23 @@ func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Durati
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.mu.RLock()
-			lastRequest := c.lastRequest
-			c.mu.RUnlock()
-			if time.Since(lastRequest) >= keepAlive {
+			if !c.keepAliveStale(keepAlive) {
+				continue
+			}
+			c.LockControl()
+			if ctx.Err() == nil && c.keepAliveStale(keepAlive) {
 				log.Println("disconnect automatically due to keep alive timeout")
 				c.Disconnect()
 			}
+			c.UnlockControl()
 		}
 	}
+}
+
+func (c *Controller) keepAliveStale(keepAlive time.Duration) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return time.Since(c.lastRequest) >= keepAlive+keepAliveGrace
 }
 
 func (c *Controller) recordSystemStats(ctx context.Context) {
