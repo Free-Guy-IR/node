@@ -207,6 +207,10 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		cancelFunc:      bCancel,
 	}
 
+	for _, inst := range mtCfg.Instances {
+		b.instances[inst.Tag] = &proxyInstance{tag: inst.Tag, domain: inst.FakeTLSDomain}
+	}
+
 	b.applyInitialUsers(users)
 
 	ntw, err := buildNetwork()
