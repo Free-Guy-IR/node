@@ -61,13 +61,12 @@ func (c *countedState) raise(id sessionIdentity, b countedBytes) {
 func (c *countedState) consume(rec finalRecord) countedBytes {
 	id, ok := c.match(rec)
 	if !ok {
-		return countedBytes{}
+		id = rec.countedKey()
 	}
-	b := c.entries[id]
-	delete(c.entries, id)
+	base := c.entries[id]
+	c.set(id, countedBytes{rx: max(base.rx, rec.rx), tx: max(base.tx, rec.tx)})
 	delete(c.misses, id)
-	c.dirty = true
-	return b
+	return base
 }
 
 func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {

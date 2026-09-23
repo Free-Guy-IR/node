@@ -351,7 +351,7 @@ func TestCountedStateSurvivesAProcessRestart(t *testing.T) {
 	expectUsers(t, "after a process restart", takeUsers(t, b), map[string]int64{"7": 200, "8": 700})
 
 	got := readCountedLines(t, e.countedPath())
-	want := []string{"ppp0 100 1000 1100 600"}
+	want := []string{"ppp0 100 1000 1100 600", "ppp1 200 1100 2500 1200"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("counted state lines = %q, want %q", got, want)
 	}

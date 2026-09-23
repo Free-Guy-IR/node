@@ -76,6 +76,7 @@ func (o *L2TP) writeIPScripts() error {
 		`[ -n "$IF" ] || exit 0`,
 		"d=" + sessionStateDir,
 		`mkdir -p "$d"; umask 077`,
+		`tmp="$d/.$IF.$$"`,
 		"{",
 		`  echo "user=$PEERNAME"`,
 		`  echo "tunnel_ip=$REMOTE"`,
@@ -83,7 +84,7 @@ func (o *L2TP) writeIPScripts() error {
 		`  echo "tag=` + o.config.InboundTag + `"`,
 		`  echo "pid=${PPPD_PID:-0}"`,
 		`  echo "started=$(date +%s)"`,
-		`} > "$d/$IF"`,
+		`} > "$tmp" && mv -f "$tmp" "$d/$IF"`,
 		"",
 	}, "\n")
 
