@@ -82,6 +82,17 @@ func (s *authStore) contains(username string) bool {
 	return ok
 }
 
+func (s *authStore) emails() map[string]struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]struct{}, len(s.users))
+	for _, entry := range s.users {
+		out[entry.email] = struct{}{}
+	}
+	return out
+}
+
 // authenticate validates a username/password pair presented over the
 // management socket, returning the user's email on success.
 func (s *authStore) authenticate(username, password string) (string, uint32, bool) {

@@ -51,9 +51,10 @@ type ManagementClient struct {
 	// authStore.authenticate (see user.go).
 	authFn func(username, password string) (email string, maxConcurrent uint32, ok bool)
 
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	stopped atomic.Bool
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopped  atomic.Bool
+	draining atomic.Bool
 
 	connMu sync.Mutex
 	conn   net.Conn
@@ -241,6 +242,10 @@ func (m *ManagementClient) readLoop(conn net.Conn, r *bufio.Reader) {
 		m.consume(conn, r)
 		conn.Close()
 		m.clearConn()
+		if m.draining.Load() {
+			m.settleOpenSessions()
+			return
+		}
 		m.resetVolatileState()
 
 		if m.stopped.Load() {
@@ -561,6 +566,45 @@ func (m *ManagementClient) resetVolatileState() {
 	m.sessionStats = make(map[string]ClientStats)
 }
 
+func (m *ManagementClient) settleOpenSessions() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	for cid, identity := range m.cidIdentity {
+		last, ok := m.sessionStats[cid]
+		if !ok {
+			continue
+		}
+		totals := m.closedTotals[identity.email]
+		totals.Uplink += last.Uplink
+		totals.Downlink += last.Downlink
+		m.closedTotals[identity.email] = totals
+	}
+	m.cidIdentity = make(map[string]clientIdentity)
+	m.online = make(map[string]clientIdentity)
+	m.sessionStats = make(map[string]ClientStats)
+}
+
+func (m *ManagementClient) beginDrain() {
+	m.draining.Store(true)
+}
+
+func (m *ManagementClient) finishDrain(timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	drained := false
+	select {
+	case <-m.doneCh:
+		drained = true
+	case <-timer.C:
+	}
+
+	m.settleOpenSessions()
+	m.Close()
+	return drained
+}
+
 func (m *ManagementClient) setConn(c net.Conn) {
 	m.connMu.Lock()
 	m.conn = c
@@ -762,6 +806,21 @@ func (m *ManagementClient) AllUserStats() map[string]ClientStats {
 		t.Uplink += s.Uplink
 		t.Downlink += s.Downlink
 		out[id.email] = t
+	}
+	return out
+}
+
+func (m *ManagementClient) allOnlineIPs() map[string]map[string]int64 {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	out := make(map[string]map[string]int64, len(m.onlineIPs))
+	for email, ips := range m.onlineIPs {
+		copied := make(map[string]int64, len(ips))
+		for ip, seen := range ips {
+			copied[ip] = seen
+		}
+		out[email] = copied
 	}
 	return out
 }

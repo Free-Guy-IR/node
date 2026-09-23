@@ -55,6 +55,8 @@ type instanceProcess struct {
 	startupFailure   string
 }
 
+var managementDrainTimeout = 3 * time.Second
+
 func newInstanceProcess(inst *InstanceConfig, pki PKI, tunIndex int, baseDir, executablePath string, logsChan chan string, startupLogTailSize int) *instanceProcess {
 	if startupLogTailSize <= 0 {
 		startupLogTailSize = 200
@@ -168,7 +170,11 @@ func (p *instanceProcess) aggregateStats() (rx, tx int64) {
 	if mgmt == nil {
 		return 0, 0
 	}
-	for _, s := range mgmt.AllUserStats() {
+	return sumUserStats(mgmt.AllUserStats())
+}
+
+func sumUserStats(totals map[string]ClientStats) (rx, tx int64) {
+	for _, s := range totals {
 		rx += int64(s.Downlink)
 		tx += int64(s.Uplink)
 	}
@@ -321,12 +327,20 @@ func (p *instanceProcess) handleProcessExit(cmd *exec.Cmd, err error) {
 // clients without a clean disconnect signal), wait with a timeout, then
 // escalate to killProcessTree's SIGTERM+SIGKILL+process-group fallback.
 func (p *instanceProcess) Stop() {
+	p.stop(false)
+}
+
+func (p *instanceProcess) stopAndDrain() *ManagementClient {
+	return p.stop(true)
+}
+
+func (p *instanceProcess) stop(drain bool) *ManagementClient {
 	p.mu.Lock()
 
 	started := p.Started()
 	if !started && p.process == nil {
 		p.mu.Unlock()
-		return
+		return nil
 	}
 
 	mgmt := p.mgmt
@@ -345,7 +359,11 @@ func (p *instanceProcess) Stop() {
 	p.mu.Unlock()
 
 	if mgmt != nil {
-		mgmt.Close()
+		if drain {
+			mgmt.beginDrain()
+		} else {
+			mgmt.Close()
+		}
 	}
 
 	if started {
@@ -370,6 +388,18 @@ func (p *instanceProcess) Stop() {
 		}
 	}
 
+	if drain && mgmt != nil {
+		wait := managementDrainTimeout
+		if !started {
+			wait = 0
+		}
+		if !mgmt.finishDrain(wait) && started {
+			message := fmt.Sprintf("openvpn instance %q: management socket did not drain within %s after the process stopped, handing over the counters read so far", p.tag, wait)
+			log.Println(message)
+			p.recordLog(message)
+		}
+	}
+
 	p.removeNAT()
 
 	p.mu.Lock()
@@ -386,6 +416,11 @@ func (p *instanceProcess) Stop() {
 	p.mu.Unlock()
 
 	log.Printf("openvpn instance %q stopped", p.tag)
+
+	if drain {
+		return mgmt
+	}
+	return nil
 }
 
 func (p *instanceProcess) Restart() error {
