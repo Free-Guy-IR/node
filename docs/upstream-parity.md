@@ -103,7 +103,7 @@ Before porting it, all of this has to be true:
    panel and bridge worker; upgrade the shared store, the bridge and the panel together; only then resume user
    changes. Rolling back the bridge after activation needs a full node restart from an authoritative snapshot.
 6. The rest of the PR is weighed separately:
-   - fail closed on a missing or zero `API_KEY`: the fork has its own fix on an unreleased branch;
+   - fail closed on a missing or zero `API_KEY`: 0.6.21 carries the fork's own fix, not the PR's;
    - watchdog serialisation: taken from `a69d7ed` in 0.6.21;
    - bounded REST and user-sync stream bodies: post-auth only, and REST is unused in production;
    - surfacing a failed xray user removal: the fork already does this, with a session revoke;
