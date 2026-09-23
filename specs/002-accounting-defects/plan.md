@@ -38,7 +38,7 @@ Design decisions and rejected alternatives are in [research.md](research.md); en
 (same lifetime as the session and final-record directories); nothing else persisted
 
 **Testing**: unit tests with fake devices and temporary session directories; RED on `eab2601`, GREEN
-after; full gate on the shared test host in a throwaway `golang:1.26.3-alpine` container
+after; full gate on the shared test host in a throwaway `golang:1.26.6-alpine` container
 (`--memory 1500m --init`): `make build_xray`, `make test_xray_patches`,
 `TEST_INTEGRATION=true go test ./... -p 1`, `go test -race` on the changed packages, `go vet ./...`,
 `gofmt -l`

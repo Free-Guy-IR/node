@@ -14,7 +14,7 @@ run those as Linux test binaries:
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/l2tp.test ./backend/l2tp
 ```
 
-then run the binary in a throwaway `golang:1.26.3-alpine` container on the shared test host
+then run the binary in a throwaway `golang:1.26.6-alpine` container on the shared test host
 (`--memory 512m --init`, check `free -m` first).
 
 ## RED/GREEN evidence

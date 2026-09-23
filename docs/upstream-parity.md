@@ -18,25 +18,25 @@ State as of 2026-09-23, release 0.6.21.
 
 | upstream commit | subject | status in the fork |
 |---|---|---|
-| `9bb6b35df2cc514385c68687bc6f771795d4b68e` | deps: gopsutil 4.26.7 to 4.26.8 (#85) | ported in 0.6.21 |
-| `076a874e937d772ddd9228a01911df4338afecb7` | deps: grpc 1.83.1 to 1.83.2 (#84) | ported in 0.6.21 |
-| `a69d7ed6811af281ffc01e11478638d922130f0d` | keep a running core across duplicate start and keep-alive jitter | watchdog part ported in 0.6.21; the `StartOrAttach` part is rejected (see below) |
+| `9bb6b35df2cc514385c68687bc6f771795d4b68e` | deps: gopsutil 4.26.7 to 4.26.8 (#85) | ported in 0.6.21 (`f53ffa2`) |
+| `076a874e937d772ddd9228a01911df4338afecb7` | deps: grpc 1.83.1 to 1.83.2 (#84) | ported in 0.6.21 (`f53ffa2`) |
+| `a69d7ed6811af281ffc01e11478638d922130f0d` | keep a running core across duplicate start and keep-alive jitter | watchdog part ported in 0.6.21 (`40248f2`); the `StartOrAttach` part is rejected (see below) |
 | `f751dcc82569d0543838124744ddf021890ab09d` | deps: grpc 1.83.1 to 1.83.2 (#89) | nothing to port: an empty commit whose tree equals its parent; the grpc bump itself is #84 |
-| `0d3bc70f546e47ebe735b7764263f15fa023f458` | deps: x/sys 0.47.0 to 0.48.0 (#88) | ported in 0.6.21 |
+| `0d3bc70f546e47ebe735b7764263f15fa023f458` | deps: x/sys 0.47.0 to 0.48.0 (#88) | ported in 0.6.21 (`f53ffa2`) |
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
-| `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog, where it applies |
+| `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
 
-The fork commits that carry the 0.6.21 ports are confirmed when the release branches are merged. Each of them carries
-an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
+The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
+Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
+The toolchain moved to Go 1.26.6 in `345febd` (fixes GO-2026-6090), with a govulncheck CI job from `47ef6ee`.
 
 Notes on the ported commits:
 
 - `a69d7ed` bundles four changes. The fork takes the one that fixes a proven race: the keep-alive watchdog re-checks
   staleness while it holds the control lock, so a late watchdog can no longer tear down the core that a concurrent
-  panel `Start` has just created. Its `StartOrAttach` is refused. Its 5 s `keepAliveGrace` and its `Stop` reply of
-  `&Empty{}` instead of `nil` are optional and do not change behaviour for the panel, which polls well inside
-  `keep_alive`.
+  panel `Start` has just created. Its `StartOrAttach` is refused. The fork also took its 5 s `keepAliveGrace`. Its `Stop` reply of `&Empty{}` instead of `nil`
+  and its early detach in `Disconnect` are not taken: every caller of `Disconnect` now holds the control lock.
 - `d44ca8e` only changes the helper's signature. Upstream's own `controller/controller_test.go` on `dev` still calls
   the old three-argument form and does not compile, so upstream's test file must not be copied verbatim.
 - `#84` also moves the indirect `golang.org/x/crypto`, `golang.org/x/net` and `golang.org/x/text` modules.
