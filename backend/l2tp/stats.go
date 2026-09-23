@@ -12,6 +12,8 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 )
 
+var beforeApplySamples = func() {}
+
 func (o *L2TP) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(o.updateInterval)
 	defer ticker.Stop()
@@ -26,55 +28,62 @@ func (o *L2TP) pollLoop(ctx context.Context) {
 }
 
 func (o *L2TP) poll() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.state != lifecycleRunning {
+		return
+	}
+	o.pollLocked()
+}
+
+func (o *L2TP) pollLocked() {
+	samples := o.collectLocked()
+	beforeApplySamples()
+	o.statsTracker.UpdateStatsBatch(samples)
+}
+
+func (o *L2TP) collectLocked() []stats.Sample {
 	tag := o.config.InboundTag
 	sessions := readSessions(tag)
 	finals := readFinalRecords(tag)
 
 	perUser := make(map[string][]l2tpSession)
-	present := make(map[string]struct{})
 	for _, s := range sessions {
 		perUser[s.user] = append(perUser[s.user], s)
-		present[s.ifname] = struct{}{}
 	}
 
-	var samples []stats.Sample
-
-	o.mu.Lock()
 	growthRx := make(map[string]int64)
 	growthTx := make(map[string]int64)
+	ended := make(map[string]struct{}, len(finals))
 
 	for _, rec := range finals {
-		last, seen := o.ifSeen[rec.ifname]
-		dRx, dTx := rec.rx, rec.tx
-		if seen {
-			dRx, dTx = rec.rx-last[0], rec.tx-last[1]
-		}
-		dRx = max(dRx, 0)
-		dTx = max(dTx, 0)
-		delete(o.ifSeen, rec.ifname)
-		growthRx[rec.user] += dRx
-		growthTx[rec.user] += dTx
+		base := o.counted.consume(rec)
+		growthRx[rec.user] += max(rec.rx-base.rx, 0)
+		growthTx[rec.user] += max(rec.tx-base.tx, 0)
+		ended[rec.ifname] = struct{}{}
 		if _, live := perUser[rec.user]; !live {
 			perUser[rec.user] = nil
 		}
 		_ = os.Remove(rec.path)
 	}
 
+	live := make(map[sessionIdentity]struct{}, len(sessions))
 	for _, s := range sessions {
-		rx, tx := ifaceBytes(s.ifname)
-		last := o.ifSeen[s.ifname]
-		dRx := max(rx-last[0], 0)
-		dTx := max(tx-last[1], 0)
-		o.ifSeen[s.ifname] = [2]int64{rx, tx}
-		growthRx[s.user] += dRx
-		growthTx[s.user] += dTx
-	}
-	for ifn := range o.ifSeen {
-		if _, ok := present[ifn]; !ok {
-			delete(o.ifSeen, ifn)
+		id := s.identity()
+		live[id] = struct{}{}
+		if _, gone := ended[s.ifname]; gone {
+			continue
 		}
+		rx, tx := ifaceBytes(s.ifname)
+		base := o.counted.get(id)
+		growthRx[s.user] += max(rx-base.rx, 0)
+		growthTx[s.user] += max(tx-base.tx, 0)
+		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
 	}
+	o.counted.retain(live)
+	o.persistCountedLocked()
 
+	var samples []stats.Sample
 	now := time.Now().Unix()
 	onlineIPs := make(map[string]map[string]int64, len(perUser))
 	for user, list := range perUser {
@@ -107,11 +116,7 @@ func (o *L2TP) poll() {
 		})
 	}
 	o.onlineIPs = onlineIPs
-	o.mu.Unlock()
-
-	if len(samples) > 0 {
-		o.statsTracker.UpdateStatsBatch(samples)
-	}
+	return samples
 }
 
 func (o *L2TP) forgetUsers(usernames []string) {
@@ -119,13 +124,11 @@ func (o *L2TP) forgetUsers(usernames []string) {
 		return
 	}
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	for _, u := range usernames {
 		delete(o.cumRx, u)
 		delete(o.cumTx, u)
 		delete(o.onlineIPs, u)
-	}
-	o.mu.Unlock()
-	for _, u := range usernames {
 		o.statsTracker.RemoveStats(u)
 	}
 	o.statsTracker.CleanupDeletedEntries()
@@ -137,28 +140,35 @@ func (o *L2TP) running() bool {
 	return o.state == lifecycleRunning
 }
 
+func (o *L2TP) runningTracker() (bool, *stats.Tracker) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.state == lifecycleRunning, o.statsTracker
+}
+
 func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
-	if !o.running() {
+	running, tracker := o.runningTracker()
+	if !running {
 		return nil, errNotStarted
 	}
 	switch request.GetType() {
 	case common.StatType_UserStat:
-		return o.statsTracker.GetStats(ctx, []string{request.GetName()}, request.GetReset_()), nil
+		return tracker.GetStats(ctx, []string{request.GetName()}, request.GetReset_()), nil
 	case common.StatType_UsersStat:
-		return o.statsTracker.GetUsersStats(ctx, request.GetReset_()), nil
+		return tracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
 		o.mu.Lock()
-		totalRx, totalTx := o.totalRx, o.totalTx
+		totalRx, totalTx, inbound := o.totalRx, o.totalTx, o.inboundStats
 		o.mu.Unlock()
-		dRx, dTx := o.inboundStats.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := inbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
 		}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
 		o.mu.Lock()
-		totalRx, totalTx := o.totalRx, o.totalTx
+		totalRx, totalTx, outbound := o.totalRx, o.totalTx, o.interfaceStats
 		o.mu.Unlock()
-		dRx, dTx := o.interfaceStats.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := outbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
 		}, nil
@@ -168,14 +178,15 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 }
 
 func (o *L2TP) GetUserOnlineStats(_ context.Context, email string) (*common.OnlineStatResponse, error) {
-	if !o.running() {
+	running, tracker := o.runningTracker()
+	if !running {
 		return nil, errNotStarted
 	}
 	o.mu.RLock()
 	_, connected := o.onlineIPs[email]
 	o.mu.RUnlock()
 	value := int64(0)
-	if connected || o.statsTracker.AnyActiveSince([]string{email}, time.Now().Add(-onlineActivityThreshold)) {
+	if connected || tracker.AnyActiveSince([]string{email}, time.Now().Add(-onlineActivityThreshold)) {
 		value = 1
 	}
 	return &common.OnlineStatResponse{Name: email, Value: value}, nil
