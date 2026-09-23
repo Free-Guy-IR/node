@@ -25,6 +25,8 @@ import (
 
 const version = "mtg-fork (Free-Guy-IR)"
 
+var beforeAuthLookup = func() {}
+
 // proxyInstance is one running admin-configured listener: EITHER an
 // mtglib.Proxy (the normal, direct-to-DC path) OR a middleproxy.Instance
 // (only when the instance has an ad_tag configured - see config.go), never
@@ -253,7 +255,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			AntiReplayCache:    antireplay.NewStableBloomFilter(antireplay.DefaultStableBloomFilterMaxSize, antireplay.DefaultStableBloomFilterErrorRate),
 			IPBlocklist:        ipblocklist.NewNoop(),
 			IPAllowlist:        allowlist,
-			EventStream:        newMtprotoEventStream(accumulator, b.emailForUsername),
+			EventStream:        newMtprotoEventStream(accumulator, b.authenticatedEmail),
 			Secrets:            b.secretsForInstance(inst.FakeTLSDomain),
 			DomainFrontingHost: inst.FakeTLSDomain,
 			PlainMode:          inst.Plain(),
@@ -297,6 +299,11 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 	b.recordLog(fmt.Sprintf("mtproto started, %d instance(s)", len(b.instances)))
 
 	return b, nil
+}
+
+func (b *Backend) authenticatedEmail(username string) string {
+	beforeAuthLookup()
+	return b.emailForUsername(username)
 }
 
 func (b *Backend) Started() bool {
