@@ -283,3 +283,34 @@ func TestTrackerDetachMovesEveryEntryAndLeavesTheTrackerEmpty(t *testing.T) {
 	applyAccountingSample(detached, Sample{PublicKey: "key1", Email: "moved@example.com", Rx: 1310, Tx: 505})
 	expectAccountingValues(t, detached.GetUsersStats(ctx, true), "moved@example.com", 10, 5)
 }
+
+func TestTrackerRollbackInOneDirectionKeepsTheOtherDirectionsGrowth(t *testing.T) {
+	cases := []struct {
+		name           string
+		rx, tx         int64
+		want           []int64
+		nextRx, nextTx int64
+		wantNext       []int64
+	}{
+		{name: "rx dips while tx grows", rx: 5, tx: 70, want: []int64{20, 30}, nextRx: 6, nextTx: 75, wantNext: []int64{1, 5}},
+		{name: "tx dips while rx grows", rx: 130, tx: 3, want: []int64{50, 10}, nextRx: 131, nextTx: 9, wantNext: []int64{1, 6}},
+		{name: "both dip", rx: 5, tx: 3, want: []int64{20, 10}, nextRx: 7, nextTx: 4, wantNext: []int64{2, 1}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := New()
+			ctx := context.Background()
+
+			applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "dip@example.com", Rx: 80, Tx: 40})
+			tracker.GetUsersStats(ctx, true)
+			applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "dip@example.com", Rx: 100, Tx: 50})
+
+			applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "dip@example.com", Rx: tc.rx, Tx: tc.tx})
+			expectAccountingValues(t, tracker.GetUsersStats(ctx, true), "dip@example.com", tc.want...)
+
+			applyAccountingSample(tracker, Sample{PublicKey: "key1", Email: "dip@example.com", Rx: tc.nextRx, Tx: tc.nextTx})
+			expectAccountingValues(t, tracker.GetUsersStats(ctx, true), "dip@example.com", tc.wantNext...)
+		})
+	}
+}

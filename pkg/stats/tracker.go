@@ -86,16 +86,18 @@ func (st *Tracker) applySampleLocked(sample Sample, activeAt time.Time) {
 	}
 
 	// Detect kernel counter rollback/reset and preserve pending deltas
-	if sample.Rx < entry.CurrentRx || sample.Tx < entry.CurrentTx {
+	if sample.Rx < entry.CurrentRx {
 		pendingRx := entry.CurrentRx - entry.BaseRx
-		pendingTx := entry.CurrentTx - entry.BaseTx
 		if pendingRx < 0 {
 			pendingRx = 0
 		}
+		entry.BaseRx = sample.Rx - pendingRx
+	}
+	if sample.Tx < entry.CurrentTx {
+		pendingTx := entry.CurrentTx - entry.BaseTx
 		if pendingTx < 0 {
 			pendingTx = 0
 		}
-		entry.BaseRx = sample.Rx - pendingRx
 		entry.BaseTx = sample.Tx - pendingTx
 	}
 
