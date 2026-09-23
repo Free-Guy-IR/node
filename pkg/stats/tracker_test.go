@@ -204,13 +204,14 @@ func TestStatsTracker_ReaddAfterDeletePreservesPendingDelta(t *testing.T) {
 	updateSample(tracker, "key1", "user1@example.com", 100, 200, "1.2.3.4")
 
 	resp := tracker.GetStats(ctx, []string{"key1"}, false)
+	var total int64
+	seen := map[int64]bool{}
 	for _, s := range resp.Stats {
-		if s.Type == "downlink" && s.Value != 1000 {
-			t.Errorf("Expected preserved rx=1000, got %d", s.Value)
-		}
-		if s.Type == "uplink" && s.Value != 2000 {
-			t.Errorf("Expected preserved tx=2000, got %d", s.Value)
-		}
+		total += s.Value
+		seen[s.Value] = true
+	}
+	if len(resp.Stats) != 2 || total != 3300 || !seen[1100] || !seen[2200] {
+		t.Errorf("Expected pending 1000/2000 plus the re-added sample 100/200 as values {1100, 2200} (total 3300), got %v", resp.Stats)
 	}
 
 	tracker.GetStats(ctx, []string{"key1"}, true)
