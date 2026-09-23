@@ -275,6 +275,12 @@ var backendMethods = map[string]bool{
 	"/service.NodeService/OverrideBalancerTarget":   true,
 }
 
+var currentClientMethods = map[string]bool{
+	"/service.NodeService/AddBackend":    true,
+	"/service.NodeService/RemoveBackend": true,
+	"/service.NodeService/ListBackends":  true,
+}
+
 func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -291,6 +297,8 @@ func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 		if backendMethods[info.FullMethod] {
 			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 			interceptors = append(interceptors, CheckBackendMiddleware(s))
+		} else if currentClientMethods[info.FullMethod] {
+			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 		}
 
 		chained := grpcmiddleware.ChainUnaryServer(interceptors...)
