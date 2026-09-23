@@ -42,6 +42,7 @@ type proxyInstance struct {
 	listener    net.Listener
 	serveDone   chan struct{}
 	accumulator *eventAccumulator
+	streams     *streamSet
 }
 
 func (pi *proxyInstance) serve(listener net.Listener) {

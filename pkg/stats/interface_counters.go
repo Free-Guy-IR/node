@@ -108,6 +108,9 @@ func (t *InterfaceCountersTracker) DeltaClamped(currentRx, currentTx int64, rese
 	return deltaRx, deltaTx
 }
 
+func (t *InterfaceCountersTracker) CountFromZero(carriedRx, carriedTx int64) {
+}
+
 func buildDeltaStats(name, link string, rx, tx int64) []*common.Stat {
 	if rx == 0 && tx == 0 {
 		return nil
