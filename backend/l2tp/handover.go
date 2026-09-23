@@ -81,7 +81,7 @@ func (o *L2TP) adoptLocked(h *accountingHandOver) {
 }
 
 func (o *L2TP) handOverLocked() {
-	o.statsTracker.UpdateStatsBatch(o.collectLocked())
+	o.pollLocked()
 	h := &accountingHandOver{
 		statsTracker:   o.statsTracker,
 		interfaceStats: o.interfaceStats,

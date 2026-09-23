@@ -29,13 +29,15 @@ func (o *L2TP) pollLoop(ctx context.Context) {
 
 func (o *L2TP) poll() {
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.state != lifecycleRunning {
-		o.mu.Unlock()
 		return
 	}
-	samples := o.collectLocked()
-	o.mu.Unlock()
+	o.pollLocked()
+}
 
+func (o *L2TP) pollLocked() {
+	samples := o.collectLocked()
 	beforeApplySamples()
 	o.statsTracker.UpdateStatsBatch(samples)
 }
@@ -122,13 +124,11 @@ func (o *L2TP) forgetUsers(usernames []string) {
 		return
 	}
 	o.mu.Lock()
+	defer o.mu.Unlock()
 	for _, u := range usernames {
 		delete(o.cumRx, u)
 		delete(o.cumTx, u)
 		delete(o.onlineIPs, u)
-	}
-	o.mu.Unlock()
-	for _, u := range usernames {
 		o.statsTracker.RemoveStats(u)
 	}
 	o.statsTracker.CleanupDeletedEntries()
