@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	countedStateVersion = "v1"
+	countedStateVersion = "v2"
 	countedGraceRounds  = 30
+
+	countedConsumedPrefix = "consumed "
+	countedFinalPrefix    = "final "
 )
 
 type sessionIdentity struct {
@@ -28,16 +31,20 @@ type countedBytes struct {
 }
 
 type countedState struct {
-	entries map[sessionIdentity]countedBytes
-	misses  map[sessionIdentity]int
-	dirty   bool
-	failing bool
+	entries  map[sessionIdentity]countedBytes
+	misses   map[sessionIdentity]int
+	consumed map[sessionIdentity]bool
+	counted  map[string]bool
+	dirty    bool
+	failing  bool
 }
 
 func newCountedState() *countedState {
 	return &countedState{
-		entries: make(map[sessionIdentity]countedBytes),
-		misses:  make(map[sessionIdentity]int),
+		entries:  make(map[sessionIdentity]countedBytes),
+		misses:   make(map[sessionIdentity]int),
+		consumed: make(map[sessionIdentity]bool),
+		counted:  make(map[string]bool),
 	}
 }
 
@@ -59,14 +66,34 @@ func (c *countedState) raise(id sessionIdentity, b countedBytes) {
 }
 
 func (c *countedState) consume(rec finalRecord) countedBytes {
+	name := filepath.Base(rec.path)
+	if c.counted[name] {
+		delete(c.counted, name)
+		c.dirty = true
+		if rec.hasIdentity {
+			c.markConsumed(rec.identity, countedBytes{rx: rec.rx, tx: rec.tx})
+		}
+		return countedBytes{rx: rec.rx, tx: rec.tx}
+	}
 	id, ok := c.match(rec)
 	if !ok {
-		id = rec.countedKey()
+		if rec.hasIdentity {
+			c.markConsumed(rec.identity, countedBytes{rx: rec.rx, tx: rec.tx})
+		}
+		return countedBytes{}
 	}
 	base := c.entries[id]
-	c.set(id, countedBytes{rx: max(base.rx, rec.rx), tx: max(base.tx, rec.tx)})
-	delete(c.misses, id)
+	c.markConsumed(id, countedBytes{rx: rec.rx, tx: rec.tx})
 	return base
+}
+
+func (c *countedState) markConsumed(id sessionIdentity, final countedBytes) {
+	c.raise(id, final)
+	if !c.consumed[id] {
+		c.consumed[id] = true
+		c.dirty = true
+	}
+	delete(c.misses, id)
 }
 
 func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
@@ -74,13 +101,9 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 		_, ok := c.entries[rec.identity]
 		return rec.identity, ok
 	}
-	bare := sessionIdentity{ifname: rec.ifname}
-	if _, ok := c.entries[bare]; ok {
-		return bare, true
-	}
 	var found []sessionIdentity
 	for id := range c.entries {
-		if id.ifname == rec.ifname {
+		if id.ifname == rec.ifname && !c.consumed[id] {
 			found = append(found, id)
 		}
 	}
@@ -110,6 +133,7 @@ func (c *countedState) retain(keep map[sessionIdentity]struct{}) {
 		if c.misses[id] > countedGraceRounds {
 			delete(c.entries, id)
 			delete(c.misses, id)
+			delete(c.consumed, id)
 			c.dirty = true
 		}
 	}
@@ -134,7 +158,18 @@ func (c *countedState) encode() []byte {
 	b.WriteByte('\n')
 	for _, id := range ids {
 		e := c.entries[id]
+		if c.consumed[id] {
+			b.WriteString(countedConsumedPrefix)
+		}
 		fmt.Fprintf(&b, "%s %d %d %d %d\n", id.ifname, id.pid, id.started, e.rx, e.tx)
+	}
+	names := make([]string, 0, len(c.counted))
+	for name := range c.counted {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		b.WriteString(countedFinalPrefix + name + "\n")
 	}
 	return []byte(b.String())
 }
@@ -149,7 +184,15 @@ func decodeCountedState(data []byte) (*countedState, error) {
 		if line == "" && i == len(lines)-2 {
 			continue
 		}
-		id, b, err := parseCountedLine(line)
+		if name, ok := strings.CutPrefix(line, countedFinalPrefix); ok {
+			if name == "" || strings.ContainsAny(name, " /") {
+				return nil, fmt.Errorf("line %d: malformed final record name %q", i+2, name)
+			}
+			c.counted[name] = true
+			continue
+		}
+		entry, consumed := strings.CutPrefix(line, countedConsumedPrefix)
+		id, b, err := parseCountedLine(entry)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", i+2, err)
 		}
@@ -157,6 +200,9 @@ func decodeCountedState(data []byte) (*countedState, error) {
 			return nil, fmt.Errorf("line %d: duplicate session %s", i+2, id.ifname)
 		}
 		c.entries[id] = b
+		if consumed {
+			c.consumed[id] = true
+		}
 	}
 	return c, nil
 }
@@ -211,7 +257,7 @@ func presentAsCounted(tag string) *countedState {
 		c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
 	}
 	for _, rec := range readFinalRecords(tag) {
-		c.raise(rec.countedKey(), countedBytes{rx: rec.rx, tx: rec.tx})
+		c.counted[filepath.Base(rec.path)] = true
 	}
 	c.dirty = true
 	return c

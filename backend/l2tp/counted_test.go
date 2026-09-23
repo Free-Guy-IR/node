@@ -207,8 +207,8 @@ func readCountedLines(t *testing.T, path string) []string {
 		t.Fatalf("counted state not readable: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if len(lines) == 0 || lines[0] != "v1" {
-		t.Fatalf("counted state must start with v1, got %q", string(b))
+	if len(lines) == 0 || lines[0] != "v2" {
+		t.Fatalf("counted state must start with v2, got %q", string(b))
 	}
 	body := append([]string(nil), lines[1:]...)
 	sort.Strings(body)
@@ -351,7 +351,7 @@ func TestCountedStateSurvivesAProcessRestart(t *testing.T) {
 	expectUsers(t, "after a process restart", takeUsers(t, b), map[string]int64{"7": 200, "8": 700})
 
 	got := readCountedLines(t, e.countedPath())
-	want := []string{"ppp0 100 1000 1100 600", "ppp1 200 1100 2500 1200"}
+	want := []string{"consumed ppp1 200 1100 2500 1200", "ppp0 100 1000 1100 600"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("counted state lines = %q, want %q", got, want)
 	}
@@ -377,9 +377,11 @@ func TestUnreadableCountedStateCountsOnlyLaterGrowth(t *testing.T) {
 		corrupt func(e *acctEnv)
 	}{
 		{"garbage", func(e *acctEnv) { e.write(e.countedPath(), "not a counted state\n") }},
-		{"wrong version", func(e *acctEnv) { e.write(e.countedPath(), "v2\nppp0 100 1000 1 1\n") }},
-		{"malformed line", func(e *acctEnv) { e.write(e.countedPath(), "v1\nppp0 100 1000 x 500\n") }},
-		{"short line", func(e *acctEnv) { e.write(e.countedPath(), "v1\nppp0 100 1000\n") }},
+		{"wrong version", func(e *acctEnv) { e.write(e.countedPath(), "v1\nppp0 100 1000 1 1\n") }},
+		{"malformed line", func(e *acctEnv) { e.write(e.countedPath(), "v2\nppp0 100 1000 x 500\n") }},
+		{"malformed consumed line", func(e *acctEnv) { e.write(e.countedPath(), "v2\nconsumed ppp0 100\n") }},
+		{"malformed final name", func(e *acctEnv) { e.write(e.countedPath(), "v2\nfinal \n") }},
+		{"short line", func(e *acctEnv) { e.write(e.countedPath(), "v2\nppp0 100 1000\n") }},
 		{"empty", func(e *acctEnv) { e.write(e.countedPath(), "") }},
 		{"not a file", func(e *acctEnv) {
 			if err := os.MkdirAll(e.countedPath(), 0o700); err != nil {

@@ -120,13 +120,6 @@ type finalRecord struct {
 	hasIdentity bool
 }
 
-func (rec finalRecord) countedKey() sessionIdentity {
-	if rec.hasIdentity {
-		return rec.identity
-	}
-	return sessionIdentity{ifname: rec.ifname}
-}
-
 func readFinalRecords(tag string) []finalRecord {
 	entries, err := os.ReadDir(sessionFinalDir)
 	if err != nil {

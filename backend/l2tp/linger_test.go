@@ -65,7 +65,7 @@ func TestConsumedWatermarkIsDroppedAfterTheGrace(t *testing.T) {
 	for i := 0; i < countedGraceRounds; i++ {
 		a.poll()
 	}
-	if got := readCountedLines(t, e.countedPath()); len(got) != 1 || got[0] != "ppp0 100 1000 1300 700" {
+	if got := readCountedLines(t, e.countedPath()); len(got) != 1 || got[0] != "consumed ppp0 100 1000 1300 700" {
 		t.Fatalf("watermark within the grace = %q, want the final values kept", got)
 	}
 	a.poll()
