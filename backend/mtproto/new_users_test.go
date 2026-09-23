@@ -51,6 +51,11 @@ func unusedListenPorts(t *testing.T, n int) []int {
 			t.Fatal("cannot find an unused listen port")
 		}
 		port := firstTestPort + rand.IntN(testPortSpan)
+		loopback, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err != nil {
+			continue
+		}
+		loopback.Close()
 		l, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 		if err != nil {
 			continue
