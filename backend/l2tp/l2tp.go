@@ -82,6 +82,21 @@ func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *con
 	if l2Config == nil {
 		return nil, errors.New("l2tp config must not be nil")
 	}
+	o := newInstance(l2Config, nodeCfg)
+	o.users.replaceAll(users)
+
+	err := o.startWithAccounting(func() error {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		return o.startLocked()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 	l2Config.workDir = filepath.Join(nodeCfg.GeneratedConfigPath, "l2tp", l2Config.InboundTag)
 
 	interval := time.Duration(nodeCfg.StatsUpdateIntervalSeconds) * time.Second
@@ -93,7 +108,7 @@ func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *con
 		bufferSize = 1
 	}
 
-	o := &L2TP{
+	return &L2TP{
 		config:         l2Config,
 		cfg:            nodeCfg,
 		users:          newUserStore(l2Config.InboundTag),
@@ -108,16 +123,13 @@ func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *con
 		startTime:      time.Now(),
 		updateInterval: interval,
 	}
-	o.users.replaceAll(users)
-
-	o.mu.Lock()
-	err := o.startLocked()
-	o.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return o, nil
 }
+
+func (o *L2TP) startWithAccounting(start func() error) error {
+	return start()
+}
+
+func (o *L2TP) handOverLocked() {}
 
 func (o *L2TP) startLocked() error {
 	if err := checkHostPrereqs(); err != nil {

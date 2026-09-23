@@ -12,6 +12,8 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 )
 
+var beforeApplySamples = func() {}
+
 func (o *L2TP) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(o.updateInterval)
 	defer ticker.Stop()
@@ -109,6 +111,7 @@ func (o *L2TP) poll() {
 	o.onlineIPs = onlineIPs
 	o.mu.Unlock()
 
+	beforeApplySamples()
 	if len(samples) > 0 {
 		o.statsTracker.UpdateStatsBatch(samples)
 	}

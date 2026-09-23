@@ -10,8 +10,10 @@ import (
 )
 
 var (
-	sessionStateDir = "/run/pg-l2tp/sessions"
-	sessionFinalDir = "/run/pg-l2tp/final"
+	sessionStateDir   = "/run/pg-l2tp/sessions"
+	sessionFinalDir   = "/run/pg-l2tp/final"
+	sessionCountedDir = "/run/pg-l2tp/counted"
+	sysClassNet       = "/sys/class/net"
 )
 
 type l2tpSession struct {
@@ -28,7 +30,7 @@ var sessionIsAlive = func(s l2tpSession) bool {
 	if s.pid > 0 {
 		return processIsPppd(s.pid)
 	}
-	_, err := os.Stat(filepath.Join("/sys/class/net", s.ifname))
+	_, err := os.Stat(filepath.Join(sysClassNet, s.ifname))
 	return err == nil
 }
 
@@ -184,7 +186,7 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 }
 
 func ifaceBytes(ifname string) (rx int64, tx int64) {
-	base := filepath.Join("/sys/class/net", ifname, "statistics")
+	base := filepath.Join(sysClassNet, ifname, "statistics")
 	return readCounter(filepath.Join(base, "rx_bytes")), readCounter(filepath.Join(base, "tx_bytes"))
 }
 
