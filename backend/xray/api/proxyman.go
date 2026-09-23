@@ -20,9 +20,9 @@ func IsAbsentUser(err error, email string) bool {
 	if err == nil {
 		return false
 	}
-	message := err.Error()
-	return strings.Contains(message, "User "+email+" not found.") ||
-		strings.Contains(message, "proxy is not a UserManager")
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, strings.ToLower("User "+email+" not found.")) ||
+		strings.Contains(message, "proxy is not a usermanager")
 }
 
 func (x *XrayHandler) AlertInbound(ctx context.Context, tag string, operation *serial.TypedMessage) error {

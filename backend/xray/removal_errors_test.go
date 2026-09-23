@@ -40,17 +40,29 @@ func TestRemovingUsersTheCoreDoesNotHoldIsSilent(t *testing.T) {
 }
 
 func removeUsersTheCoreDoesNotHold(t *testing.T, binary string) {
-	const tag = "absent-vless"
+	const (
+		tag            = "absent-vless"
+		shadowsocksTag = "absent-shadowsocks"
+	)
 	serverConfig := map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{map[string]any{
-			"tag":            tag,
-			"listen":         "127.0.0.1",
-			"port":           netutil.FindFreePort(),
-			"protocol":       Vless,
-			"settings":       map[string]any{"clients": []any{}, "decryption": "none"},
-			"streamSettings": map[string]any{"network": "tcp"},
-		}},
+		"inbounds": []any{
+			map[string]any{
+				"tag":            tag,
+				"listen":         "127.0.0.1",
+				"port":           netutil.FindFreePort(),
+				"protocol":       Vless,
+				"settings":       map[string]any{"clients": []any{}, "decryption": "none"},
+				"streamSettings": map[string]any{"network": "tcp"},
+			},
+			map[string]any{
+				"tag":      shadowsocksTag,
+				"listen":   "127.0.0.1",
+				"port":     netutil.FindFreePort(),
+				"protocol": Shadowsocks,
+				"settings": map[string]any{"clients": []any{}, "network": "tcp"},
+			},
+		},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}},
 	}
 	raw, err := json.Marshal(serverConfig)
@@ -71,6 +83,19 @@ func removeUsersTheCoreDoesNotHold(t *testing.T, binary string) {
 		Email:   "absent-stranger",
 		Proxies: &common.Proxy{Vless: &common.Vless{Id: uuid.New().String()}},
 	}
+	shadowsocksMember := &common.User{
+		Email:    "absent-shadowsocks-member",
+		Inbounds: []string{shadowsocksTag},
+		Proxies:  &common.Proxy{Shadowsocks: &common.Shadowsocks{Password: uuid.New().String(), Method: "aes-128-gcm"}},
+	}
+	mixedCase := &common.User{
+		Email:    "7.MixedCase",
+		Inbounds: []string{tag},
+		Proxies: &common.Proxy{
+			Vless:       &common.Vless{Id: uuid.New().String()},
+			Shadowsocks: &common.Shadowsocks{Password: uuid.New().String(), Method: "aes-128-gcm"},
+		},
+	}
 
 	cfg := &config.Config{
 		XrayExecutablePath:  binary,
@@ -78,7 +103,7 @@ func removeUsersTheCoreDoesNotHold(t *testing.T, binary string) {
 		GeneratedConfigPath: t.TempDir(),
 		LogBufferSize:       1000,
 	}
-	backend, err := New(context.Background(), xrayConfig, []*common.User{victim}, netutil.FindFreePort(), netutil.FindFreePort(), cfg)
+	backend, err := New(context.Background(), xrayConfig, []*common.User{victim, shadowsocksMember, mixedCase}, netutil.FindFreePort(), netutil.FindFreePort(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +133,23 @@ func removeUsersTheCoreDoesNotHold(t *testing.T, binary string) {
 	}
 	if err := backend.UpdateUsers(ctx, []*common.User{stranger}); err != nil {
 		t.Fatalf("removing a user the core never held was reported: %v", err)
+	}
+
+	if err := backend.SyncUser(ctx, mixedCase); err != nil {
+		t.Fatalf("syncing a mixed-case user who is not on a shadowsocks inbound was reported: %v", err)
+	}
+	if err := backend.UpdateUsers(ctx, []*common.User{mixedCase}); err != nil {
+		t.Fatalf("updating a mixed-case user who is not on a shadowsocks inbound was reported: %v", err)
+	}
+	if err := backend.SyncUser(ctx, withoutInbounds(mixedCase)); err != nil {
+		t.Fatalf("removing a mixed-case user was reported: %v", err)
+	}
+
+	members, err := client.GetInboundUsers(ctx, &command.GetInboundUserRequest{Tag: shadowsocksTag})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members.GetUsers()) != 1 || members.GetUsers()[0].GetEmail() != shadowsocksMember.GetEmail() {
+		t.Fatalf("the shadowsocks member was disturbed: %v", members.GetUsers())
 	}
 }
