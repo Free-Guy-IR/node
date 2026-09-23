@@ -11,7 +11,6 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/vishvananda/netlink v1.3.1
 	github.com/xtls/xray-core v1.260327.0
-	github.com/yl2chen/cidranger v1.0.2
 	golang.org/x/sys v0.47.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	google.golang.org/grpc v1.83.1
@@ -50,6 +49,7 @@ require (
 	github.com/tylertreat/BoomFilters v0.0.0-20251117164519-53813c36cc1b // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
+	github.com/yl2chen/cidranger v1.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.52.0 // indirect

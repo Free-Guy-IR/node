@@ -12,10 +12,8 @@ import (
 
 	"github.com/9seconds/mtg/v2/antireplay"
 	"github.com/9seconds/mtg/v2/ipblocklist"
-	"github.com/9seconds/mtg/v2/ipblocklist/files"
 	"github.com/9seconds/mtg/v2/mtglib"
 	networkv2 "github.com/9seconds/mtg/v2/network/v2"
-	"github.com/yl2chen/cidranger"
 
 	"github.com/pasarguard/node/backend/mtproto/middleproxy"
 	"github.com/pasarguard/node/common"
@@ -130,36 +128,6 @@ func buildNetwork() (mtglib.Network, error) {
 	), nil
 }
 
-// buildAllowAllList builds an mtglib.IPBlocklist used as ProxyOpts.IPAllowlist
-// that accepts every IPv4/IPv6 address - mtg treats a non-empty allowlist as
-// the sole gate on who may connect at all (see mtglib/proxy.go's Serve),
-// and this backend has no per-instance IP-allowlisting feature (yet), so
-// every instance is open to any client, exactly like every other backend's
-// default (Xray/sing-box/OpenVPN/WireGuard listeners are not IP-gated
-// either). Mirrors the exact construction upstream mtg's own CLI uses when
-// its allowlist feature is disabled (internal/cli/run_proxy.go's
-// makeIPAllowlist).
-func buildAllowAllList(logger mtglib.Logger) (mtglib.IPBlocklist, error) {
-	allowlist, err := ipblocklist.NewFireholFromFiles(
-		logger,
-		1,
-		[]files.File{
-			files.NewMem([]*net.IPNet{
-				cidranger.AllIPv4,
-				cidranger.AllIPv6,
-			}),
-		},
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("mtproto: cannot build allowlist: %w", err)
-	}
-
-	go allowlist.Run(time.Hour)
-
-	return allowlist, nil
-}
-
 // newMiddleProxyInstance builds and starts the ad-tag/middle-proxy path for
 // one instance (see config.go's InstanceConfig.AdTag and the middleproxy
 // package doc comment for why this is a materially different code path
@@ -257,12 +225,6 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		instLogger := newMtgLogger("mtproto."+inst.Tag, b.recordLog)
 
-		allowlist, err := buildAllowAllList(instLogger.Named("allowlist"))
-		if err != nil {
-			b.Shutdown()
-			return nil, err
-		}
-
 		counter := &inboundCounter{}
 		b.inboundCounters[inst.Tag] = counter
 		accumulator := newEventAccumulator(&b.outboundRx, &b.outboundTx, &counter.rx, &counter.tx)
@@ -283,7 +245,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			Network:            ntw,
 			AntiReplayCache:    antireplay.NewStableBloomFilter(antireplay.DefaultStableBloomFilterMaxSize, antireplay.DefaultStableBloomFilterErrorRate),
 			IPBlocklist:        ipblocklist.NewNoop(),
-			IPAllowlist:        allowlist,
+			IPAllowlist:        allowEveryone{},
 			EventStream:        newMtprotoEventStream(accumulator, b.authenticatedEmail),
 			Secrets:            b.secretsForInstance(inst.FakeTLSDomain),
 			DomainFrontingHost: inst.FakeTLSDomain,
@@ -304,6 +266,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: inst.Port})
 		if err != nil {
+			proxy.Shutdown()
 			b.Shutdown()
 			return nil, fmt.Errorf("mtproto: failed to listen on instance %q port %d: %w", inst.Tag, inst.Port, err)
 		}
@@ -391,7 +354,9 @@ func (b *Backend) Restart() error {
 			continue
 		}
 
+		b.mu.Lock()
 		inst.serve(listener)
+		b.mu.Unlock()
 	}
 
 	return errors.Join(errs...)
