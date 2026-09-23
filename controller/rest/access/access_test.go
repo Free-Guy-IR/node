@@ -47,3 +47,35 @@ func TestRestNodeAcceptsItsConfiguredKey(t *testing.T) {
 		t.Fatalf("a different key must be refused with 403, got %d", rec.Code)
 	}
 }
+
+func TestRestPrivateRoutesRequireTheCurrentClient(t *testing.T) {
+	key := uuid.New()
+	s := newService(t, key)
+	s.Connect("127.0.0.1", 0)
+
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/backend"},
+		{http.MethodDelete, "/backend"},
+		{http.MethodGet, "/backends"},
+		{http.MethodPut, "/stop"},
+		{http.MethodGet, "/stats/"},
+		{http.MethodPut, "/users/sync"},
+	} {
+		if rec := serve(s, route.method, route.path, key.String(), "[::1]:4321"); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: a client other than the one that started the node must get 403, got %d", route.method, route.path, rec.Code)
+		}
+		if rec := serve(s, route.method, route.path, key.String(), "127.0.0.1:4321"); rec.Code == http.StatusForbidden {
+			t.Fatalf("%s %s: the current client must pass the client check, got 403", route.method, route.path)
+		}
+	}
+}
+
+func TestRestInfoSkipsTheCurrentClientCheck(t *testing.T) {
+	key := uuid.New()
+	s := newService(t, key)
+	s.Connect("127.0.0.1", 0)
+
+	if rec := serve(s, http.MethodGet, "/info", key.String(), "[::1]:4321"); rec.Code != http.StatusOK {
+		t.Fatalf("/info must stay open to any key-holder, got %d", rec.Code)
+	}
+}
