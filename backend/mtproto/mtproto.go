@@ -27,6 +27,8 @@ var serveExitTimeout = 3 * time.Second
 
 var beforeAuthLookup = func() {}
 
+var errBackendShutDown = errors.New("mtproto: the backend is shut down")
+
 // proxyInstance is one running admin-configured listener: EITHER an
 // mtglib.Proxy (the normal, direct-to-DC path) OR a middleproxy.Instance
 // (only when the instance has an ad_tag configured - see config.go), never
@@ -353,6 +355,10 @@ func (b *Backend) Restart() error {
 	defer b.lifecycle.Unlock()
 
 	b.mu.RLock()
+	if b.cancelFunc == nil {
+		b.mu.RUnlock()
+		return errBackendShutDown
+	}
 	instances := make([]*proxyInstance, 0, len(b.instances))
 	for _, inst := range b.instances {
 		instances = append(instances, inst)
