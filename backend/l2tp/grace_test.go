@@ -94,3 +94,19 @@ func TestOldFormatFinalPrefersTheMostRecentlyLiveWatermark(t *testing.T) {
 		expectUsers(t, "old-format final of the newer session after a restart", takeUsers(t, b), map[string]int64{"8": 500})
 	})
 }
+
+func TestFinalRecordDelayedForAnHourAfterItsSessionWasReapedIsBilledForItsTailOnly(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 1000, 500)
+	a := e.instance("7")
+	a.poll()
+	expectUsers(t, "first poll", takeUsers(t, a), map[string]int64{"7": 1500})
+
+	e.killPppd(100)
+	for i := 0; i < 359; i++ {
+		a.poll()
+	}
+	e.final("ppp0", "7", 100, 1000, 1300, 700)
+	a.poll()
+	expectUsers(t, "final record an hour after the session was reaped", takeUsers(t, a), map[string]int64{"7": 500})
+}
