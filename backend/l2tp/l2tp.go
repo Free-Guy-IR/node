@@ -60,7 +60,7 @@ type L2TP struct {
 	inboundStats   *stats.InterfaceCountersTracker
 	totalRx        int64
 	totalTx        int64
-	ifSeen         map[string][2]int64
+	counted        *countedState
 	cumRx          map[string]int64
 	cumTx          map[string]int64
 	onlineIPs      map[string]map[string]int64
@@ -115,7 +115,7 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 		statsTracker:   stats.New(),
 		interfaceStats: stats.NewInterfaceCountersTracker(),
 		inboundStats:   stats.NewInterfaceCountersTracker(),
-		ifSeen:         make(map[string][2]int64),
+		counted:        newCountedState(),
 		cumRx:          make(map[string]int64),
 		cumTx:          make(map[string]int64),
 		onlineIPs:      make(map[string]map[string]int64),
@@ -126,6 +126,9 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 }
 
 func (o *L2TP) startWithAccounting(start func() error) error {
+	o.mu.Lock()
+	o.loadCountedLocked()
+	o.mu.Unlock()
 	return start()
 }
 

@@ -26,6 +26,10 @@ type l2tpSession struct {
 	started  int64
 }
 
+func (s l2tpSession) identity() sessionIdentity {
+	return sessionIdentity{ifname: s.ifname, pid: s.pid, started: s.started}
+}
+
 var sessionIsAlive = func(s l2tpSession) bool {
 	if s.pid > 0 {
 		return processIsPppd(s.pid)
@@ -102,14 +106,23 @@ func parseSessionFile(path, ifname string) l2tpSession {
 }
 
 type finalRecord struct {
-	path   string
-	user   string
-	tag    string
-	ifname string
-	rx     int64
-	tx     int64
-	pid    int64
-	epoch  int64
+	path        string
+	user        string
+	tag         string
+	ifname      string
+	rx          int64
+	tx          int64
+	pid         int64
+	epoch       int64
+	identity    sessionIdentity
+	hasIdentity bool
+}
+
+func (rec finalRecord) countedKey() sessionIdentity {
+	if rec.hasIdentity {
+		return rec.identity
+	}
+	return sessionIdentity{ifname: rec.ifname}
 }
 
 func readFinalRecords(tag string) []finalRecord {
@@ -163,6 +176,7 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 		return rec, false
 	}
 	defer f.Close()
+	var hasPid, hasStarted bool
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
@@ -180,8 +194,16 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 			rec.rx, _ = strconv.ParseInt(v, 10, 64)
 		case "tx":
 			rec.tx, _ = strconv.ParseInt(v, 10, 64)
+		case "pid":
+			rec.identity.pid, _ = strconv.Atoi(v)
+			hasPid = true
+		case "started":
+			rec.identity.started, _ = strconv.ParseInt(v, 10, 64)
+			hasStarted = true
 		}
 	}
+	rec.identity.ifname = rec.ifname
+	rec.hasIdentity = hasPid && hasStarted
 	return rec, rec.user != "" && rec.ifname != ""
 }
 

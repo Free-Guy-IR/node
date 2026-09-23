@@ -28,55 +28,60 @@ func (o *L2TP) pollLoop(ctx context.Context) {
 }
 
 func (o *L2TP) poll() {
+	o.mu.Lock()
+	if o.state != lifecycleRunning {
+		o.mu.Unlock()
+		return
+	}
+	samples := o.collectLocked()
+	o.mu.Unlock()
+
+	beforeApplySamples()
+	o.statsTracker.UpdateStatsBatch(samples)
+}
+
+func (o *L2TP) collectLocked() []stats.Sample {
 	tag := o.config.InboundTag
 	sessions := readSessions(tag)
 	finals := readFinalRecords(tag)
 
 	perUser := make(map[string][]l2tpSession)
-	present := make(map[string]struct{})
 	for _, s := range sessions {
 		perUser[s.user] = append(perUser[s.user], s)
-		present[s.ifname] = struct{}{}
 	}
 
-	var samples []stats.Sample
-
-	o.mu.Lock()
 	growthRx := make(map[string]int64)
 	growthTx := make(map[string]int64)
+	ended := make(map[string]struct{}, len(finals))
 
 	for _, rec := range finals {
-		last, seen := o.ifSeen[rec.ifname]
-		dRx, dTx := rec.rx, rec.tx
-		if seen {
-			dRx, dTx = rec.rx-last[0], rec.tx-last[1]
-		}
-		dRx = max(dRx, 0)
-		dTx = max(dTx, 0)
-		delete(o.ifSeen, rec.ifname)
-		growthRx[rec.user] += dRx
-		growthTx[rec.user] += dTx
+		base := o.counted.consume(rec)
+		growthRx[rec.user] += max(rec.rx-base.rx, 0)
+		growthTx[rec.user] += max(rec.tx-base.tx, 0)
+		ended[rec.ifname] = struct{}{}
 		if _, live := perUser[rec.user]; !live {
 			perUser[rec.user] = nil
 		}
 		_ = os.Remove(rec.path)
 	}
 
+	live := make(map[sessionIdentity]struct{}, len(sessions))
 	for _, s := range sessions {
-		rx, tx := ifaceBytes(s.ifname)
-		last := o.ifSeen[s.ifname]
-		dRx := max(rx-last[0], 0)
-		dTx := max(tx-last[1], 0)
-		o.ifSeen[s.ifname] = [2]int64{rx, tx}
-		growthRx[s.user] += dRx
-		growthTx[s.user] += dTx
-	}
-	for ifn := range o.ifSeen {
-		if _, ok := present[ifn]; !ok {
-			delete(o.ifSeen, ifn)
+		id := s.identity()
+		live[id] = struct{}{}
+		if _, gone := ended[s.ifname]; gone {
+			continue
 		}
+		rx, tx := ifaceBytes(s.ifname)
+		base := o.counted.get(id)
+		growthRx[s.user] += max(rx-base.rx, 0)
+		growthTx[s.user] += max(tx-base.tx, 0)
+		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
 	}
+	o.counted.retain(live)
+	o.persistCountedLocked()
 
+	var samples []stats.Sample
 	now := time.Now().Unix()
 	onlineIPs := make(map[string]map[string]int64, len(perUser))
 	for user, list := range perUser {
@@ -109,12 +114,7 @@ func (o *L2TP) poll() {
 		})
 	}
 	o.onlineIPs = onlineIPs
-	o.mu.Unlock()
-
-	beforeApplySamples()
-	if len(samples) > 0 {
-		o.statsTracker.UpdateStatsBatch(samples)
-	}
+	return samples
 }
 
 func (o *L2TP) forgetUsers(usernames []string) {
