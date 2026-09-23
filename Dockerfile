@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -21,7 +21,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make install_xray
 # SINGBOX_EXECUTABLE_PATH) requires to report per-user traffic. Version and tag set are
 # pinned to match what was built and traffic-tested (incl. Salamander-obfuscated
 # Hysteria2 against real QUIC-blocking ISPs) for this fork.
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS singbox-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS singbox-builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -56,7 +56,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 # instead of silently shipping an unpatched core. The source is pinned to a commit and
 # the checkout is asserted against it, the same way the sing-box stage does, because a
 # git tag can be moved and a tag alone would not tell us we built what we reviewed.
-FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS xray-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS xray-builder
 
 ARG TARGETOS
 ARG TARGETARCH
