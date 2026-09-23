@@ -13,7 +13,7 @@ import (
 
 const (
 	countedStateVersion = "v2"
-	countedGraceRounds  = 30
+	countedGraceRounds  = 360
 
 	countedConsumedPrefix = "consumed "
 	countedFinalPrefix    = "final "
