@@ -1,0 +1,33 @@
+name: Upstream Drift
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare with upstream main and dev
+        run: bash scripts/upstream_drift.sh
