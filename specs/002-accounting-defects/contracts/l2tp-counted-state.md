@@ -42,7 +42,8 @@ final <final record file name>
 - Written only when the content changed during a poll. A failed write logs once per failure streak, keeps
   the in-memory state and is retried at the next changing poll.
 - A watermark that is neither listed nor held by an unremovable final record gains one miss per poll and
-  is dropped after 30 misses (the grace); misses restart at zero after a load.
+  is dropped after 360 misses (the grace, an hour at the default 10 s interval); misses restart at zero
+  after a load.
 
 ## Poll semantics
 
