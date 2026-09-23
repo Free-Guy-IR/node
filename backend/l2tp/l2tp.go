@@ -125,15 +125,6 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 	}
 }
 
-func (o *L2TP) startWithAccounting(start func() error) error {
-	o.mu.Lock()
-	o.loadCountedLocked()
-	o.mu.Unlock()
-	return start()
-}
-
-func (o *L2TP) handOverLocked() {}
-
 func (o *L2TP) startLocked() error {
 	if err := checkHostPrereqs(); err != nil {
 		return err
@@ -284,6 +275,7 @@ func (o *L2TP) Shutdown() {
 		o.cancelPoll = nil
 	}
 	o.stopXl2tpdLocked()
+	o.handOverLocked()
 	_ = os.Remove(o.swanctlFragmentPath())
 	if ipsec.Running() {
 		_ = ipsec.LoadAll()
