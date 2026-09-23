@@ -1,12 +1,14 @@
 package mtproto
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -162,4 +164,105 @@ func TestConcurrentShutdownCallsStopEveryInstanceOnce(t *testing.T) {
 		}
 		wg.Wait()
 	}
+}
+
+func awaitSyncProgress(t *testing.T, done *atomic.Int64, target int64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for done.Load() < target {
+		if time.Now().After(deadline) {
+			t.Fatalf("user syncs stalled at %d of %d", done.Load(), target)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestUserSyncsDuringAndAfterShutdownAreSafe(t *testing.T) {
+	ports := unusedListenPorts(t, 3)
+	raw := fmt.Sprintf(`{"instances":[`+
+		`{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"},`+
+		`{"tag":"mtproto-tg-plain","port":%d,"mode":"plain"},`+
+		`{"tag":"mtproto-tg-ad","port":%d,"fake_tls_domain":"localhost","ad_tag":%q}]}`, ports[0], ports[1], ports[2], testAdTag)
+
+	onInstances := []*common.User{
+		credentialedUser("a@x", initialSecretA, "mtproto-tg"),
+		credentialedUser("c@x", initialSecretC, "mtproto-tg-plain", "mtproto-tg-ad"),
+		credentialedUser("b@x", initialSecretB, "hy2-in"),
+	}
+	offInstances := []*common.User{
+		credentialedUser("a@x", initialSecretA, "hy2-in"),
+		credentialedUser("c@x", initialSecretC, "hy2-in"),
+		credentialedUser("b@x", initialSecretB, "hy2-in"),
+	}
+
+	backend := startBackend(t, raw, onInstances)
+
+	ctx := context.Background()
+	stop := make(chan struct{})
+	stopSyncs := sync.OnceFunc(func() { close(stop) })
+	defer stopSyncs()
+	var done atomic.Int64
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Go(func() {
+			for n := worker; ; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				users := onInstances
+				if n%2 == 1 {
+					users = offInstances
+				}
+				var err error
+				switch n % 3 {
+				case 0:
+					err = backend.SyncUser(ctx, users[n%len(users)])
+				case 1:
+					err = backend.UpdateUsers(ctx, users)
+				case 2:
+					err = backend.SyncUsers(ctx, users)
+				}
+				if err != nil {
+					t.Errorf("user sync: %v", err)
+				}
+				done.Add(1)
+			}
+		})
+	}
+
+	awaitSyncProgress(t, &done, 200)
+
+	stopped := make(chan struct{})
+	go func() {
+		backend.Shutdown()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return while users were being synced")
+	}
+
+	awaitSyncProgress(t, &done, done.Load()+200)
+	stopSyncs()
+
+	finished := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("user syncs did not finish after Shutdown")
+	}
+
+	if err := backend.SyncUsers(ctx, onInstances); err != nil {
+		t.Fatalf("SyncUsers after Shutdown: %v", err)
+	}
+	assertAuthorised(t, backend, "a@x", initialSecretA)
+	assertAuthorised(t, backend, "c@x", initialSecretC)
+	assertRefused(t, backend, "b@x")
 }
