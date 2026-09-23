@@ -46,17 +46,33 @@ func (b *Backend) refreshUserStats() {
 		if mgmt == nil {
 			continue
 		}
-		for email, s := range mgmt.AllUserStats() {
-			samples = append(samples, stats.Sample{
-				PublicKey: statsKey(instance.tag, email),
-				Email:     email,
-				Rx:        int64(s.Downlink),
-				Tx:        int64(s.Uplink),
-			})
-		}
+		samples = append(samples, userSamples(instance.tag, mgmt.AllUserStats())...)
 	}
 
 	b.statsTracker.UpdateStatsBatch(samples)
+}
+
+func userSamples(tag string, totals map[string]ClientStats) []stats.Sample {
+	samples := make([]stats.Sample, 0, len(totals))
+	for email, s := range totals {
+		samples = append(samples, stats.Sample{
+			PublicKey: statsKey(tag, email),
+			Email:     email,
+			Rx:        int64(s.Downlink),
+			Tx:        int64(s.Uplink),
+		})
+	}
+	return samples
+}
+
+func (b *Backend) sampleUserStats() {
+	b.accountingMu.Lock()
+	defer b.accountingMu.Unlock()
+
+	if b.handedOver {
+		return
+	}
+	b.refreshUserStats()
 }
 
 func (b *Backend) keysForEmail(email string) []string {
@@ -92,11 +108,14 @@ func outboundTracker(instance *instanceProcess) *stats.InterfaceCountersTracker 
 	return instance.statsTracker
 }
 
-func (b *Backend) instanceStat(name string, reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker) (*common.StatResponse, error) {
+func (b *Backend) instanceStat(name string, reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker, retired func(*tagAccounting) *nodeBytes) (*common.StatResponse, error) {
 	b.mu.RLock()
 	instance, ok := b.instances[name]
 	b.mu.RUnlock()
 	if !ok {
+		if carried, found := b.readRetired(name, reset, retired); found {
+			return &common.StatResponse{Stats: stats.BuildInterfaceStats(name, name, carried.rx, carried.tx)}, nil
+		}
 		return nil, fmt.Errorf("openvpn: unknown instance %q", name)
 	}
 
@@ -105,7 +124,7 @@ func (b *Backend) instanceStat(name string, reset bool, tracker func(*instancePr
 	return &common.StatResponse{Stats: stats.BuildInterfaceStats(name, name, deltaRx, deltaTx)}, nil
 }
 
-func (b *Backend) instancesStat(reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker) *common.StatResponse {
+func (b *Backend) instancesStat(reset bool, tracker func(*instanceProcess) *stats.InterfaceCountersTracker, retired func(*tagAccounting) *nodeBytes) *common.StatResponse {
 	b.mu.RLock()
 	instances := make([]*instanceProcess, 0, len(b.instances))
 	for _, instance := range b.instances {
@@ -118,6 +137,11 @@ func (b *Backend) instancesStat(reset bool, tracker func(*instanceProcess) *stat
 		rx, tx := instance.aggregateStats()
 		deltaRx, deltaTx := tracker(instance).DeltaClamped(rx, tx, reset)
 		out.Stats = append(out.Stats, stats.BuildInterfaceStats(instance.tag, instance.tag, deltaRx, deltaTx)...)
+	}
+	for tag := range b.retired {
+		if carried, found := b.readRetired(tag, reset, retired); found {
+			out.Stats = append(out.Stats, stats.BuildInterfaceStats(tag, tag, carried.rx, carried.tx)...)
+		}
 	}
 	return out
 }
@@ -137,6 +161,12 @@ func (b *Backend) instancesStat(reset bool, tracker func(*instanceProcess) *stat
 // share their underlying data source (mgmt.AllUserStats()), which is
 // polled read-only, not consumed/reset at the source.
 func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
+	b.accountingMu.Lock()
+	defer b.accountingMu.Unlock()
+
+	if b.handedOver {
+		return nil, errAccountingHandedOver
+	}
 	b.refreshUserStats()
 
 	switch request.GetType() {
@@ -145,13 +175,13 @@ func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	case common.StatType_UsersStat:
 		return rewriteLinkToTag(b.statsTracker.GetUsersStats(ctx, request.GetReset_())), nil
 	case common.StatType_Inbound:
-		return b.instanceStat(request.GetName(), request.GetReset_(), inboundTracker)
+		return b.instanceStat(request.GetName(), request.GetReset_(), inboundTracker, retiredInbound)
 	case common.StatType_Inbounds:
-		return b.instancesStat(request.GetReset_(), inboundTracker), nil
+		return b.instancesStat(request.GetReset_(), inboundTracker, retiredInbound), nil
 	case common.StatType_Outbound:
-		return b.instanceStat(request.GetName(), request.GetReset_(), outboundTracker)
+		return b.instanceStat(request.GetName(), request.GetReset_(), outboundTracker, retiredOutbound)
 	case common.StatType_Outbounds:
-		return b.instancesStat(request.GetReset_(), outboundTracker), nil
+		return b.instancesStat(request.GetReset_(), outboundTracker, retiredOutbound), nil
 	default:
 		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
@@ -224,6 +254,15 @@ func (b *Backend) GetUserOnlineIpListStats(ctx context.Context, email string) (*
 	b.mu.RUnlock()
 
 	ips := make(map[string]int64)
+	b.mu.RLock()
+	for _, byEmail := range b.carriedIPs {
+		for ip, seen := range byEmail[email] {
+			if prev, ok := ips[ip]; !ok || seen > prev {
+				ips[ip] = seen
+			}
+		}
+	}
+	b.mu.RUnlock()
 	for _, instance := range instances {
 		mgmt := instance.managementClient()
 		if mgmt == nil {

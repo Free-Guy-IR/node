@@ -13,6 +13,9 @@ type InterfaceCountersTracker struct {
 	baseRx  int64
 	baseTx  int64
 	baseSet bool
+
+	carriedRx int64
+	carriedTx int64
 }
 
 func NewInterfaceCountersTracker() *InterfaceCountersTracker {
@@ -44,12 +47,13 @@ func (t *InterfaceCountersTracker) Delta(currentRx, currentTx int64, reset bool)
 		t.baseTx = currentTx
 	}
 
-	deltaRx := currentRx - t.baseRx
-	deltaTx := currentTx - t.baseTx
+	deltaRx := currentRx - t.baseRx + t.carriedRx
+	deltaTx := currentTx - t.baseTx + t.carriedTx
 
 	if reset {
 		t.baseRx = currentRx
 		t.baseTx = currentTx
+		t.carriedRx, t.carriedTx = 0, 0
 	}
 
 	return deltaRx, deltaTx
@@ -95,6 +99,8 @@ func (t *InterfaceCountersTracker) DeltaClamped(currentRx, currentTx int64, rese
 	if deltaTx < 0 {
 		deltaTx = 0
 	}
+	deltaRx += t.carriedRx
+	deltaTx += t.carriedTx
 
 	if reset {
 		if currentRx > t.baseRx {
@@ -103,9 +109,19 @@ func (t *InterfaceCountersTracker) DeltaClamped(currentRx, currentTx int64, rese
 		if currentTx > t.baseTx {
 			t.baseTx = currentTx
 		}
+		t.carriedRx, t.carriedTx = 0, 0
 	}
 
 	return deltaRx, deltaTx
+}
+
+func (t *InterfaceCountersTracker) CountFromZero(carriedRx, carriedTx int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.baseRx, t.baseTx, t.baseSet = 0, 0, true
+	t.carriedRx += max(carriedRx, 0)
+	t.carriedTx += max(carriedTx, 0)
 }
 
 func buildDeltaStats(name, link string, rx, tx int64) []*common.Stat {

@@ -113,6 +113,12 @@ func (a *eventAccumulator) finished(streamID string) {
 	a.mu.Unlock()
 }
 
+func (a *eventAccumulator) idle() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.streamUser) == 0
+}
+
 // snapshot returns the current cumulative counters as pkg/stats.Sample
 // entries keyed for the given instance tag.
 func (a *eventAccumulator) snapshot(tag string) []stats.Sample {
@@ -185,10 +191,23 @@ func (b *Backend) refreshUserStats() {
 
 	var samples []stats.Sample
 	for _, inst := range instances {
+		if inst.accumulator == nil {
+			continue
+		}
 		samples = append(samples, inst.accumulator.snapshot(inst.tag)...)
 	}
 
 	b.statsTracker.UpdateStatsBatch(samples)
+}
+
+func (b *Backend) sampleUserStats() {
+	b.accountingMu.Lock()
+	defer b.accountingMu.Unlock()
+
+	if b.handedOver {
+		return
+	}
+	b.refreshUserStats()
 }
 
 func (b *Backend) keysForEmail(username string) []string {
@@ -219,6 +238,12 @@ func rewriteLinkToTag(resp *common.StatResponse) *common.StatResponse {
 // user's email exactly like every other backend, so username lookups here
 // key off email, requiring a reverse lookup - see userStat.
 func (b *Backend) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
+	b.accountingMu.Lock()
+	defer b.accountingMu.Unlock()
+
+	if b.handedOver {
+		return nil, errAccountingHandedOver
+	}
 	b.refreshUserStats()
 
 	switch request.GetType() {
@@ -270,6 +295,12 @@ func (b *Backend) inboundStat(reset bool) *common.StatResponse {
 			tx = counter.tx.Load()
 		}
 		response.Stats = append(response.Stats, stats.BuildInterfaceStats(tag, tag, tx, rx)...)
+	}
+	for tag, carried := range b.retiredInbound {
+		response.Stats = append(response.Stats, stats.BuildInterfaceStats(tag, tag, carried.tx, carried.rx)...)
+		if reset {
+			delete(b.retiredInbound, tag)
+		}
 	}
 	return response
 }

@@ -47,8 +47,14 @@ type Backend struct {
 
 	statsTracker *stats.Tracker
 
-	cancelFunc context.CancelFunc
-	mu         sync.RWMutex
+	cancelFunc     context.CancelFunc
+	supervisorDone chan struct{}
+	mu             sync.RWMutex
+
+	accountingMu sync.Mutex
+	handedOver   bool
+	retired      map[string]*tagAccounting
+	carriedIPs   map[string]map[string]map[string]int64
 }
 
 // New renders, applies NAT for, and starts every configured instance, syncs
@@ -86,6 +92,8 @@ func New(ctx context.Context, ovConfig *Config, users []*common.User, cfg *confi
 		logsChan:     make(chan string, logBufferSizeOrDefault(cfg)),
 		statsTracker: stats.New(),
 		cancelFunc:   bCancel,
+		retired:      make(map[string]*tagAccounting),
+		carriedIPs:   make(map[string]map[string]map[string]int64),
 	}
 
 	tunIndex := assignTunIndices(ovConfig.Instances)
@@ -108,6 +116,8 @@ func New(ctx context.Context, ovConfig *Config, users []*common.User, cfg *confi
 		log.Println("openvpn: no users provided on startup")
 	}
 
+	b.adoptAccounting(takeHandOver())
+
 	for _, tag := range b.order {
 		instance := b.instances[tag]
 		if err := instance.Start(); err != nil {
@@ -117,7 +127,12 @@ func New(ctx context.Context, ovConfig *Config, users []*common.User, cfg *confi
 		log.Printf("openvpn instance %q started (proto=%s port=%d tun=%d)", tag, instance.inst.Protocol, instance.inst.Port, instance.tunIndex)
 	}
 
-	go b.superviseInstances(bCtx)
+	supervisorDone := make(chan struct{})
+	b.supervisorDone = supervisorDone
+	go func() {
+		defer close(supervisorDone)
+		b.superviseInstances(bCtx)
+	}()
 	go b.sampleStatsPeriodically(bCtx, statsUpdateInterval(cfg))
 
 	log.Println("openvpn started, Version:", b.version)
@@ -235,18 +250,30 @@ func (b *Backend) Restart() error {
 
 func (b *Backend) Shutdown() {
 	b.mu.Lock()
+	cancel := b.cancelFunc
+	b.cancelFunc = nil
+	supervisorDone := b.supervisorDone
+	b.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if supervisorDone != nil {
+		<-supervisorDone
+	}
+
+	b.accountingMu.Lock()
+	defer b.accountingMu.Unlock()
+	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.cancelFunc != nil {
-		b.cancelFunc()
-		b.cancelFunc = nil
-	}
-
+	drained := make(map[string]*ManagementClient, len(b.order))
 	for _, tag := range b.order {
 		if instance, ok := b.instances[tag]; ok {
-			instance.Stop()
+			drained[tag] = instance.stopAndDrain()
 		}
 	}
+	b.handOverAccountingLocked(drained)
 
 	log.Println("openvpn shutdown complete")
 }
@@ -282,6 +309,9 @@ func (b *Backend) superviseInstances(ctx context.Context) {
 			b.mu.RUnlock()
 			if instance == nil {
 				continue
+			}
+			if ctx.Err() != nil {
+				return
 			}
 			if instance.Started() || instance.Restarting() || instance.Stopping() {
 				continue
@@ -325,7 +355,7 @@ func (b *Backend) sampleStatsPeriodically(ctx context.Context, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.refreshUserStats()
+			b.sampleUserStats()
 		}
 	}
 }
