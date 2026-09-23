@@ -2,8 +2,10 @@ package l2tp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/pasarguard/node/backend"
+	"io/fs"
 	"os"
 	"runtime"
 	"time"
@@ -12,7 +14,10 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 )
 
-var beforeApplySamples = func() {}
+var (
+	beforeApplySamples = func() {}
+	removeFinalRecord  = os.Remove
+)
 
 func (o *L2TP) pollLoop(ctx context.Context) {
 	ticker := time.NewTicker(o.updateInterval)
@@ -56,21 +61,32 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	growthTx := make(map[string]int64)
 	ended := make(map[string]struct{}, len(finals))
 
+	keep := make(map[sessionIdentity]struct{}, len(sessions))
+	removeFailed := false
 	for _, rec := range finals {
+		ended[rec.ifname] = struct{}{}
+		if err := removeFinalRecord(rec.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if !removeFailed && !o.finalRemoveFailing {
+				o.emitLogf("Error", "l2tp: cannot remove final record %s, it is billed once it can be removed: %v", rec.path, err)
+			}
+			removeFailed = true
+			if id, ok := o.counted.match(rec); ok {
+				keep[id] = struct{}{}
+			}
+			continue
+		}
 		base := o.counted.consume(rec)
 		growthRx[rec.user] += max(rec.rx-base.rx, 0)
 		growthTx[rec.user] += max(rec.tx-base.tx, 0)
-		ended[rec.ifname] = struct{}{}
 		if _, live := perUser[rec.user]; !live {
 			perUser[rec.user] = nil
 		}
-		_ = os.Remove(rec.path)
 	}
+	o.finalRemoveFailing = removeFailed
 
-	live := make(map[sessionIdentity]struct{}, len(sessions))
 	for _, s := range sessions {
 		id := s.identity()
-		live[id] = struct{}{}
+		keep[id] = struct{}{}
 		if _, gone := ended[s.ifname]; gone {
 			continue
 		}
@@ -80,7 +96,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		growthTx[s.user] += max(tx-base.tx, 0)
 		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
 	}
-	o.counted.retain(live)
+	o.counted.retain(keep)
 	o.persistCountedLocked()
 
 	var samples []stats.Sample

@@ -76,6 +76,7 @@ type L2TP struct {
 	cancelProcess      context.CancelFunc
 	cancelPoll         context.CancelFunc
 	hostRoutingCleanup func()
+	finalRemoveFailing bool
 }
 
 func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *config.Config) (*L2TP, error) {

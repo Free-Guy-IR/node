@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const countedStateVersion = "v1"
+const (
+	countedStateVersion = "v1"
+	countedGraceRounds  = 30
+)
 
 type sessionIdentity struct {
 	ifname  string
@@ -26,12 +29,16 @@ type countedBytes struct {
 
 type countedState struct {
 	entries map[sessionIdentity]countedBytes
+	misses  map[sessionIdentity]int
 	dirty   bool
 	failing bool
 }
 
 func newCountedState() *countedState {
-	return &countedState{entries: make(map[sessionIdentity]countedBytes)}
+	return &countedState{
+		entries: make(map[sessionIdentity]countedBytes),
+		misses:  make(map[sessionIdentity]int),
+	}
 }
 
 func (c *countedState) get(id sessionIdentity) countedBytes {
@@ -58,6 +65,7 @@ func (c *countedState) consume(rec finalRecord) countedBytes {
 	}
 	b := c.entries[id]
 	delete(c.entries, id)
+	delete(c.misses, id)
 	c.dirty = true
 	return b
 }
@@ -80,29 +88,32 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 	if len(found) == 0 {
 		return sessionIdentity{}, false
 	}
-	sortIdentities(found)
+	sort.Slice(found, func(i, j int) bool {
+		a, b := found[i], found[j]
+		if c.misses[a] != c.misses[b] {
+			return c.misses[a] < c.misses[b]
+		}
+		if a.started != b.started {
+			return a.started > b.started
+		}
+		return a.pid > b.pid
+	})
 	return found[0], true
 }
 
-func (c *countedState) retain(live map[sessionIdentity]struct{}) {
+func (c *countedState) retain(keep map[sessionIdentity]struct{}) {
 	for id := range c.entries {
-		if _, ok := live[id]; !ok {
+		if _, ok := keep[id]; ok {
+			delete(c.misses, id)
+			continue
+		}
+		c.misses[id]++
+		if c.misses[id] > countedGraceRounds {
 			delete(c.entries, id)
+			delete(c.misses, id)
 			c.dirty = true
 		}
 	}
-}
-
-func sortIdentities(ids []sessionIdentity) {
-	sort.Slice(ids, func(i, j int) bool {
-		if ids[i].started != ids[j].started {
-			return ids[i].started < ids[j].started
-		}
-		if ids[i].pid != ids[j].pid {
-			return ids[i].pid < ids[j].pid
-		}
-		return ids[i].ifname < ids[j].ifname
-	})
 }
 
 func (c *countedState) encode() []byte {
