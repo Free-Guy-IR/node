@@ -119,7 +119,7 @@ func readFinalRecords(tag string) []finalRecord {
 	}
 	out := make([]finalRecord, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(sessionFinalDir, e.Name())

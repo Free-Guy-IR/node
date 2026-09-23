@@ -619,3 +619,22 @@ func TestIPDownCopiesTheSessionIdentityIntoTheFinalRecord(t *testing.T) {
 	b.poll()
 	expectUsers(t, "tail from the ip-down record", takeUsers(t, b), map[string]int64{"7": 500})
 }
+
+func TestFinalRecordStillBeingWrittenIsLeftAlone(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 1000, 500)
+	a := e.instance("7")
+	a.poll()
+	expectUsers(t, "first poll", takeUsers(t, a), map[string]int64{"7": 1500})
+
+	partial := filepath.Join(sessionFinalDir, ".ppp0.30001")
+	e.write(partial, "user=7\ntag="+e.tag+"\nifname=ppp0\npid=100\n")
+	e.counters("ppp0", 1100, 600)
+	a.poll()
+	expectUsers(t, "growth next to a partial record", takeUsers(t, a), map[string]int64{"7": 200})
+	a.poll()
+	expectUsers(t, "no growth", takeUsers(t, a), map[string]int64{})
+	if _, err := os.Stat(partial); err != nil {
+		t.Fatalf("a record still being written must be left in place: %v", err)
+	}
+}
