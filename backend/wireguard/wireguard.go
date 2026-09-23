@@ -198,6 +198,8 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	// We use Init() because the store is empty on startup and there are no users to remove.
 	wg.peerStore.Init(filterUpsertsByAppliedKeys(startupDiff.UpsertPeers, appliedKeys))
 
+	wg.adoptAccounting(takeAccounting(wgConfig.InterfaceName))
+
 	// Initialize stats tickers
 	wg.initStatsTickers(wgCtx)
 
@@ -285,9 +287,13 @@ func (wg *WireGuard) restartLocked() error {
 		ReplacePeers: true,
 	}
 
+	wg.flushPeerStats(manager)
+
 	if err := manager.ApplyConfig(config); err != nil {
 		return fmt.Errorf("failed to reconfigure interface during restart: %w", err)
 	}
+
+	wg.statsTracker.RestartCounters(peerConfigKeys(peerConfigs))
 
 	log.Println("wireguard interface reconfigured successfully without downtime")
 	wg.emitInfoLogf("wireguard interface reconfigured successfully without downtime")
@@ -298,6 +304,9 @@ func (wg *WireGuard) restartLocked() error {
 func (wg *WireGuard) Shutdown() {
 
 	wg.shutdownOnce.Do(func() {
+		wg.syncMu.Lock()
+		defer wg.syncMu.Unlock()
+
 		wg.mu.Lock()
 		defer wg.mu.Unlock()
 
@@ -340,6 +349,15 @@ func (wg *WireGuard) shutdownLocked() {
 		wg.hostRouting()
 		wg.hostRouting = nil
 	}
+
+	if wg.manager != nil {
+		if err := wg.samplePeers(wg.manager); err != nil {
+			log.Printf("wireguard final stats flush failed: %v", err)
+			wg.emitLogLocked(logSeverityWarning, fmt.Sprintf("wireguard final stats flush failed: %v", err))
+		}
+	}
+
+	wg.depositAccountingLocked()
 
 	if wg.manager != nil {
 		if err := wg.manager.Close(); err != nil {
