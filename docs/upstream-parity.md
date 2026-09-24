@@ -34,8 +34,9 @@ State as of 2026-09-24, release 0.6.21.
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
-| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | ported in 0.6.21. Upstream merged it on 2026-09-24, and 0.6.21 takes the grpc bump in a commit that carries `Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
+| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead (2026-09-24); the node stays on grpc 1.83.2. The Go vulnerability database still lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), although the fix is verified in v1.84.0 `http2_server.go`, so the bump would turn govulncheck red. Waived as `pending` until the database entry is corrected. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24. release/v0.6.21 does not have it: the fork branch `fix/xray-sync-only-changed-users` was based on upstream `dev`. It is neither ported nor waived, so the check flags it until the release lead decides |
+| `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445`; first seen in the drift run of 2026-09-24, with upstream `dev` at `4a9d0cf8bd38`. Not assessed yet, neither ported nor waived, so the check flags it until the release lead decides |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
@@ -260,6 +261,8 @@ Why the rules look like this:
 
 Heads checked:
 
+- PasarGuard/node `dev` `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` and `main` `e9a9ba286413c404854b80c847b588b620426660`
+  (`v0.5.4`). Upstream `dev` moved past `be2c445f7f48` during the day; `4a9d0cf` (#90) is the new commit.
 - XTLS/Xray-core `main` `60e2a0c502d3f5f191d71b4343efe09c32338399`, and 56 branches active since the pin.
 - SagerNet/sing-box `oldstable` `78d3eeedacdda487eca7f2793e29973cb2f8a86c`, and 8 active branches, including
   `stable` and `testing`.
@@ -301,6 +304,13 @@ Heads checked:
 **mtg**
 
 - Nothing after the pin: no commit, no advisory, no release.
+
+**node**
+
+- `52d5aab` (grpc 1.84.0, #91) is held out of 0.6.21 and waived as `pending`: the Go vulnerability database still
+  lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), and the fix is verified in v1.84.0
+  `http2_server.go`. It is ported when the database entry is corrected.
+- `be2c445` (#93) and `4a9d0cf` (#90) are the node commits still `UNPORTED` in the run of 2026-09-24.
 
 Five Xray items are waived as pending even though they are server-side panics or races that the pinned code has. The
 release lead decides whether 0.6.21 takes them early as patches. Their waiver reasons record why each one is
@@ -416,6 +426,9 @@ Add one line to `.github/upstream-waivers.txt`:
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
+- Every run ends with a `PENDING WAIVERS (N)` block. It lists each waived item whose category is `pending`, across all
+  five sections, with its component, id and reason. Pending items stay waived and do not change the exit code; the
+  block is there so they are never forgotten.
 - On a full run, a waiver that matches nothing checked also gets a note: its branch was deleted, or the pin moved past
   it. Remove it.
 
