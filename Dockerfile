@@ -69,6 +69,7 @@ WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
+COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
@@ -82,7 +83,15 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
- && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go
+ && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
+ && git apply --verbose /patches/xray-trusted-xff.patch \
+ && grep -q "func ApplyTrustedXForwardedFor" common/protocol/http/headers.go \
+ && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/websocket/hub.go \
+ && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/httpupgrade/hub.go \
+ && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/splithttp/hub.go \
+ && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
+ && ! grep -rq "http_proto.ParseXForwardedFor" transport \
+ && ! grep -rq "x-real-ip" transport/internet/grpc
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main
