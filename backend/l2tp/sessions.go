@@ -2,6 +2,7 @@ package l2tp
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,17 @@ var (
 	sessionFinalDir   = "/run/pg-l2tp/final"
 	sessionCountedDir = "/run/pg-l2tp/counted"
 	sysClassNet       = "/sys/class/net"
+	procRoot          = "/proc"
+	pppdRecordDir     = "/run/pg-l2tp/pppd"
+)
+
+var (
+	readProcFile = func(name string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(procRoot, name))
+	}
+	openFinalRecord = func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	}
 )
 
 type l2tpSession struct {
@@ -30,7 +42,9 @@ func (s l2tpSession) identity() sessionIdentity {
 	return sessionIdentity{ifname: s.ifname, pid: s.pid, started: s.started}
 }
 
-var sessionIsAlive = func(s l2tpSession) bool {
+var sessionIsAlive = pppdSessionIsAlive
+
+func pppdSessionIsAlive(s l2tpSession) bool {
 	if s.pid > 0 {
 		return processIsPppd(s.pid)
 	}
@@ -39,7 +53,7 @@ var sessionIsAlive = func(s l2tpSession) bool {
 }
 
 func processIsPppd(pid int) bool {
-	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+	comm, err := readProcFile(strconv.Itoa(pid) + "/comm")
 	if err != nil {
 		return false
 	}
@@ -166,7 +180,7 @@ func parseFinalName(name string) (pid, epoch int64) {
 
 func parseFinalRecord(path string) (finalRecord, bool) {
 	rec := finalRecord{path: path}
-	f, err := os.Open(path)
+	f, err := openFinalRecord(path)
 	if err != nil {
 		return rec, false
 	}
