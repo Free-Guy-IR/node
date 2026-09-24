@@ -68,6 +68,7 @@ RUN apk update && apk add --no-cache git
 
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
@@ -81,6 +82,9 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && git apply --verbose /patches/xray-dns-long-domain.patch \
+ && grep -q "name, err := dnsmessage.NewName(domain)" app/dns/dnscommon.go \
+ && ! grep -q "MustNewName" app/dns/dnscommon.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
  && grep -q "golang.org/x/net v0.58.0$" go.mod \
