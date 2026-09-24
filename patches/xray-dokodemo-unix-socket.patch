@@ -1,3 +1,23 @@
+Tunnel inbound: fix the panic on a unix socket listener with no port
+
+Upstream: e61eeae258065b32214630c053bff33c420a516b
+
+Partial port: only the proxy/dokodemo/dokodemo.go line of upstream e61eeae. Its app/commander half adds
+a new feature (the API listening on a unix socket) and is not carried.
+
+diff --git a/proxy/dokodemo/dokodemo.go b/proxy/dokodemo/dokodemo.go
+index e56363d..2532c8c 100644
+--- a/proxy/dokodemo/dokodemo.go
++++ b/proxy/dokodemo/dokodemo.go
+@@ -87,7 +87,7 @@ func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn st
+ 				}
+ 			}
+ 		}
+-		if dest.Port == 0 {
++		if dest.Port == 0 && port != "" {
+ 			dest.Port = net.Port(common.Must2(strconv.Atoi(port)))
+ 		}
+ 		if d.portMap != nil && d.portMap[port] != "" {
 diff --git a/proxy/dokodemo/unix_listener_test.go b/proxy/dokodemo/unix_listener_test.go
 new file mode 100644
 index 0000000..3b34a07
