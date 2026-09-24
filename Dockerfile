@@ -68,10 +68,16 @@ RUN apk update && apk add --no-cache git
 
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
+COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
+COPY patches/xray-router-race.patch /patches/xray-router-race.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
+COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
+COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
@@ -80,17 +86,34 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && git apply --verbose /patches/xray-dns-long-domain.patch \
+ && grep -q "name, err := dnsmessage.NewName(domain)" app/dns/dnscommon.go \
+ && ! grep -q "MustNewName" app/dns/dnscommon.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
  && grep -q "golang.org/x/net v0.58.0$" go.mod \
  && grep -q "golang.org/x/text v0.41.0 // indirect$" go.mod \
+ && git apply --verbose /patches/xray-http-100-continue.patch \
+ && grep -qF "len(ResponseHeader1xx) >= 4 && bytes.Equal" proxy/http/server.go \
  && git apply --verbose /patches/xray-quic-sniff.patch \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
+ && git apply --verbose /patches/xray-router-race.patch \
+ && grep -qF "rules := r.rules" app/router/router.go \
+ && grep -qF "r.rules = slices.Clip(r.rules)" app/router/router.go \
+ && grep -qF "func (r *Router) balancer(tag string) (*Balancer, bool) {" app/router/router.go \
+ && ! grep -qF "r.balancers[tag]; ok" app/router/balancing.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
  && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
+ && git apply --verbose /patches/xray-ss2022-dispatch.patch \
+ && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
+ && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
+ && git apply --verbose /patches/xray-stats-register-race.patch \
+ && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
+ && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
+ && ! grep -rqE "(^|[^.[:alnum:]_])stats[.]GetOrRegister(Counter|OnlineMap|Channel)[(]" app proxy features \
  && git apply --verbose /patches/xray-trusted-xff.patch \
  && grep -q "func ApplyTrustedXForwardedFor" common/protocol/http/headers.go \
  && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/websocket/hub.go \
@@ -99,6 +122,9 @@ RUN git init -q . \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-x-net-0.59.0.patch \
+ && grep -q "golang.org/x/crypto v0.57.0$" go.mod \
+ && grep -q "golang.org/x/net v0.59.0$" go.mod \
  && git apply --verbose /patches/xray-xff-trusted-header.patch \
  && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
  && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \

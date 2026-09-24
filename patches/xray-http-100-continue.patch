@@ -1,0 +1,72 @@
+HTTP inbound: fix a panic in readResponseAndHandle100Continue
+
+Upstream: 8ee131cbbba4e9ed26e62fe3900cb9fdfb06ab89
+
+diff --git a/proxy/http/server.go b/proxy/http/server.go
+index 90a07b3..0deecad 100644
+--- a/proxy/http/server.go
++++ b/proxy/http/server.go
+@@ -330,7 +330,7 @@ func readResponseAndHandle100Continue(r *bufio.Reader, req *http.Request, writer
+ 					return nil, errors.New("failed to read http 1xx response").Base(err)
+ 				}
+ 				ResponseHeader1xx = append(ResponseHeader1xx, data...)
+-				if bytes.Equal(ResponseHeader1xx[len(ResponseHeader1xx)-4:], []byte{'\r', '\n', '\r', '\n'}) {
++				if len(ResponseHeader1xx) >= 4 && bytes.Equal(ResponseHeader1xx[len(ResponseHeader1xx)-4:], []byte{'\r', '\n', '\r', '\n'}) {
+ 					break
+ 				}
+ 				if len(ResponseHeader1xx) > 1024 {
+diff --git a/proxy/http/server_test.go b/proxy/http/server_test.go
+new file mode 100644
+index 0000000..2578d53
+--- /dev/null
++++ b/proxy/http/server_test.go
+@@ -0,0 +1,49 @@
++package http
++
++import (
++	"bufio"
++	"bytes"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++)
++
++// A malformed upstream response containing a bare '\n' before the real
++// status line used to crash readResponseAndHandle100Continue: the first
++// ReadSlice('\n') returns fewer than 4 bytes, and slicing
++// ResponseHeader1xx[len(ResponseHeader1xx)-4:] panicked with a negative
++// index instead of returning an error.
++func TestReadResponseAndHandle100ContinueDoesNotPanicOnEarlyNewline(t *testing.T) {
++	payload := "X\nHTTP/1.1 100 Continue\r\n\r\n" + strings.Repeat("A", 40)
++	r := bufio.NewReader(bytes.NewReader([]byte(payload)))
++	req, err := http.NewRequest("GET", "http://example.com/", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// Must not panic; a parse error for the garbage trailing bytes is fine.
++	_, _ = readResponseAndHandle100Continue(r, req, io.Discard)
++}
++
++func TestReadResponseAndHandle100ContinueForwardsAndParsesFinalResponse(t *testing.T) {
++	payload := "HTTP/1.1 100 Continue\r\n\r\n" +
++		"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
++	r := bufio.NewReader(bytes.NewReader([]byte(payload)))
++	req, err := http.NewRequest("GET", "http://example.com/", nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	var forwarded bytes.Buffer
++	resp, err := readResponseAndHandle100Continue(r, req, &forwarded)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if resp.StatusCode != 200 {
++		t.Fatalf("expected status 200, got %d", resp.StatusCode)
++	}
++	if !strings.Contains(forwarded.String(), "100 Continue") {
++		t.Fatalf("expected 1xx response to be forwarded, got %q", forwarded.String())
++	}
++}

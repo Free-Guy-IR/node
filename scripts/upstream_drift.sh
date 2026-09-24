@@ -51,6 +51,7 @@ store=${DRIFT_CACHE:-$work/store}
 mkdir -p "$store"
 
 : >"$work/waivers"
+: >"$work/pending"
 line_no=0
 while IFS= read -r line || [ -n "$line" ]; do
   line_no=$((line_no + 1))
@@ -118,6 +119,12 @@ count_unported() {
   total_unported=$((total_unported + 1))
 }
 
+note_pending() {
+  case "$3" in
+    pending:*) printf '%s\t%s\t%s\n' "$2" "$1" "$(printf '%s' "${3#pending:}" | sed 's/^[[:space:]]*//')" >>"$work/pending" ;;
+  esac
+}
+
 check_advisories() {
   adv_name=$1
   adv_slug=$2
@@ -165,6 +172,7 @@ check_advisories() {
     elif [ -n "$waiver" ]; then
       status=WAIVED
       detail=$waiver
+      note_pending "$ghsa" "$adv_name advisory" "$waiver"
     else
       status=UNPORTED
       detail="published advisory, not fixed in the pin, not ported and not waived"
@@ -246,6 +254,7 @@ check_node() {
       status=WAIVED
       detail=$waiver
       waived=$((waived + 1))
+      note_pending "$sha" "node commit" "$waiver"
     else
       status=UNPORTED
       detail="not ported and not waived"
@@ -380,6 +389,7 @@ check_thirdparty() {
     elif [ -n "$waiver" ]; then
       status=WAIVED
       detail=$waiver
+      note_pending "$sha" "$name commit" "$waiver"
     else
       status=UNPORTED
       detail="security-looking upstream commit after the pin, not ported and not waived"
@@ -413,6 +423,7 @@ check_thirdparty() {
       printf '%s\n' "$tag_sha" >>"$work/used"
       status=WAIVED
       detail=$waiver
+      note_pending "$tag_sha" "$name release $tag" "$waiver"
     else
       status=UNPORTED
       detail="upstream release after the pin, neither taken nor waived (waive it by its commit $tag_sha)"
@@ -491,6 +502,12 @@ if [ "$components" = "$all_components" ]; then
   done 7<"$work/waivers"
 fi
 
+pending_count=$(wc -l <"$work/pending" | tr -d ' ')
+printf '\n==================== PENDING WAIVERS (%d) ====================\n' "$pending_count"
+printf 'waived as pending: they do not fail this job, but each one still needs a port or a decision\n'
+sort -t "$(printf '\t')" -k1,1 -k2,2 "$work/pending" |
+  awk -F '\t' '{ printf "PENDING  %s %s\n         %s\n", $1, $2, $3 }'
+printf '===============================================================\n\n'
 printf 'upstream-drift: %d unported items across [%s]\n' "$total_unported" "$components"
 if [ "$total_unported" -gt 0 ]; then
   printf 'upstream-drift: port each UNPORTED item with an "Upstream: <full sha or GHSA id>" line in the porting commit\n'

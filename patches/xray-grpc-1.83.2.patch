@@ -1,3 +1,7 @@
+Build the core against grpc 1.83.2, golang.org/x/net 0.58.0 and golang.org/x/text 0.41.0
+
+Upstream: cecc88f43cb12f7ba0517080f3d82daaa07f816a
+
 diff --git a/go.mod b/go.mod
 index d67419b..85affde 100644
 --- a/go.mod

@@ -1,0 +1,213 @@
+DNS: avoid a panic on a domain longer than 255 bytes
+
+Upstream: a2cec2e580e8ea1900701b11b425e0351de2ec71
+
+diff --git a/app/dns/dnscommon.go b/app/dns/dnscommon.go
+index 2092a2f..d16316b 100644
+--- a/app/dns/dnscommon.go
++++ b/app/dns/dnscommon.go
+@@ -127,15 +127,20 @@ func genEDNS0Options(clientIP net.IP, padding int) *dnsmessage.Resource {
+ 	return opt
+ }
+ 
+-func buildReqMsgs(domain string, option dns_feature.IPOption, reqIDGen func() uint16, reqOpts *dnsmessage.Resource) []*dnsRequest {
++func buildReqMsgs(domain string, option dns_feature.IPOption, reqIDGen func() uint16, reqOpts *dnsmessage.Resource) ([]*dnsRequest, error) {
++	name, err := dnsmessage.NewName(domain)
++	if err != nil {
++		return nil, err
++	}
++
+ 	qA := dnsmessage.Question{
+-		Name:  dnsmessage.MustNewName(domain),
++		Name:  name,
+ 		Type:  dnsmessage.TypeA,
+ 		Class: dnsmessage.ClassINET,
+ 	}
+ 
+ 	qAAAA := dnsmessage.Question{
+-		Name:  dnsmessage.MustNewName(domain),
++		Name:  name,
+ 		Type:  dnsmessage.TypeAAAA,
+ 		Class: dnsmessage.ClassINET,
+ 	}
+@@ -175,7 +180,7 @@ func buildReqMsgs(domain string, option dns_feature.IPOption, reqIDGen func() ui
+ 		})
+ 	}
+ 
+-	return reqs
++	return reqs, nil
+ }
+ 
+ // parseResponse parses DNS answers from the returned payload
+diff --git a/app/dns/dnscommon_test.go b/app/dns/dnscommon_test.go
+index e77117c..fc73d20 100644
+--- a/app/dns/dnscommon_test.go
++++ b/app/dns/dnscommon_test.go
+@@ -2,6 +2,7 @@ package dns
+ 
+ import (
+ 	"math/rand"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
+@@ -131,10 +132,15 @@ func Test_buildReqMsgs(t *testing.T) {
+ 			IPv6Enable: false,
+ 			FakeEnable: false,
+ 		}, nil}, 0},
++		{"name too long", args{strings.Repeat("a", 256), dns_feature.IPOption{
++			IPv4Enable: true,
++			IPv6Enable: true,
++			FakeEnable: false,
++		}, nil}, 0},
+ 	}
+ 	for _, tt := range tests {
+ 		t.Run(tt.name, func(t *testing.T) {
+-			if got := buildReqMsgs(tt.args.domain, tt.args.option, stubID, tt.args.reqOpts); !(len(got) == tt.want) {
++			if got, _ := buildReqMsgs(tt.args.domain, tt.args.option, stubID, tt.args.reqOpts); !(len(got) == tt.want) {
+ 				t.Errorf("buildReqMsgs() = %v, want %v", got, tt.want)
+ 			}
+ 		})
+diff --git a/app/dns/nameserver_doh.go b/app/dns/nameserver_doh.go
+index 2849dbe..ed7f184 100644
+--- a/app/dns/nameserver_doh.go
++++ b/app/dns/nameserver_doh.go
+@@ -137,14 +137,32 @@ func (s *DoHNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- er
+ 	if s.Name()+"." == "DOH//"+fqdn {
+ 		errors.LogError(ctx, s.Name(), " tries to resolve itself! Use IP or set \"hosts\" instead")
+ 		if noResponseErrCh != nil {
+-			noResponseErrCh <- errors.New("tries to resolve itself!", s.Name())
++			err := errors.New("tries to resolve itself!", s.Name())
++			if option.IPv4Enable {
++				noResponseErrCh <- err
++			}
++			if option.IPv6Enable {
++				noResponseErrCh <- err
++			}
+ 		}
+ 		return
+ 	}
+ 
+ 	// As we don't want our traffic pattern looks like DoH, we use Random-Length Padding instead of Block-Length Padding recommended in RFC 8467
+ 	// Although DoH server like 1.1.1.1 will pad the response to Block-Length 468, at least it is better than no padding for response at all
+-	reqs := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, int(crypto.RandBetween(100, 300))))
++	reqs, err := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, int(crypto.RandBetween(100, 300))))
++	if err != nil {
++		errors.LogErrorInner(ctx, err, "failed to build dns query for ", fqdn)
++		if noResponseErrCh != nil {
++			if option.IPv4Enable {
++				noResponseErrCh <- err
++			}
++			if option.IPv6Enable {
++				noResponseErrCh <- err
++			}
++		}
++		return
++	}
+ 
+ 	var deadline time.Time
+ 	if d, ok := ctx.Deadline(); ok {
+diff --git a/app/dns/nameserver_quic.go b/app/dns/nameserver_quic.go
+index bd0da17..058d25b 100644
+--- a/app/dns/nameserver_quic.go
++++ b/app/dns/nameserver_quic.go
+@@ -78,7 +78,19 @@ func (s *QUICNameServer) getCacheController() *CacheController { return s.cacheC
+ func (s *QUICNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- error, fqdn string, option dns_feature.IPOption) {
+ 	errors.LogInfo(ctx, s.Name(), " querying: ", fqdn)
+ 
+-	reqs := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	reqs, err := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	if err != nil {
++		errors.LogErrorInner(ctx, err, "failed to build dns query for ", fqdn)
++		if noResponseErrCh != nil {
++			if option.IPv4Enable {
++				noResponseErrCh <- err
++			}
++			if option.IPv6Enable {
++				noResponseErrCh <- err
++			}
++		}
++		return
++	}
+ 
+ 	var deadline time.Time
+ 	if d, ok := ctx.Deadline(); ok {
+diff --git a/app/dns/nameserver_tcp.go b/app/dns/nameserver_tcp.go
+index 283a42a..185dbad 100644
+--- a/app/dns/nameserver_tcp.go
++++ b/app/dns/nameserver_tcp.go
+@@ -113,7 +113,19 @@ func (s *TCPNameServer) getCacheController() *CacheController {
+ func (s *TCPNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- error, fqdn string, option dns_feature.IPOption) {
+ 	errors.LogInfo(ctx, s.Name(), " querying DNS for: ", fqdn)
+ 
+-	reqs := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	reqs, err := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	if err != nil {
++		errors.LogErrorInner(ctx, err, "failed to build dns query for ", fqdn)
++		if noResponseErrCh != nil {
++			if option.IPv4Enable {
++				noResponseErrCh <- err
++			}
++			if option.IPv6Enable {
++				noResponseErrCh <- err
++			}
++		}
++		return
++	}
+ 
+ 	var deadline time.Time
+ 	if d, ok := ctx.Deadline(); ok {
+diff --git a/app/dns/nameserver_udp.go b/app/dns/nameserver_udp.go
+index 55b825f..b3b3950 100644
+--- a/app/dns/nameserver_udp.go
++++ b/app/dns/nameserver_udp.go
+@@ -163,7 +163,19 @@ func (s *ClassicNameServer) getCacheController() *CacheController {
+ func (s *ClassicNameServer) sendQuery(ctx context.Context, noResponseErrCh chan<- error, fqdn string, option dns_feature.IPOption) {
+ 	errors.LogInfo(ctx, s.Name(), " querying DNS for: ", fqdn)
+ 
+-	reqs := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	reqs, err := buildReqMsgs(fqdn, option, s.newReqID, genEDNS0Options(s.clientIP, 0))
++	if err != nil {
++		errors.LogErrorInner(ctx, err, "failed to build dns query for ", fqdn)
++		if noResponseErrCh != nil {
++			if option.IPv4Enable {
++				noResponseErrCh <- err
++			}
++			if option.IPv6Enable {
++				noResponseErrCh <- err
++			}
++		}
++		return
++	}
+ 
+ 	for _, req := range reqs {
+ 		udpReq := &udpDnsRequest{
+diff --git a/app/dns/overlong_name_test.go b/app/dns/overlong_name_test.go
+new file mode 100644
+index 0000000..43bed42
+--- /dev/null
++++ b/app/dns/overlong_name_test.go
+@@ -0,0 +1,23 @@
++package dns
++
++import (
++	"fmt"
++	"strings"
++	"testing"
++
++	dns_feature "github.com/xtls/xray-core/features/dns"
++)
++
++func TestBuildReqMsgsOverlongNameDoesNotPanic(t *testing.T) {
++	label := strings.Repeat("a", 63)
++	domain := strings.Join([]string{label, label, label, label}, ".") + ".example.invalid."
++	if len(domain) <= 255 {
++		t.Fatalf("test name is %d bytes, want more than 255", len(domain))
++	}
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("building a DNS query for a %d-byte name panicked: %v", len(domain), r)
++		}
++	}()
++	_ = fmt.Sprint(buildReqMsgs(domain, dns_feature.IPOption{IPv4Enable: true, IPv6Enable: true}, func() uint16 { return 1 }, nil))
++}

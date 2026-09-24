@@ -34,8 +34,9 @@ State as of 2026-09-24, release 0.6.21.
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
-| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | ported in 0.6.21. Upstream merged it on 2026-09-24, and 0.6.21 takes the grpc bump in a commit that carries `Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
+| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead (2026-09-24); the node stays on grpc 1.83.2. The Go vulnerability database still lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), although the fix is verified in v1.84.0 `http2_server.go`, so the bump would turn govulncheck red. Waived as `pending` until the database entry is corrected. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24. release/v0.6.21 does not have it: the fork branch `fix/xray-sync-only-changed-users` was based on upstream `dev`. It is neither ported nor waived, so the check flags it until the release lead decides |
+| `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445`; first seen in the drift run of 2026-09-24, with upstream `dev` at `4a9d0cf8bd38`. Not assessed yet, neither ported nor waived, so the check flags it until the release lead decides |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
@@ -243,14 +244,24 @@ Why the rules look like this:
   `(cherry picked from commit <sha>)` line in any commit message of the checked history.
 - **Patch files.** An `Upstream: <sha or GHSA id>` line in the header of a `patches/*.patch` file, meaning the lines
   before the first `diff --git`. Lines inside the diff are ignored.
-- **Expected in 0.6.21.** The Xray patch commits of 0.6.21 carry `Upstream:` lines for:
-  - `e5a9fb752e0dcc127dd1740316c853571c16052f`;
-  - `8f15190c230fe6975c9b18e31316c6bc494f3863`;
-  - `711aea4e34b0a00073d2fea6577f28a5d7c9b5eb`;
-  - the grpc 1.83.2 bump `cecc88f43cb12f7ba0517080f3d82daaa07f816a`.
-- **What happens after they merge.** `e5a9fb7` and `8f15190` turn `PORTED`. If the QUIC-sniffer advisories are
-  published later, they show as `PORTED` automatically, because those two commits name them. `711aea4` and `cecc88f`
-  are not keyword items: their trailers document the port, and their releases stay waived until the pin moves.
+- **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
+  - `e5a9fb752e0dcc127dd1740316c853571c16052f` and `8f15190c230fe6975c9b18e31316c6bc494f3863`, the QUIC sniffer;
+  - `711aea4e34b0a00073d2fea6577f28a5d7c9b5eb`, trusted X-Forwarded-For;
+  - `cecc88f43cb12f7ba0517080f3d82daaa07f816a`, grpc 1.83.2, in the header of `xray-grpc-1.83.2.patch`;
+  - `8ee131cbbba4e9ed26e62fe3900cb9fdfb06ab89`, the HTTP inbound 1xx panic;
+  - `a2cec2e580e8ea1900701b11b425e0351de2ec71`, the DNS panic on a name over 255 bytes;
+  - `d878fc83f8be0f56cebbc5fb9a9baf0aa48d9990`, the SS2022 dispatch panic;
+  - `0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18`, the stats `GetOrRegister*` races, as an adapted backport;
+  - `24e6f6d5513382d92256a80c5f2e7a6e16e5d6c7`, x/crypto 0.57.0 and x/net 0.59.0.
+- **What the check shows.**
+  - The run of 2026-09-24 marks the six keyword commits among them as `PORTED`: `e5a9fb7`, `8f15190`, `8ee131c`,
+    `0bafca9`, `a2cec2e` and `d878fc8`.
+  - `711aea4`, `cecc88f` and `24e6f6d` match no keyword. Their trailers document the port, and their releases stay
+    waived until the pin moves.
+  - If the QUIC-sniffer advisories are published later, they show as `PORTED` automatically, because `e5a9fb7` and
+    `8f15190` name them.
+  - `598bde7` is not carried: its race is fixed by a fork patch with no `Upstream:` line, see
+    [Fork deviations in the Xray build](#fork-deviations-in-the-xray-build).
 - **sing-box and sing-quic.** The normal port is a pin move: the fork is rebased on a newer release, and
   `SINGBOX_VERSION` or the `require` line is bumped. The items then become reachable from the pin and disappear. A
   single fix cherry-picked into the fork without a pin move needs an `Upstream:` line in the node commit that moves
@@ -260,6 +271,8 @@ Why the rules look like this:
 
 Heads checked:
 
+- PasarGuard/node `dev` `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` and `main` `e9a9ba286413c404854b80c847b588b620426660`
+  (`v0.5.4`). Upstream `dev` moved past `be2c445f7f48` during the day; `4a9d0cf` (#90) is the new commit.
 - XTLS/Xray-core `main` `60e2a0c502d3f5f191d71b4343efe09c32338399`, and 56 branches active since the pin.
 - SagerNet/sing-box `oldstable` `78d3eeedacdda487eca7f2793e29973cb2f8a86c`, and 8 active branches, including
   `stable` and `testing`.
@@ -271,10 +284,12 @@ Heads checked:
 - Advisories: one, GHSA-5wf9-h793-w73c. It is waived as not applicable: a client-side `pinnedPeerCertSha256` check
   that only matters in users' apps.
 - Security-looking commits: 29.
-  - `e5a9fb7` and `8f15190` are expected to be ported, so they are not waived.
+  - 6 are ported by 0.6.21 patches: `e5a9fb7`, `8f15190`, `8ee131c`, `0bafca9`, `a2cec2e` and `d878fc8`.
   - 9 are pre-squash branch commits, waived as superseded.
-  - 18 are on `main`. Most are waived as pending the v26.9.x pin move, the client-side dialer fixes included. The
-    rest are not applicable: TUN, the client-side pinned-CA check, and fixes to code that only exists after the pin.
+  - 8 are waived as pending the v26.9.x pin move: `598bde7` (its race is fixed by the fork patch), `e61eeae`,
+    `dbb1ea3` and the client-side dialer fixes.
+  - 6 are not applicable: TUN, the client-side pinned-CA check, and fixes to code that only exists after the pin,
+    `412898f` among them.
 - Releases: `v26.4.13` to `v26.9.9`, waived as `pending: breaking (d7fa207 bans unencrypted outbounds; REALITY
   minimum client changes); planned project with xray-config-kit`.
 
@@ -287,7 +302,11 @@ Heads checked:
     daemon, macOS, services that 1.13 lacks).
 - Releases:
   - `v1.13.15` to `v1.13.21`: pending node 0.6.22;
-  - `v1.14.0` and `v1.14.1`: pending a separate 1.14 move.
+  - `v1.14.0`, `v1.14.1` and `v1.14.2` (published 2026-09-24): pending a separate 1.14 move. `v1.14.2` adds no
+    security-looking commit that is not already waived. Its HTTP proxy inbound panic (`bea01fe`) and HTTP/2 transport
+    races (`18b0317`) are server-side code that 1.13 also has, but the node runs only Hysteria2 on sing-box.
+    `3f0958b` (read loops spinning on persistent errors) and `afb0b30` (traffic counters on interrupted splice copies)
+    match no keyword, and they are to be checked against 1.13 at the 1.14 move.
 
 **sing-quic**
 
@@ -302,23 +321,59 @@ Heads checked:
 
 - Nothing after the pin: no commit, no advisory, no release.
 
-Five Xray items are waived as pending even though they are server-side panics or races that the pinned code has. The
-release lead decides whether 0.6.21 takes them early as patches. Their waiver reasons record why each one is
-reachable:
+**node**
 
-- `8ee131c`: an HTTP proxy inbound panic on a 100-continue response. The fix applies cleanly to the pin, so any node
-  with an HTTP inbound has the bug.
-- `598bde7`: a Router API data race. At the pin, `pickRouteInternal` reads `r.rules` without the lock that `AddRule`
-  and `RemoveRule` take. The node exposes `AddRoutingRule` and `RemoveRoutingRule` through `RoutingService`
-  (`backend/xray/routing.go:60-73`).
-- `0bafca9`: stats `GetOrRegister*` races. Per-user counters are registered on first traffic while the node polls
-  `QueryStats`.
-- `a2cec2e`: a `MustNewName` panic on a domain longer than 255 bytes. It is reachable when the core resolves
-  user-requested domains through xray DNS.
-- `d878fc8`: an SS2022 inbound dispatch panic. It is reachable where an SS2022 inbound exists.
+- `52d5aab` (grpc 1.84.0, #91) is held out of 0.6.21 and waived as `pending`: the Go vulnerability database still
+  lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), and the fix is verified in v1.84.0
+  `http2_server.go`. It is ported when the database entry is corrected.
+- `be2c445` (#93) and `4a9d0cf` (#90) are the node commits still `UNPORTED` in the run of 2026-09-24.
 
-`d42c981`, the DomainMatcher race, fixes code that the geodata refactor `82624bc` added after the pin, so it does not
-apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
+0.6.21 takes five server-side Xray fixes early as patches. Each fix was written test-first: its test fails on the pin
+and passes with the fix.
+
+- `8ee131c`, the HTTP inbound 1xx panic: `xray-http-100-continue.patch`, verbatim.
+- `a2cec2e`, the DNS query panic on a name over 255 bytes: `xray-dns-long-domain.patch`, verbatim.
+- `d878fc8`, the SS2022 inbound invalid-destination panic: `xray-ss2022-dispatch.patch`, verbatim.
+- `0bafca9`, the stats `GetOrRegister*` races, which cost billed bytes and online-map IPs:
+  `xray-stats-register-race.patch`, an adapted backport (see below).
+- `598bde7`, the Router API data race: upstream's refactor does not apply to the pin, so `xray-router-race.patch` is
+  a fork fix. The commit stays waived as pending for the rest of the refactor.
+
+The lower-risk items were checked against the pinned code on 2026-09-24:
+
+- `e61eeae` is pending. It is not a config-time failure only: at the pin, a tunnel inbound that listens on a unix
+  socket with no port panics on every accepted connection (`proxy/dokodemo/dokodemo.go:90-91`). The node's own API
+  inbound is a TCP loopback tunnel (`backend/xray/config.go:839`), so only a panel-configured unix-socket tunnel inbound
+  is exposed. The one-line dokodemo half of the fix applies cleanly if it is wanted earlier.
+- `dbb1ea3` is pending. Upstream patches the post-pin `netstack.go`, but the pin has the same send-on-closed-channel
+  pattern in `proxy/wireguard/gvisortun/tun.go` (`:164` and `:177`). It needs an xray WireGuard proxy on the gVisor
+  netstack that is closed with a packet in flight.
+- `412898f` is not applicable. The unlocked `h.dev` check it fixes came with the post-pin refactor `8626311`. At the
+  pin, the check runs under `h.wgLock` (`proxy/wireguard/client.go:94-140`).
+- `d42c981`, the DomainMatcher race, fixes code that the geodata refactor `82624bc` added after the pin, so it does not
+  apply.
+
+### govulncheck on the patched Xray build
+
+govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3.27, with every 0.6.21 patch applied
+(the patches as of node commit `d18d291`), on 2026-09-24.
+
+- Before the 0.6.21 bumps, six ids were symbol-reachable: GO-2026-6443, GO-2026-6348 and GO-2026-6061 in grpc
+  1.79.3, GO-2026-5970 in x/text, and GO-2026-5026 and GO-2026-4918 in x/net. `xray-grpc-1.83.2.patch` clears all
+  six.
+- GO-2026-6354 and GO-2026-6355 (x/crypto/ssh, fixed in 0.56.0) were module-level only. `xray-x-net-0.59.0.patch`
+  takes upstream `24e6f6d`'s x/crypto 0.57.0 and clears them.
+- Two ids are still listed at module level. Neither has a symbol-level or a package-level result:
+
+| id | module | fixed version | state |
+|---|---|---|---|
+| GO-2026-5932 | `golang.org/x/crypto`, package `openpgp` | none: the package is unmaintained | not reachable per the govulncheck call graph on the patched build tree at node `d18d291` (2026-09-24): no package in the build imports `x/crypto/openpgp`. There is no fix to take |
+| GO-2026-5841 | `github.com/klauspost/compress` v1.17.4 (indirect), package `s2` | v1.18.7 | not reachable per the govulncheck call graph on the patched build tree at node `d18d291` (2026-09-24): no package in the build imports `s2`. Upstream Xray `main` (`60e2a0c`) still requires v1.17.4, so there is no upstream bump to take |
+
+- These are recorded here because `.github/upstream-waivers.txt` accepts only a 40-hex commit sha or a GHSA id, and the
+  drift check matches only Xray's own advisories, not dependency advisories. A GO- id in the waiver file would be
+  refused or reported as matching nothing.
+- The final gate re-runs govulncheck and prints this list.
 
 ### Not covered
 
@@ -326,7 +381,9 @@ apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
   are covered by govulncheck in CI, not by this check.
 - **Open pull requests on contributors' forks** (listed above).
 - **Pre-release tags** (alpha, beta, rc). Their commits are covered by rule 2 on the active branches.
-- **Alpine packages and the geo data** (U6 u6-6).
+- **Alpine packages.** Since 0.6.21 the alpine and golang base images are pinned by digest, and the geo data comes from
+  the v26.3.27 release zip with sha256 checks in the Dockerfile (U6 u6-6). The apk packages installed on top of the
+  base still float.
 
 ## Fork deviations in the Xray build
 
@@ -358,6 +415,63 @@ apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
   - The upstream `TestDialWithRemoteAddr` (ws, httpupgrade, splithttp), `TestApplyTrustedXForwardedFor` and `TestRemoteAddrFromContext` now expect the TCP peer when the variable is unset.
   - All of these run in `make test_xray_patches`.
 - **Removal condition:** drop this patch only when upstream Xray takes the address from the trusted header's value and gates it on the peer address, or when the owner decides to accept upstream's first-entry behaviour.
+
+### FORK DEVIATION: routing API data race fixed at the pin (patches/xray-router-race.patch)
+
+- **Upstream:** `598bde74122f5f0207c7c6a56ccb74fbbbe33fca` (#6678) fixes the race with a refactor of `app/router` that
+  does not apply to the pinned v26.3.27. The fork carries a minimal fix instead. The patch deliberately has no
+  `Upstream:` line, and the commit stays waived as `pending` for the parts of the refactor that are not carried.
+- **The race at the pin:**
+  - `pickRouteInternal` ranged over `r.rules` without a lock, while `ReloadRules` (`AddRule`) appended to it and
+    `RemoveRule` replaced it under `r.mu`.
+  - The balancer API (`GetPrincipleTarget`, `SetOverrideTarget`, `GetOverrideTarget`, `OverrideBalancer`) read the
+    balancers map while `ReloadRules` wrote it. A concurrent map read and write is a fatal runtime error.
+  - The node calls `AddRoutingRule` and `RemoveRoutingRule` through `RoutingService` (`backend/xray/routing.go:60-73`)
+    while traffic is routed.
+- **The fork fix**, in `app/router` only:
+  - `r.mu` becomes a `sync.RWMutex`;
+  - `pickRouteInternal` takes one snapshot of `r.rules` under the read lock and uses it for both passes;
+  - `ReloadRules` clips `r.rules` first, so an append always copies instead of writing into memory that a published
+    snapshot may share;
+  - balancer lookups go through one helper that takes the read lock.
+- **Not carried from upstream:** the `atomic.Pointer` rule and balancer sets, a `ReloadRules` that changes nothing on
+  error (at the pin a failed append reload still keeps the balancers it added), the inline webhook sweep, and the
+  removal of `OverrideBalancer`.
+- **Test:** `TestRuleAndBalancerUpdatesRaceWithRoutePicking` runs `AddRule` (a rule plus a balancer), `SetOverrideTarget`
+  and `RemoveRule` 300 times against four readers of `PickRoute`, `GetOverrideTarget` and `ListRule`, under `-race`.
+  It reports a data race on the pin, and none with the fix over 20 runs. The full `app/router` suite passes with and
+  without `-race`.
+- **Removal condition:** drop the patch when the pin moves to a release that contains `598bde7` (v26.9.x).
+
+### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)
+
+- It carries upstream `0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18` with its `Upstream:` line. The Manager methods, the
+  interface and the call sites are upstream code.
+- **Differences:**
+  - hunks for code that does not exist at the pin are left out: the `trackOnlineIP` helper, TUN inbound stats, and the
+    restructured WireGuard client and server;
+  - the pin names the online map field `onlineMap`, not `onlineMaps`;
+  - the interface keeps the pin's doc comment for `UnregisterOnlineMap`.
+- **Test:** `TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset` starts 16 connections per user at
+  once through `dispatcher.WrapLink`, with a `QueryStats` reset poller running throughout. It checks that every byte is
+  counted exactly once and that every IP reaches the online map, over 200 rounds under `-race`.
+  - On the pin, round 0 counted 56000 of 64000 bytes.
+  - With the fix, 5 runs of 200 rounds pass.
+
+### FORK DEVIATION: Dockerfile.xray removed
+
+- **Upstream file:** PasarGuard/node's `Dockerfile.xray` builds the node and ships the prebuilt upstream Xray release
+  that `make install_xray` downloads through `install_core.sh`.
+- **Why the fork removed it:** no workflow builds it, and every image built from it would carry an Xray core without
+  any of the fork's Xray patches: the commander message size, session revoke, the QUIC sniffer, trusted X-Forwarded-For,
+  the trusted header, the HTTP 1xx, DNS, SS2022, stats and router fixes, and the grpc, x/crypto and x/net bumps. The
+  only supported image is `Dockerfile`, whose xray-builder stage builds the pinned commit with every patch.
+- **Upstream changes to it:** on 2026-09-24 no upstream commit outside the fork head touches `Dockerfile.xray` (checked
+  on every upstream branch and tag). A later upstream change to it is waived as `not-applicable`, citing this entry.
+- **Kept:** the Makefile's `install_xray` target, which CI uses for the stock xray, and `Dockerfile.wireguard`, which
+  has no Xray.
+- **Residual:** `.specify/memory/constitution.md` still names `Dockerfile.xray` in its 1.1.1 sync report, as a record of
+  that amendment.
 
 ## The drift check
 
@@ -416,6 +530,9 @@ Add one line to `.github/upstream-waivers.txt`:
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
+- Every run ends with a `PENDING WAIVERS (N)` block. It lists each waived item whose category is `pending`, across all
+  five sections, with its component, id and reason. Pending items stay waived and do not change the exit code; the
+  block is there so they are never forgotten.
 - On a full run, a waiver that matches nothing checked also gets a note: its branch was deleted, or the pin moved past
   it. Remove it.
 

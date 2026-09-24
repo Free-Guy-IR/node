@@ -162,6 +162,10 @@ test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking' ./app/dispatcher/ ./app/router/
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)
