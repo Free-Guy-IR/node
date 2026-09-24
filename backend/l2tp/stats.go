@@ -16,6 +16,7 @@ import (
 
 var (
 	beforeApplySamples = func() {}
+	interfaceSampled   = func() {}
 	removeFinalRecord  = os.Remove
 )
 
@@ -176,6 +177,7 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 		o.mu.Lock()
 		totalRx, totalTx, inbound := o.totalRx, o.totalTx, o.inboundStats
 		o.mu.Unlock()
+		interfaceSampled()
 		dRx, dTx := inbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
@@ -184,6 +186,7 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 		o.mu.Lock()
 		totalRx, totalTx, outbound := o.totalRx, o.totalTx, o.interfaceStats
 		o.mu.Unlock()
+		interfaceSampled()
 		dRx, dTx := outbound.Delta(totalRx, totalTx, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
