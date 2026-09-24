@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/pasarguard/node/common"
 )
@@ -119,10 +123,9 @@ type userKey struct {
 }
 
 type interleaveModel struct {
-	x       *Xray
-	stock   bool
-	state   map[userKey]string
-	touched map[string]bool
+	x     *Xray
+	stock bool
+	state map[userKey]string
 }
 
 func (m *interleaveModel) apply(t *testing.T, call syncCall, entries []coreEntry) {
@@ -157,21 +160,25 @@ func (m *interleaveModel) apply(t *testing.T, call syncCall, entries []coreEntry
 				if len(got) != 0 {
 					t.Fatalf("call %s touched unchanged user %s on %s: %v", call.id, email, tag, got)
 				}
-			case active:
-				if len(got) != 2 || got[0].op != removeOperation || got[1].op != addOperation || got[1].failed || got[1].account != want {
-					t.Fatalf("call %s did not replace changed user %s on %s with its own account: %v", call.id, email, tag, got)
+			case active && held:
+				if !m.dropsOld(got[:max(0, len(got)-1)]) || !addsOwnAccount(got, want) {
+					t.Fatalf("call %s did not revoke changed user %s on %s and add its own account: %v", call.id, email, tag, got)
 				}
 				m.state[key] = want
-			case m.stock:
-				if len(got) == 0 || len(got) > 2 || got[len(got)-1].op != removeOperation || (len(got) == 2 && got[0].op != revokeOperation) {
-					t.Fatalf("call %s did not remove user %s from %s on a stock core: %v", call.id, email, tag, got)
+			case active:
+				if len(got) != 1 || !addsOwnAccount(got, want) {
+					t.Fatalf("call %s did not add new user %s on %s with its own account alone: %v", call.id, email, tag, got)
+				}
+				m.state[key] = want
+			case held:
+				if !m.dropsOld(got) {
+					t.Fatalf("call %s did not revoke leaving user %s on %s: %v", call.id, email, tag, got)
 				}
 				delete(m.state, key)
 			default:
-				if len(got) != 1 || got[0].op != revokeOperation || got[0].failed {
-					t.Fatalf("call %s did not revoke user %s on %s: %v", call.id, email, tag, got)
+				if len(got) != 0 {
+					t.Fatalf("call %s sent %v for user %s who was never on %s", call.id, got, email, tag)
 				}
-				delete(m.state, key)
 			}
 		}
 	}
@@ -181,23 +188,78 @@ func (m *interleaveModel) apply(t *testing.T, call syncCall, entries []coreEntry
 	}
 }
 
-func serializedCalls(t *testing.T, entries []coreEntry) ([]string, map[string][]coreEntry) {
+func addsOwnAccount(got []coreEntry, want string) bool {
+	last := got[len(got)-1]
+	return last.op == addOperation && !last.failed && last.account == want
+}
+
+func (m *interleaveModel) dropsOld(got []coreEntry) bool {
+	if !m.stock {
+		return len(got) == 1 && got[0].op == revokeOperation && !got[0].failed
+	}
+	switch len(got) {
+	case 1:
+		return got[0].op == removeOperation
+	case 2:
+		return got[0].op == revokeOperation && got[1].op == removeOperation
+	}
+	return false
+}
+
+type lockOrder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (o *lockOrder) entered(ctx context.Context) {
+	md, _ := metadata.FromOutgoingContext(ctx)
+	call := ""
+	if values := md.Get(syncCallKey); len(values) > 0 {
+		call = values[0]
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls = append(o.calls, call)
+}
+
+func (o *lockOrder) take() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	calls := o.calls
+	o.calls = nil
+	return calls
+}
+
+func splitByLockOrder(t *testing.T, round int, order []string, entries []coreEntry) map[string][]coreEntry {
 	t.Helper()
 
-	order := make([]string, 0)
+	position := make(map[string]int, len(order))
+	for i, call := range order {
+		if _, twice := position[call]; twice {
+			t.Fatalf("round %d: call %s took the sync lock twice", round, call)
+		}
+		position[call] = i
+	}
+
 	byCall := make(map[string][]coreEntry)
+	previous := -1
 	for i, entry := range entries {
-		if entry.call == "" {
-			t.Fatalf("operation %v carried no call id", entry)
+		at, known := position[entry.call]
+		if !known {
+			t.Fatalf("round %d: operation %v came from a call that never took the sync lock", round, entry)
 		}
-		if _, seen := byCall[entry.call]; !seen {
-			order = append(order, entry.call)
-		} else if entries[i-1].call != entry.call {
-			t.Fatalf("operations of call %s interleaved with call %s", entry.call, entries[i-1].call)
+		if i > 0 && entries[i-1].call != entry.call {
+			if _, seen := byCall[entry.call]; seen {
+				t.Fatalf("round %d: operations of call %s interleaved with call %s", round, entry.call, entries[i-1].call)
+			}
+			if at < previous {
+				t.Fatalf("round %d: call %s sent operations after call %s although it took the sync lock first", round, entry.call, entries[i-1].call)
+			}
 		}
+		previous = at
 		byCall[entry.call] = append(byCall[entry.call], entry)
 	}
-	return order, byCall
+	return byCall
 }
 
 func requireCoreMatchesModel(t *testing.T, core *modelCore, model *interleaveModel, round int) {
@@ -227,6 +289,8 @@ func raceSyncCalls(t *testing.T, stock bool) {
 	x := newModelXray(t, core, syncTestInbounds)
 	users := newInterleaveUsers()
 	model := &interleaveModel{x: x, stock: stock, state: make(map[userKey]string)}
+	order := &lockOrder{}
+	x.syncEntered = order.entered
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -245,6 +309,9 @@ func raceSyncCalls(t *testing.T, stock bool) {
 	requireCoreMatchesModel(t, core, model, -1)
 	requireCoreMatchesLocal(t, x, core)
 	seen := len(core.allEntries())
+	if setupOrder := order.take(); !slices.Equal(setupOrder, []string{setup.id}) {
+		t.Fatalf("the setup call was recorded as %v", setupOrder)
+	}
 
 	bystanders := make(map[string]bool)
 	for _, user := range users.bystanders {
@@ -285,22 +352,132 @@ func raceSyncCalls(t *testing.T, stock bool) {
 			}
 		}
 
-		order, byCall := serializedCalls(t, entries)
-		for _, id := range order {
+		entered := order.take()
+		if len(entered) != len(calls) {
+			t.Fatalf("round %d: %d calls took the sync lock, want %d: %v", round, len(entered), len(calls), entered)
+		}
+		byCall := splitByLockOrder(t, round, entered, entries)
+		for _, id := range entered {
 			call, ok := callByID[id]
 			if !ok || !strings.HasPrefix(id, fmt.Sprintf("%d/", round)) {
-				t.Fatalf("round %d: operations from unknown or stale call %s", round, id)
+				t.Fatalf("round %d: unknown or stale call %s took the sync lock", round, id)
 			}
 			model.apply(t, call, byCall[id])
-		}
-		for _, call := range calls {
-			if _, ran := byCall[call.id]; ran {
-				continue
-			}
-			model.apply(t, call, nil)
 		}
 
 		requireCoreMatchesModel(t, core, model, round)
 		requireCoreMatchesLocal(t, x, core)
 	}
+}
+
+const faultyIterations = 150
+
+func TestFaultyRacingSyncsConvergeOnTheNextSync(t *testing.T) {
+	for _, stock := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stock=%v", stock), func(t *testing.T) {
+			raceFaultySyncCalls(t, stock)
+		})
+	}
+}
+
+func lastRequested(calls []syncCall, entered []string) map[string]*common.User {
+	byID := make(map[string]syncCall, len(calls))
+	for _, call := range calls {
+		byID[call.id] = call
+	}
+	last := make(map[string]*common.User)
+	for _, id := range entered {
+		for _, user := range byID[id].users {
+			last[user.GetEmail()] = user
+		}
+	}
+	return last
+}
+
+func raceFaultySyncCalls(t *testing.T, stock bool) {
+	core := newModelCore(stock)
+	x := newModelXray(t, core, syncTestInbounds)
+	users := newInterleaveUsers()
+	order := &lockOrder{}
+	x.syncEntered = order.entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	setup := users.setup()
+	if err := setup.run(ctx, x); err != nil {
+		t.Fatal(err)
+	}
+	order.take()
+	seen := len(core.allEntries())
+
+	bystanders := make(map[string]bool)
+	for _, user := range users.bystanders {
+		bystanders[user.GetEmail()] = true
+	}
+
+	random := rand.New(rand.NewPCG(uint64(len(syncTestTags)), 25))
+	unavailable := status.Error(codes.Unavailable, "connection reset by peer")
+	faults := 0
+	for round := range faultyIterations {
+		core.setFault(func(string, string, string) (bool, error) {
+			switch random.IntN(8) {
+			case 0:
+				faults++
+				return false, unavailable
+			case 1:
+				faults++
+				return true, errDeadline
+			}
+			return false, nil
+		})
+
+		calls := users.round(round)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for _, call := range calls {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = call.run(ctx, x)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		core.setFault(nil)
+
+		last := lastRequested(calls, order.take())
+		emails := slices.Sorted(maps.Keys(last))
+		heal := syncCall{id: fmt.Sprintf("%d/heal", round), bulk: true}
+		for _, email := range emails {
+			heal.users = append(heal.users, last[email])
+		}
+		if err := heal.run(ctx, x); err != nil {
+			t.Fatalf("round %d: the sync after the faults failed: %v", round, err)
+		}
+		order.take()
+
+		for _, entry := range core.allEntries()[seen:] {
+			if bystanders[entry.email] {
+				t.Fatalf("round %d: call %s sent %s for unchanged bystander %s on %s", round, entry.call, entry.op, entry.email, entry.tag)
+			}
+		}
+		seen = len(core.allEntries())
+
+		want := make(map[userKey]string)
+		for _, email := range emails {
+			for _, tag := range syncTestTags {
+				if fingerprint, active := expectedFingerprint(x, last[email], tag); active {
+					want[userKey{tag: tag, email: email}] = fingerprint
+				}
+			}
+		}
+		requireCoreMatchesModel(t, core, &interleaveModel{state: want}, round)
+		requireCoreMatchesLocal(t, x, core)
+	}
+	if faults == 0 {
+		t.Fatal("no fault was injected")
+	}
+	t.Logf("%d faults injected across %d rounds", faults, faultyIterations)
 }
