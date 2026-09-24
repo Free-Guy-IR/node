@@ -23,9 +23,13 @@ XRAY_ARCH_MAP_ppc64le = ppc64le
 XRAY_ARCH_MAP_riscv64 = riscv64
 XRAY_ARCH_MAP_s390x   = s390x
 
+XRAY_VERSION ?= $(shell sed -n 's/^ARG XRAY_VERSION=//p' Dockerfile)
+INSTALL_CORE_SHA ?= 1fce1b19aaa54449ec0abdc4098b49027a170705
+INSTALL_CORE_URL = https://github.com/PasarGuard/scripts/raw/$(INSTALL_CORE_SHA)/install_core.sh
+
 XRAY_OS_EFFECTIVE   := $(if $(XRAY_OS),$(XRAY_OS),$(GOOS))
 XRAY_ARCH_EFFECTIVE := $(if $(XRAY_ARCH),$(XRAY_ARCH),$(XRAY_ARCH_MAP_$(GOARCH)))
-XRAY_INSTALL_ARGS   := $(strip $(if $(XRAY_OS_EFFECTIVE),--os $(XRAY_OS_EFFECTIVE)) $(if $(XRAY_ARCH_EFFECTIVE),--arch $(XRAY_ARCH_EFFECTIVE)))
+XRAY_INSTALL_ARGS   := $(strip $(if $(XRAY_VERSION),--tag $(XRAY_VERSION)) $(if $(XRAY_OS_EFFECTIVE),--os $(XRAY_OS_EFFECTIVE)) $(if $(XRAY_ARCH_EFFECTIVE),--arch $(XRAY_ARCH_EFFECTIVE)))
 
 ifeq ($(GOOS),windows)
 OUTPUT = $(NAME).exe
@@ -125,9 +129,9 @@ ifeq ($(UNAME_S),Linux)
 	if [ "$(DISTRO)" = "debian" ] || [ "$(DISTRO)" = "ubuntu" ] || \
 	   [ "$(DISTRO)" = "centos" ] || [ "$(DISTRO)" = "rhel" ] || [ "$(DISTRO)" = "fedora" ] || \
 	   [ "$(DISTRO)" = "arch" ]; then \
-		curl -L https://github.com/PasarGuard/scripts/raw/main/install_core.sh | sudo bash -s -- $(XRAY_INSTALL_ARGS); \
+		curl -fL $(INSTALL_CORE_URL) | sudo bash -s -- $(XRAY_INSTALL_ARGS); \
 	else \
-		curl -L https://github.com/PasarGuard/scripts/raw/main/install_core.sh | bash -s -- $(XRAY_INSTALL_ARGS); \
+		curl -fL $(INSTALL_CORE_URL) | bash -s -- $(XRAY_INSTALL_ARGS); \
 	fi
 
 else

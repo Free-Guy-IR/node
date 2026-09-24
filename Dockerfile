@@ -1,4 +1,6 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS builder
+ARG XRAY_VERSION=v26.3.27
+
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -12,7 +14,6 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} make NAME=main build
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make install_xray
 
 # --- sing-box (Hysteria2) builder ---
 # Built from source rather than using the official prebuilt sing-box release binary:
@@ -21,7 +22,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make install_xray
 # SINGBOX_EXECUTABLE_PATH) requires to report per-user traffic. Version and tag set are
 # pinned to match what was built and traffic-tested (incl. Salamander-obfuscated
 # Hysteria2 against real QUIC-blocking ISPs) for this fork.
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS singbox-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS singbox-builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -56,11 +57,11 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 # instead of silently shipping an unpatched core. The source is pinned to a commit and
 # the checkout is asserted against it, the same way the sing-box stage does, because a
 # git tag can be moved and a tag alone would not tell us we built what we reviewed.
-FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine AS xray-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS xray-builder
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG XRAY_VERSION=v26.3.27
+ARG XRAY_VERSION
 ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
 
 RUN apk update && apk add --no-cache git
@@ -101,7 +102,24 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main
 
-FROM alpine:latest AS filter-assets
+FROM --platform=$BUILDPLATFORM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS geo-assets
+
+ARG XRAY_VERSION
+ARG XRAY_ZIP_SHA256=23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+ARG GEOIP_SHA256=744c97b74c52bae2ac8664fef6ac481d7765cb8432a0df54f0368a88b9b4a354
+ARG GEOSITE_SHA256=adf92de0cfc70e458b399f04c5f912bf42d115ed7e37281b30e2f1c68605e4e9
+
+RUN apk add --no-cache curl
+WORKDIR /geo
+RUN curl -fsSL --retry 3 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" \
+ && echo "${XRAY_ZIP_SHA256}  /tmp/xray.zip" | sha256sum -c - \
+ && unzip -q /tmp/xray.zip geoip.dat geosite.dat -d /geo \
+ && echo "${GEOIP_SHA256}  /geo/geoip.dat" | sha256sum -c - \
+ && echo "${GEOSITE_SHA256}  /geo/geosite.dat" | sha256sum -c - \
+ && chmod 0644 /geo/geoip.dat /geo/geosite.dat \
+ && rm /tmp/xray.zip
+
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS filter-assets
 
 ARG SKIP_FILTER_ASSETS=0
 
@@ -116,7 +134,7 @@ RUN if [ "$SKIP_FILTER_ASSETS" = "1" ]; then \
         python3 /build_filter_assets.py /assets; \
     fi
 
-FROM alpine:latest
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"
 
@@ -128,7 +146,8 @@ RUN command -v swanctl >/dev/null && command -v xl2tpd >/dev/null && command -v 
 WORKDIR /app
 COPY --from=builder /src/main /app/main
 COPY --from=xray-builder /out/xray /usr/local/bin/xray
-COPY --from=builder /usr/local/share/xray /usr/local/share/xray
+COPY --from=geo-assets /geo/geoip.dat /usr/local/share/xray/geoip.dat
+COPY --from=geo-assets /geo/geosite.dat /usr/local/share/xray/geosite.dat
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 COPY --from=filter-assets /assets/pgfilter.dat /usr/local/share/xray/pgfilter.dat
 COPY --from=filter-assets /assets/pgfilter_index.json /usr/local/share/xray/pgfilter_index.json
