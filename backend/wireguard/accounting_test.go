@@ -18,13 +18,24 @@ import (
 )
 
 type accountingKernel struct {
-	mu            sync.Mutex
-	linkUp        bool
-	peers         map[wgtypes.Key]*wgtypes.Peer
-	failConfigure error
-	deviceReads   int
-	growPerRead   int64
-	produced      int64
+	mu                   sync.Mutex
+	linkUp               bool
+	peers                map[wgtypes.Key]*wgtypes.Peer
+	failConfigure        error
+	deviceReads          int
+	growPerRead          int64
+	produced             int64
+	interfaceRx          int64
+	interfaceTx          int64
+	growInterfacePerRead int64
+	producedInterfaceRx  int64
+	producedInterfaceTx  int64
+	linkReadGate         *linkReadGate
+}
+
+type linkReadGate struct {
+	entered chan struct{}
+	release chan struct{}
 }
 
 func newAccountingKernel() *accountingKernel {
@@ -62,6 +73,12 @@ func (k *accountingKernel) Device(name string) (*wgtypes.Device, error) {
 		return nil, fmt.Errorf("device %s does not exist", name)
 	}
 	device := &wgtypes.Device{Name: name}
+	if k.growInterfacePerRead > 0 {
+		k.interfaceRx += k.growInterfacePerRead
+		k.interfaceTx += 3 * k.growInterfacePerRead
+		k.producedInterfaceRx += k.growInterfacePerRead
+		k.producedInterfaceTx += 3 * k.growInterfacePerRead
+	}
 	for _, peer := range k.peers {
 		if k.growPerRead > 0 {
 			peer.ReceiveBytes += k.growPerRead
@@ -90,6 +107,57 @@ func (k *accountingKernel) resetLink(up bool) {
 
 	k.linkUp = up
 	k.peers = make(map[wgtypes.Key]*wgtypes.Peer)
+	k.interfaceRx, k.interfaceTx = 0, 0
+}
+
+func (k *accountingKernel) addInterfaceTraffic(t *testing.T, rx, tx int64) {
+	t.Helper()
+
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if !k.linkUp {
+		t.Fatal("traffic on an interface that does not exist")
+	}
+	k.interfaceRx += rx
+	k.interfaceTx += tx
+	k.producedInterfaceRx += rx
+	k.producedInterfaceTx += tx
+}
+
+func (k *accountingKernel) producedInterfaceBytes() (int64, int64) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.producedInterfaceRx, k.producedInterfaceTx
+}
+
+func (k *accountingKernel) gateNextLinkRead() *linkReadGate {
+	gate := &linkReadGate{entered: make(chan struct{}), release: make(chan struct{})}
+	k.mu.Lock()
+	k.linkReadGate = gate
+	k.mu.Unlock()
+	return gate
+}
+
+func (k *accountingKernel) readLink(name string) (netlink.Link, error) {
+	k.mu.Lock()
+	gate := k.linkReadGate
+	k.linkReadGate = nil
+	if !k.linkUp {
+		k.mu.Unlock()
+		return nil, linkNotFoundError()
+	}
+	link := &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{
+		Name:       name,
+		Statistics: &netlink.LinkStatistics{RxBytes: uint64(k.interfaceRx), TxBytes: uint64(k.interfaceTx)},
+	}}
+	k.mu.Unlock()
+
+	if gate != nil {
+		close(gate.entered)
+		<-gate.release
+	}
+	return link, nil
 }
 
 func (k *accountingKernel) netlinkOps() mockNetlinkOps {
@@ -101,14 +169,7 @@ func (k *accountingKernel) netlinkOps() mockNetlinkOps {
 			k.resetLink(true)
 			return nil
 		},
-		linkByName: func(name string) (netlink.Link, error) {
-			k.mu.Lock()
-			defer k.mu.Unlock()
-			if !k.linkUp {
-				return nil, linkNotFoundError()
-			}
-			return &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{Name: name}}, nil
-		},
+		linkByName: k.readLink,
 		addrAddFn: func(netlink.Link, *netlink.Addr) error {
 			return nil
 		},
@@ -201,6 +262,14 @@ func accountingUserWithoutInbound(email, publicKey string, n int) *common.User {
 	return user
 }
 
+func accountingNodeConfig() *nodeconfig.Config {
+	return &nodeconfig.Config{
+		LogBufferSize:               64,
+		StatsUpdateIntervalSeconds:  3600,
+		StatsCleanupIntervalSeconds: 3600,
+	}
+}
+
 func newAccountingBackend(t *testing.T, k *accountingKernel, interfaceName string, users []*common.User) (*WireGuard, error) {
 	t.Helper()
 
@@ -215,13 +284,7 @@ func newAccountingBackend(t *testing.T, k *accountingKernel, interfaceName strin
 		"private_key":"%s"
 	}`, interfaceName, privateKey))
 
-	cfg := &nodeconfig.Config{
-		LogBufferSize:               64,
-		StatsUpdateIntervalSeconds:  3600,
-		StatsCleanupIntervalSeconds: 3600,
-	}
-
-	wg, err := newWithManagerFactory(cfg, wgCfg, users, k.managerFactory)
+	wg, err := newWithManagerFactory(accountingNodeConfig(), wgCfg, users, k.managerFactory)
 	if err != nil {
 		return nil, err
 	}

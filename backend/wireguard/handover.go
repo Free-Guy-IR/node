@@ -8,27 +8,33 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 )
 
-var accountingHandover = struct {
-	mu       sync.Mutex
-	trackers map[string]*stats.Tracker
-}{trackers: make(map[string]*stats.Tracker)}
+type accountingHandOver struct {
+	tracker     *stats.Tracker
+	interfaceRx int64
+	interfaceTx int64
+}
 
-func depositAccounting(interfaceName string, tracker *stats.Tracker) bool {
+var accountingHandover = struct {
+	mu      sync.Mutex
+	pending map[string]*accountingHandOver
+}{pending: make(map[string]*accountingHandOver)}
+
+func depositAccounting(interfaceName string, handOver *accountingHandOver) bool {
 	accountingHandover.mu.Lock()
 	defer accountingHandover.mu.Unlock()
 
-	_, occupied := accountingHandover.trackers[interfaceName]
-	accountingHandover.trackers[interfaceName] = tracker
+	_, occupied := accountingHandover.pending[interfaceName]
+	accountingHandover.pending[interfaceName] = handOver
 	return occupied
 }
 
-func takeAccounting(interfaceName string) *stats.Tracker {
+func takeAccounting(interfaceName string) *accountingHandOver {
 	accountingHandover.mu.Lock()
 	defer accountingHandover.mu.Unlock()
 
-	tracker := accountingHandover.trackers[interfaceName]
-	delete(accountingHandover.trackers, interfaceName)
-	return tracker
+	handOver := accountingHandover.pending[interfaceName]
+	delete(accountingHandover.pending, interfaceName)
+	return handOver
 }
 
 func (wg *WireGuard) depositAccountingLocked() {
@@ -36,15 +42,48 @@ func (wg *WireGuard) depositAccountingLocked() {
 		return
 	}
 
+	unreadRx, unreadTx := wg.unreadInterfaceBytesLocked()
+	handOver := &accountingHandOver{
+		tracker:     wg.statsTracker.Detach(),
+		interfaceRx: unreadRx,
+		interfaceTx: unreadTx,
+	}
+
 	interfaceName := wg.config.InterfaceName
-	if depositAccounting(interfaceName, wg.statsTracker.Detach()) {
+	if depositAccounting(interfaceName, handOver) {
 		message := fmt.Sprintf("wireguard accounting hand-over for %s replaced one that no backend took", interfaceName)
 		log.Printf("%s", message)
 		wg.emitLogLocked(logSeverityError, message)
 	}
 }
 
-func (wg *WireGuard) adoptAccounting(tracker *stats.Tracker) {
+func (wg *WireGuard) unreadInterfaceBytesLocked() (int64, int64) {
+	if wg.interfaceStats == nil {
+		return 0, 0
+	}
+
+	var finalRx, finalTx int64
+	if wg.manager != nil {
+		currentRx, currentTx, err := wg.manager.GetInterfaceStats()
+		if err != nil {
+			message := fmt.Sprintf("wireguard final interface counter read failed: %v", err)
+			log.Printf("%s", message)
+			wg.emitLogLocked(logSeverityWarning, message)
+		} else {
+			finalRx, finalTx = currentRx, currentTx
+		}
+	}
+	return wg.interfaceStats.Delta(finalRx, finalTx, true)
+}
+
+func (wg *WireGuard) adoptAccounting(handOver *accountingHandOver) {
+	if handOver == nil {
+		wg.interfaceStats.CountFromZero(0, 0)
+		return
+	}
+	wg.interfaceStats.CountFromZero(handOver.interfaceRx, handOver.interfaceTx)
+
+	tracker := handOver.tracker
 	if tracker == nil {
 		return
 	}

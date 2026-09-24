@@ -52,6 +52,17 @@ time; the reason is recorded with each answer.
   interleaved sample taken after the kernel reset but before the restart is recorded could count the
   same bytes twice.
 
+### Session 2026-09-24
+
+- Q: What are WireGuard's node-level counters in the accounting hand-over? → A: The interface byte
+  counter behind the node-level (`Outbounds`) and per-interface (`Outbound`) series, which read one
+  shared counter. At Shutdown the bytes it counted but the panel has not read are carried; the next
+  backend of the same interface reports them once and counts the recreated interface from zero, even
+  without a hand-over. A node-level read already running when Shutdown starts finishes before the
+  hand-over is taken. Reason: a Start deletes and recreates the interface, so its counter starts at
+  zero, and a read that reached the interface by name after the recreation would bill the
+  successor's bytes twice.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - An MTProto user can connect right after the panel restarts the node's core (Priority: P1)
@@ -217,9 +228,10 @@ server-to-client amount and check the labels and that the per-user sum is unchan
 - **FR-008** (WireGuard): Before removing peers, before replacing the whole peer list (full user sync
   and restart), and before deleting the interface on shutdown, the backend MUST sample all peers; after a
   replacement it MUST account every re-added peer's counters from zero while keeping the pending deltas.
-- **FR-009** (WireGuard): On shutdown the backend MUST hand its per-user accounting state, keyed by
-  interface name, to the next WireGuard backend of the same interface in the same process, which MUST
-  report the pending deltas once, count the recreated interface's counters from zero and release entries
+- **FR-009** (WireGuard): On shutdown the backend MUST hand its per-user accounting state and the
+  interface bytes its node-level counter counted but the panel has not read, keyed by interface name, to
+  the next WireGuard backend of the same interface in the same process, which MUST report the pending
+  deltas once, count the recreated interface's peer and interface counters from zero and release entries
   for peers that are no longer configured after reporting them.
 - **FR-009a** (WireGuard): Periodic sampling MUST be serialised with every flush, kernel peer change
   and counter restart sequence.
