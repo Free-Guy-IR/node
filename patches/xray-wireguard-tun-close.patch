@@ -1,3 +1,11 @@
+WireGuard proxy: prevent a panic when closing the gVisor tun with a write in flight
+
+Upstream: dbb1ea30ba71a5789be74445a787e76feacfae38
+
+Backport: upstream patches proxy/wireguard/netstack.go, which 8626311 (#6287) created after the pin.
+The same three changes are applied to the pre-refactor file proxy/wireguard/gvisortun/tun.go: a closed
+channel that Read and WriteNotify select on, and Close closing it instead of incomingPacket.
+
 diff --git a/proxy/wireguard/gvisortun/close_in_flight_test.go b/proxy/wireguard/gvisortun/close_in_flight_test.go
 new file mode 100644
 index 0000000..10363e0
@@ -47,3 +55,57 @@ index 0000000..10363e0
 +		}
 +	}
 +}
+diff --git a/proxy/wireguard/gvisortun/tun.go b/proxy/wireguard/gvisortun/tun.go
+index 379fad4..32bd504 100644
+--- a/proxy/wireguard/gvisortun/tun.go
++++ b/proxy/wireguard/gvisortun/tun.go
+@@ -33,6 +33,7 @@ type netTun struct {
+ 	events         chan tun.Event
+ 	notifyHandle   *channel.NotificationHandle
+ 	incomingPacket chan *buffer.View
++	closed         chan struct{}
+ 	mtu            int
+ 	hasV4, hasV6   bool
+ 	closeOnce      sync.Once
+@@ -51,6 +52,7 @@ func CreateNetTUN(localAddresses []netip.Addr, mtu int, promiscuousMode bool) (t
+ 		stack:          stack.New(opts),
+ 		events:         make(chan tun.Event, 10),
+ 		incomingPacket: make(chan *buffer.View),
++		closed:         make(chan struct{}),
+ 		mtu:            mtu,
+ 	}
+ 	sackEnabledOpt := tcpip.TCPSACKEnabled(true) // TCP SACK is disabled by default
+@@ -117,8 +119,10 @@ func (tun *netTun) Events() <-chan tun.Event {
+ 
+ // Read implements tun.Device
+ func (tun *netTun) Read(buf [][]byte, sizes []int, offset int) (int, error) {
+-	view, ok := <-tun.incomingPacket
+-	if !ok {
++	var view *buffer.View
++	select {
++	case view = <-tun.incomingPacket:
++	case <-tun.closed:
+ 		return 0, os.ErrClosed
+ 	}
+ 
+@@ -161,7 +165,10 @@ func (tun *netTun) WriteNotify() {
+ 	view := pkt.ToView()
+ 	pkt.DecRef()
+ 
+-	tun.incomingPacket <- view
++	select {
++	case tun.incomingPacket <- view:
++	case <-tun.closed:
++	}
+ }
+ 
+ // Close implements tun.Device
+@@ -174,7 +181,7 @@ func (tun *netTun) Close() error {
+ 
+ 		close(tun.events)
+ 
+-		close(tun.incomingPacket)
++		close(tun.closed)
+ 	})
+ 	return nil
+ }

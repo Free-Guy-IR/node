@@ -78,6 +78,7 @@ COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
 COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
@@ -125,6 +126,9 @@ RUN git init -q . \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-wireguard-tun-close.patch \
+ && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
+ && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \
  && git apply --verbose /patches/xray-x-net-0.59.0.patch \
  && grep -q "golang.org/x/crypto v0.57.0$" go.mod \
  && grep -q "golang.org/x/net v0.59.0$" go.mod \
