@@ -2,7 +2,9 @@ package l2tp
 
 import (
 	"bufio"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,6 +38,7 @@ type l2tpSession struct {
 	tag      string
 	pid      int
 	started  int64
+	proc     string
 }
 
 func (s l2tpSession) identity() sessionIdentity {
@@ -46,18 +49,10 @@ var sessionIsAlive = pppdSessionIsAlive
 
 func pppdSessionIsAlive(s l2tpSession) bool {
 	if s.pid > 0 {
-		return processIsPppd(s.pid)
+		return pppdState(s.pid, s.proc) != processGone
 	}
 	_, err := os.Stat(filepath.Join(sysClassNet, s.ifname))
-	return err == nil
-}
-
-func processIsPppd(pid int) bool {
-	comm, err := readProcFile(strconv.Itoa(pid) + "/comm")
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(comm), "pppd")
+	return !errors.Is(err, fs.ErrNotExist)
 }
 
 func ownsRecord(recordTag, tag string) bool {
@@ -75,12 +70,16 @@ func readSessions(tag string) []l2tpSession {
 			continue
 		}
 		path := filepath.Join(sessionStateDir, e.Name())
-		s, complete := parseSessionFile(path, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		s, complete := parseSession(raw, e.Name())
 		if !complete || s.user == "" || s.ifname == "" || !ownsRecord(s.tag, tag) {
 			continue
 		}
 		if !sessionIsAlive(s) {
-			_ = os.Remove(path)
+			removeIfUnchanged(path, raw)
 			continue
 		}
 		out = append(out, s)
@@ -88,17 +87,11 @@ func readSessions(tag string) []l2tpSession {
 	return out
 }
 
-func parseSessionFile(path, ifname string) (l2tpSession, bool) {
+func parseSession(raw []byte, ifname string) (l2tpSession, bool) {
 	s := l2tpSession{ifname: ifname}
-	f, err := os.Open(path)
-	if err != nil {
-		return s, false
-	}
-	defer f.Close()
 	hasStarted := false
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
 			continue
 		}
@@ -116,6 +109,8 @@ func parseSessionFile(path, ifname string) (l2tpSession, bool) {
 		case "started":
 			s.started, _ = strconv.ParseInt(v, 10, 64)
 			hasStarted = true
+		case "proc":
+			s.proc = v
 		}
 	}
 	return s, hasStarted

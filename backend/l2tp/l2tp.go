@@ -336,7 +336,7 @@ func (o *L2TP) killSessions(usernames []string) {
 		targets[u] = struct{}{}
 	}
 	for _, s := range readSessions(o.config.InboundTag) {
-		if _, ok := targets[s.user]; !ok || s.pid <= 0 || !processIsPppd(s.pid) {
+		if _, ok := targets[s.user]; !ok || s.pid <= 0 || pppdState(s.pid, s.proc) != processRunning {
 			continue
 		}
 		if p, err := os.FindProcess(s.pid); err == nil {
