@@ -123,3 +123,49 @@ func TestLegacyRenegotiationWhileItsFinalRecordCannotBeOpenedIsBilledOnce(t *tes
 	a.poll()
 	expectUsers(t, "renegotiation next to an unopenable final record", takeUsers(t, a), map[string]int64{"7": 600})
 }
+
+func TestNewPppdOnAReusedPidAndInterfaceInTheSameSecondGetsItsOwnIdentity(t *testing.T) {
+	e := newAcctEnv(t)
+	h := newFakeHost(t, e)
+	a := e.instance("7", "8")
+	old := h.spawn(4100, "7")
+	h.grow(old, 300, 200)
+	h.ipUp(old)
+	a.poll()
+	first, _ := h.session(old.ifname)
+	h.grow(old, 700, 300)
+	h.ipDown(old)
+	h.exit(old)
+	a.poll()
+	expectUsers(t, "the old pppd", takeUsers(t, a), map[string]int64{"7": 1500})
+
+	a = e.restart(a, false, "7", "8")
+	reused := h.spawn(4100, "8")
+	h.grow(reused, 400, 100)
+	h.ipUp(reused)
+	again, _ := h.session(reused.ifname)
+	if again.identity() == first.identity() {
+		t.Fatalf("a new pppd took the identity %+v of an ended session", again.identity())
+	}
+	a.poll()
+	expectUsers(t, "a new pppd on the old pid and name within the same second", takeUsers(t, a), map[string]int64{"8": 500})
+}
+
+func TestLegacyRenegotiationEndingBeforeItsNextPollIsBilledOnce(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 1000, 500)
+	a := e.instance("7")
+	a.poll()
+	expectUsers(t, "first poll", takeUsers(t, a), map[string]int64{"7": 1500})
+
+	e.counters("ppp0", 1200, 600)
+	e.final("ppp0", "7", 100, 1000, 1200, 600)
+	if err := os.Remove(filepath.Join(sessionStateDir, "ppp0")); err != nil {
+		t.Fatal(err)
+	}
+	e.session("ppp0", "7", 100, 1007, 1200, 600)
+	e.end("ppp0", "7", 100, 1007, 1300, 650)
+	a.poll()
+	a.poll()
+	expectUsers(t, "both finals of one pppd", takeUsers(t, a), map[string]int64{"7": 450})
+}

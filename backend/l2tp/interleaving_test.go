@@ -32,7 +32,7 @@ type interleaving struct {
 	billed     map[string]int64
 	node       map[common.StatType]int64
 	nextPid    int
-	failOpen   atomic.Bool
+	failOpen   atomic.Int64
 	failProc   atomic.Bool
 	failRemove atomic.Bool
 }
@@ -63,7 +63,7 @@ func newInterleaving(t *testing.T, seed int64) *interleaving {
 	prevOpen, prevProc, prevRemove := openFinalRecord, readProcFile, removeFinalRecord
 	t.Cleanup(func() { openFinalRecord, readProcFile, removeFinalRecord = prevOpen, prevProc, prevRemove })
 	openFinalRecord = func(path string) (io.ReadCloser, error) {
-		if x.failOpen.Load() {
+		if x.failOpen.Add(-1) >= 0 {
 			return nil, tooManyOpenFiles(path)
 		}
 		return prevOpen(path)
@@ -265,13 +265,14 @@ func (x *interleaving) step() {
 		x.take()
 		x.o = x.e.instance(x.users...)
 		x.nextPid = 3000
+		x.h.advance(int64(x.r.Intn(3)))
 		if x.r.Intn(2) == 0 {
 			x.h.reboot(fmt.Sprintf("0f1e2d3c-4b5a-6978-8796-%012d", x.r.Intn(1000000)))
 			x.h.ticks = 90000
 			x.h.ifindex = 40
 		}
 	case 13:
-		x.failOpen.Store(x.r.Intn(3) == 0)
+		x.failOpen.Store(int64(x.r.Intn(3 * countedGraceRounds / 10)))
 		x.failProc.Store(x.r.Intn(3) == 0)
 		x.failRemove.Store(x.r.Intn(4) == 0)
 	case 14, 15:
@@ -283,7 +284,7 @@ func (x *interleaving) run(steps int) {
 	for i := 0; i < steps; i++ {
 		x.step()
 	}
-	x.failOpen.Store(false)
+	x.failOpen.Store(0)
 	x.failProc.Store(false)
 	x.failRemove.Store(false)
 	x.endGracefully()
