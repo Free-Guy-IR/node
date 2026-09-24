@@ -101,9 +101,6 @@ func (o *L2TP) sweepPppdRecordsLocked() {
 			continue
 		}
 		rec, _ := parseSession(raw, "")
-		if !ownsRecord(rec.tag, o.config.InboundTag) {
-			continue
-		}
 		seen[name] = struct{}{}
 		if pppdState(pid, rec.proc) != processGone {
 			delete(o.pppdGone, name)
