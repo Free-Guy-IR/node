@@ -290,7 +290,11 @@ Heads checked:
     daemon, macOS, services that 1.13 lacks).
 - Releases:
   - `v1.13.15` to `v1.13.21`: pending node 0.6.22;
-  - `v1.14.0` and `v1.14.1`: pending a separate 1.14 move.
+  - `v1.14.0`, `v1.14.1` and `v1.14.2` (published 2026-09-24): pending a separate 1.14 move. `v1.14.2` adds no
+    security-looking commit that is not already waived. Its HTTP proxy inbound panic (`bea01fe`) and HTTP/2 transport
+    races (`18b0317`) are server-side code that 1.13 also has, but the node runs only Hysteria2 on sing-box.
+    `3f0958b` (read loops spinning on persistent errors) and `afb0b30` (traffic counters on interrupted splice copies)
+    match no keyword, and they are to be checked against 1.13 at the 1.14 move.
 
 **sing-quic**
 
