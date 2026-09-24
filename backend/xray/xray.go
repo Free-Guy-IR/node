@@ -23,6 +23,7 @@ type Xray struct {
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
 	syncMu      sync.Mutex
+	syncEntered func(context.Context)
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {

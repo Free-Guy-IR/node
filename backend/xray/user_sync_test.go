@@ -53,7 +53,7 @@ type modelCore struct {
 	taken      int
 	users      map[string]map[string]string
 	rejectAdds int
-	rejectAdd  func(tag, email string) bool
+	fault      func(op, tag, email string) (bool, error)
 }
 
 func newModelCore(stock bool) *modelCore {
@@ -99,12 +99,23 @@ func (c *modelCore) AlterInbound(ctx context.Context, request *command.AlterInbo
 }
 
 func (c *modelCore) applyLocked(entry *coreEntry, operation *serial.TypedMessage) error {
-	users := c.users[entry.tag]
-	if users == nil {
-		users = make(map[string]string)
-		c.users[entry.tag] = users
+	if err := decodeEntry(entry, operation); err != nil {
+		return err
 	}
+	if c.fault != nil {
+		if applied, err := c.fault(entry.op, entry.tag, entry.email); err != nil {
+			if applied {
+				if applyErr := c.mutateLocked(entry); applyErr != nil {
+					return applyErr
+				}
+			}
+			return err
+		}
+	}
+	return c.mutateLocked(entry)
+}
 
+func decodeEntry(entry *coreEntry, operation *serial.TypedMessage) error {
 	switch entry.op {
 	case addOperation:
 		var add command.AddUserOperation
@@ -113,11 +124,29 @@ func (c *modelCore) applyLocked(entry *coreEntry, operation *serial.TypedMessage
 		}
 		entry.email = add.GetUser().GetEmail()
 		entry.account = accountFingerprint(add.GetUser().GetAccount())
+		return nil
+	case removeOperation, revokeOperation:
+		var remove command.RemoveUserOperation
+		if err := proto.Unmarshal(operation.GetValue(), &remove); err != nil {
+			return err
+		}
+		entry.email = remove.GetEmail()
+		return nil
+	}
+	return fmt.Errorf("unexpected operation %s", operation.GetType())
+}
+
+func (c *modelCore) mutateLocked(entry *coreEntry) error {
+	users := c.users[entry.tag]
+	if users == nil {
+		users = make(map[string]string)
+		c.users[entry.tag] = users
+	}
+
+	switch entry.op {
+	case addOperation:
 		if c.rejectAdds > 0 {
 			c.rejectAdds--
-			return errors.New("add rejected")
-		}
-		if c.rejectAdd != nil && c.rejectAdd(entry.tag, entry.email) {
 			return errors.New("add rejected")
 		}
 		if _, found := users[entry.email]; found {
@@ -126,26 +155,32 @@ func (c *modelCore) applyLocked(entry *coreEntry, operation *serial.TypedMessage
 		users[entry.email] = entry.account
 		return nil
 
-	case removeOperation, revokeOperation:
-		var remove command.RemoveUserOperation
-		if err := proto.Unmarshal(operation.GetValue(), &remove); err != nil {
-			return err
+	case revokeOperation:
+		if c.stock {
+			return status.Error(codes.Unknown, "app/proxyman/command: unknown operation > proto: not found")
 		}
-		entry.email = remove.GetEmail()
-		if entry.op == revokeOperation {
-			if c.stock {
-				return status.Error(codes.Unknown, "app/proxyman/command: unknown operation > proto: not found")
-			}
-			delete(users, entry.email)
-			return nil
-		}
+		delete(users, entry.email)
+		return nil
+
+	default:
 		if _, found := users[entry.email]; !found {
 			return fmt.Errorf("proxy/vless: User %s not found.", entry.email)
 		}
 		delete(users, entry.email)
 		return nil
 	}
-	return fmt.Errorf("unexpected operation %s", operation.GetType())
+}
+
+func (c *modelCore) setFault(fault func(op, tag, email string) (bool, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fault = fault
+}
+
+func (c *modelCore) calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
 }
 
 func (c *modelCore) take() []string {
@@ -266,30 +301,12 @@ func sortedOperations(pairs ...string) []string {
 	return pairs
 }
 
-func replacedOn(tags ...string) []string {
-	var pairs []string
-	for _, tag := range tags {
-		pairs = append(pairs, tag+":"+removeOperation, tag+":"+addOperation)
-	}
-	return pairs
-}
-
 func revokedOn(tags ...string) []string {
 	var pairs []string
 	for _, tag := range tags {
 		pairs = append(pairs, tag+":"+revokeOperation)
 	}
 	return pairs
-}
-
-func tagsExcept(except ...string) []string {
-	var tags []string
-	for _, tag := range syncTestTags {
-		if !slices.Contains(except, tag) {
-			tags = append(tags, tag)
-		}
-	}
-	return tags
 }
 
 func requireOperations(t *testing.T, got []string, want ...string) {
@@ -342,7 +359,7 @@ func TestSyncUserLeavesAnUnchangedUserAlone(t *testing.T) {
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), replacedOn(syncTestTags...)...)
+	requireOperations(t, core.take(), addedOn(syncTestTags...)...)
 
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
@@ -387,13 +404,13 @@ func TestSyncUserReplacesOnlyTheAccountThatChanged(t *testing.T) {
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), replacedOn("trojan")...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "trojan")...)
 
 	user.Proxies.Shadowsocks.Password = "rotated shadowsocks secret"
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), replacedOn("ss", "ss2022")...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "ss", "ss2022")...)
 	requireCoreMatchesLocal(t, x, core)
 }
 
@@ -456,12 +473,12 @@ func TestSyncUserRetriesAnAddThatFailed(t *testing.T) {
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), append(replacedOn("vless"), revokedOn(tagsExcept("vless")...)...)...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "vless")...)
 
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), revokedOn(tagsExcept("vless")...)...)
+	requireOperations(t, core.take())
 	requireCoreMatchesLocal(t, x, core)
 }
 
@@ -487,7 +504,7 @@ func TestSyncUserRetriesAChangedAccountWhoseAddFailed(t *testing.T) {
 	if err := x.SyncUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), append(replacedOn("trojan"), revokedOn(tagsExcept("trojan")...)...)...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "trojan")...)
 	requireCoreMatchesLocal(t, x, core)
 	if held := core.state()["trojan"]; len(held) != 1 {
 		t.Fatalf("the core holds %v on trojan after the retry", held)
@@ -512,21 +529,13 @@ func TestUpdateUsersLeavesUnchangedUsersAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"vless:remove", "vless:add", "vless:revoke", "trojan:revoke"}
-	for _, tag := range tagsExcept("vless", "trojan") {
-		want = append(want, tag+":revoke", tag+":revoke", tag+":revoke")
-	}
-	requireOperations(t, core.take(), want...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "vless")...)
 	requireCoreMatchesLocal(t, x, core)
 
 	if err := x.UpdateUsers(ctx, []*common.User{alice, bob}); err != nil {
 		t.Fatal(err)
 	}
-	want = nil
-	for _, tag := range tagsExcept("vless", "trojan") {
-		want = append(want, tag+":revoke", tag+":revoke")
-	}
-	requireOperations(t, core.take(), want...)
+	requireOperations(t, core.take())
 }
 
 func TestUpdateUsersRetriesAnAddThatFailed(t *testing.T) {
@@ -547,11 +556,11 @@ func TestUpdateUsersRetriesAnAddThatFailed(t *testing.T) {
 	if err := x.UpdateUsers(ctx, users); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), append(replacedOn("trojan"), revokedOn(tagsExcept("trojan")...)...)...)
+	requireOperations(t, core.take(), rotatedOn(false, false, "trojan")...)
 
 	if err := x.UpdateUsers(ctx, users); err != nil {
 		t.Fatal(err)
 	}
-	requireOperations(t, core.take(), revokedOn(tagsExcept("trojan")...)...)
+	requireOperations(t, core.take())
 	requireCoreMatchesLocal(t, x, core)
 }

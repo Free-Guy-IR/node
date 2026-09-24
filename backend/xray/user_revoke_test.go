@@ -133,15 +133,20 @@ func TestSyncUserRevokesOnlyInboundsTheUserLeaves(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a", "b")); err != nil {
+		t.Fatal(err)
+	}
+	assertOperations(t, service.take(), "a:add", "b:add")
+
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a")); err != nil {
 		t.Fatal(err)
 	}
-	assertOperations(t, service.take(), "a:remove", "a:add", "b:revoke", "c:revoke")
+	assertOperations(t, service.take(), "b:revoke")
 
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice")); err != nil {
 		t.Fatal(err)
 	}
-	assertOperations(t, service.take(), "a:revoke", "b:revoke", "c:revoke")
+	assertOperations(t, service.take(), "a:revoke")
 }
 
 func TestSyncUserFallsBackToRemoveOnStockCore(t *testing.T) {
@@ -149,15 +154,20 @@ func TestSyncUserFallsBackToRemoveOnStockCore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a", "b")); err != nil {
+		t.Fatal(err)
+	}
+	assertOperations(t, service.take(), "a:add", "b:add")
+
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a")); err != nil {
 		t.Fatal(err)
 	}
-	assertOperations(t, service.take(), "a:remove", "a:add", "b:revoke", "b:remove", "c:remove")
+	assertOperations(t, service.take(), "b:revoke", "b:remove")
 
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice")); err != nil {
 		t.Fatal(err)
 	}
-	assertOperations(t, service.take(), "a:remove", "b:remove", "c:remove")
+	assertOperations(t, service.take(), "a:remove")
 }
 
 func TestUpdateUsersRevokesRemovedUsersAndKeepsActiveOnes(t *testing.T) {
@@ -165,14 +175,17 @@ func TestUpdateUsersRevokesRemovedUsersAndKeepsActiveOnes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	users := []*common.User{userOnInbounds("1.alice", "a", "c"), userOnInbounds("2.bob")}
+	users := []*common.User{userOnInbounds("1.alice", "a", "c"), userOnInbounds("2.bob", "b")}
 	if err := x.UpdateUsers(ctx, users); err != nil {
 		t.Fatal(err)
 	}
-	assertOperations(t, service.take(),
-		"a:remove", "a:add", "c:remove", "c:add", "b:revoke",
-		"a:revoke", "b:revoke", "c:revoke",
-	)
+	assertOperations(t, service.take(), "a:add", "c:add", "b:add")
+
+	users = []*common.User{userOnInbounds("1.alice", "a"), userOnInbounds("2.bob"), userOnInbounds("3.carol")}
+	if err := x.UpdateUsers(ctx, users); err != nil {
+		t.Fatal(err)
+	}
+	assertOperations(t, service.take(), "c:revoke", "b:revoke")
 }
 
 func clientEmails(x *Xray, tag string) []string {
@@ -209,16 +222,24 @@ func TestSyncUserReportsAFailedRevoke(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "revoke 1.alice on b") || !strings.Contains(err.Error(), "connection reset by peer") {
 		t.Fatalf("a failed revoke was not reported: %v", err)
 	}
-	assertOperations(t, service.take(), "b:revoke", "b:remove", "c:revoke", "c:remove")
+	assertOperations(t, service.take(), "b:revoke", "b:remove")
 	if emails := clientEmails(x, "b"); len(emails) != 0 {
 		t.Fatalf("the removed user stayed in the node's desired state for b: %v", emails)
 	}
 }
 
 func TestUpdateUsersReportsAFailedRevoke(t *testing.T) {
-	x, service := newRecordingXrayWith(t, &fakeInboundService{revokeErr: status.Error(codes.Unavailable, "connection reset by peer")})
+	x, service := newRecordingXray(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if err := x.UpdateUsers(ctx, []*common.User{userOnInbounds("2.bob", "a", "b", "c")}); err != nil {
+		t.Fatal(err)
+	}
+	service.take()
+	service.mu.Lock()
+	service.revokeErr = status.Error(codes.Unavailable, "connection reset by peer")
+	service.mu.Unlock()
 
 	err := x.UpdateUsers(ctx, []*common.User{userOnInbounds("2.bob")})
 	if err == nil || !strings.Contains(err.Error(), "revoke 2.bob on") {
@@ -228,9 +249,17 @@ func TestUpdateUsersReportsAFailedRevoke(t *testing.T) {
 }
 
 func TestRemovingAUserAnInboundCannotHoldIsSilent(t *testing.T) {
-	x, service := newRecordingXrayWith(t, &fakeInboundService{revokeErr: status.Error(codes.Unknown, "app/proxyman/sessionrevoke: proxy is not a UserManager")})
+	x, service := newRecordingXray(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a", "b", "c")); err != nil {
+		t.Fatal(err)
+	}
+	service.take()
+	service.mu.Lock()
+	service.revokeErr = status.Error(codes.Unknown, "app/proxyman/sessionrevoke: proxy is not a UserManager")
+	service.mu.Unlock()
 
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice")); err != nil {
 		t.Fatalf("revoking from an inbound without users was reported: %v", err)
@@ -246,11 +275,20 @@ func TestStockCoreFallbackIgnoresOnlyAbsentUsers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a", "b", "c")); err != nil {
+		t.Fatal(err)
+	}
+	service.take()
+
 	if err := x.SyncUser(ctx, userOnInbounds("1.alice")); err != nil {
 		t.Fatalf("removing an absent user on a stock core was reported: %v", err)
 	}
 	assertOperations(t, service.take(), "a:revoke", "a:remove", "b:remove", "c:remove")
 
+	if err := x.SyncUser(ctx, userOnInbounds("1.alice", "a", "b", "c")); err != nil {
+		t.Fatal(err)
+	}
+	service.take()
 	service.mu.Lock()
 	service.removeErr = status.Error(codes.Unavailable, "connection reset by peer")
 	service.mu.Unlock()

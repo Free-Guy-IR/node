@@ -135,9 +135,48 @@ func revokeInboundUser(ctx context.Context, handler *api.XrayHandler, tag, email
 	return fmt.Errorf("revoke %s on %s: %w", email, tag, err)
 }
 
-func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
+func (x *Xray) lockSync(ctx context.Context) func() {
 	x.syncMu.Lock()
-	defer x.syncMu.Unlock()
+	if x.syncEntered != nil {
+		x.syncEntered(ctx)
+	}
+	return x.syncMu.Unlock
+}
+
+func pushAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, account api.Account, step coreStep) error {
+	if step == coreUnchanged {
+		return nil
+	}
+
+	email := account.GetEmail()
+	var revokeErr error
+	if step == coreReplace {
+		revokeErr = revokeInboundUser(ctx, handler, inbound.Tag, email)
+	}
+	if err := handler.AddInboundUser(ctx, inbound.Tag, accountForAPI(inbound, account)); err != nil {
+		inbound.dropAccount(email)
+		return errors.Join(revokeErr, err)
+	}
+	if revokeErr != nil {
+		inbound.markUnsettled(email)
+		return revokeErr
+	}
+	inbound.settle(email)
+	return nil
+}
+
+func revokeLeavingUser(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, email string) error {
+	if err := revokeInboundUser(ctx, handler, inbound.Tag, email); err != nil {
+		inbound.markUnsettled(email)
+		return err
+	}
+	inbound.settle(email)
+	return nil
+}
+
+func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
+	unlock := x.lockSync(ctx)
+	defer unlock()
 
 	proxySetting, err := setupUserAccount(user)
 	if err != nil {
@@ -156,25 +195,17 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 			continue
 		}
 
+		var err error
 		account, isActive := isActiveInbound(inbound, userInbounds, proxySetting)
-		if isActive {
-			if inbound.hasAccount(account) {
-				continue
-			}
-			_ = handler.RemoveInboundUser(ctx, inbound.Tag, user.Email)
-			inbound.updateUser(account)
-			err = handler.AddInboundUser(ctx, inbound.Tag, accountForAPI(inbound, account))
-			if err != nil {
-				inbound.removeUser(user.GetEmail())
-				log.Println(err)
-				errMessage.WriteString("\n" + err.Error())
-			}
-		} else {
-			if err := revokeInboundUser(ctx, handler, inbound.Tag, user.Email); err != nil {
-				log.Println(err)
-				errMessage.WriteString("\n" + err.Error())
-			}
-			inbound.removeUser(user.GetEmail())
+		switch {
+		case isActive:
+			err = pushAccount(ctx, handler, inbound, account, inbound.stageAccount(account))
+		case inbound.stageRemoval(user.GetEmail()):
+			err = revokeLeavingUser(ctx, handler, inbound, user.GetEmail())
+		}
+		if err != nil {
+			log.Println(err)
+			errMessage.WriteString("\n" + err.Error())
 		}
 	}
 
@@ -185,8 +216,8 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
-	x.syncMu.Lock()
-	defer x.syncMu.Unlock()
+	unlock := x.lockSync(ctx)
+	defer unlock()
 
 	candidate, err := x.config.Clone()
 	if err != nil {
@@ -239,8 +270,8 @@ func (x *Xray) restorePreviousConfig(previous *Config) error {
 }
 
 func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
-	x.syncMu.Lock()
-	defer x.syncMu.Unlock()
+	unlock := x.lockSync(ctx)
+	defer unlock()
 
 	handler := x.handler
 	inboundByTag, updates := x.config.buildInboundUpdates(users)
@@ -253,20 +284,17 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 		}
 
 		inbound := inboundByTag[tag]
-		accounts := inbound.changedAccounts(update.accounts)
-		inbound.updateUsers(accounts, removeEmails)
+		steps, leaving := inbound.stageUpdate(update.accounts, removeEmails)
 
-		for _, email := range removeEmails {
-			if err := revokeInboundUser(ctx, handler, tag, email); err != nil {
+		for _, email := range leaving {
+			if err := revokeLeavingUser(ctx, handler, inbound, email); err != nil {
 				log.Println(err)
 				errMessage.WriteString("\n" + err.Error())
 			}
 		}
 
-		for _, account := range accounts {
-			_ = handler.RemoveInboundUser(ctx, tag, account.GetEmail())
-			if err := handler.AddInboundUser(ctx, tag, accountForAPI(inbound, account)); err != nil {
-				inbound.removeUser(account.GetEmail())
+		for index, account := range update.accounts {
+			if err := pushAccount(ctx, handler, inbound, account, steps[index]); err != nil {
 				log.Println(err)
 				errMessage.WriteString("\n" + err.Error())
 			}
@@ -281,8 +309,8 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 }
 
 func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
-	x.syncMu.Lock()
-	defer x.syncMu.Unlock()
+	unlock := x.lockSync(ctx)
+	defer unlock()
 
 	candidate, err := x.config.Clone()
 	if err != nil {

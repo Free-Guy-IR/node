@@ -77,10 +77,8 @@ func closeAndDrain(t *testing.T, probe *streamProbe) {
 	time.Sleep(3 * time.Second)
 }
 
-func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *testing.T) {
-	if _, err := os.Stat(executablePath); err != nil {
-		t.Skipf("xray binary not found at %s", executablePath)
-	}
+func startHysteriaVictim(t *testing.T) (*Xray, *common.User, int) {
+	t.Helper()
 
 	const tag = "revoke-hysteria"
 	target := startStreamingTarget(t)
@@ -166,6 +164,15 @@ func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *
 	})
 	waitForListener(t, clientPort)
 
+	return backend, victim, clientPort
+}
+
+func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *testing.T) {
+	if _, err := os.Stat(executablePath); err != nil {
+		t.Skipf("xray binary not found at %s", executablePath)
+	}
+	backend, victim, clientPort := startHysteriaVictim(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -181,20 +188,7 @@ func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *
 	afterResync.waitForBytes(t, "stream after a resync of a staying user", revokeWarmupBytes)
 	closeAndDrain(t, afterResync)
 
-	rotated := &common.User{
-		Email:    victim.GetEmail(),
-		Inbounds: victim.GetInbounds(),
-		Proxies:  &common.Proxy{Hysteria: &common.Hysteria{Auth: uuid.New().String()}},
-	}
-	if err := backend.SyncUser(ctx, rotated); err != nil {
-		t.Fatalf("resync the staying victim with a rotated key: %v", err)
-	}
-
-	afterRotation := openStreamProbe(t, clientPort)
-	afterRotation.waitForBytes(t, "stream after the staying user's key was rotated", revokeWarmupBytes)
-	closeAndDrain(t, afterRotation)
-
-	if err := backend.SyncUser(ctx, withoutInbounds(rotated)); err != nil {
+	if err := backend.SyncUser(ctx, withoutInbounds(victim)); err != nil {
 		t.Fatalf("remove victim: %v", err)
 	}
 
@@ -202,5 +196,34 @@ func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *
 	time.Sleep(revokeReconnectProbe)
 	if got := late.received.Load(); got != 0 {
 		t.Fatalf("a connection authenticated before the resync carried %d bytes after the user was removed", got)
+	}
+}
+
+func TestRotatingAHysteriaKeyRefusesStreamsOnTheOldConnection(t *testing.T) {
+	if _, err := os.Stat(executablePath); err != nil {
+		t.Skipf("xray binary not found at %s", executablePath)
+	}
+	backend, victim, clientPort := startHysteriaVictim(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	first := openStreamProbe(t, clientPort)
+	first.waitForBytes(t, "first stream on the authenticated connection", revokeWarmupBytes)
+	closeAndDrain(t, first)
+
+	rotated := &common.User{
+		Email:    victim.GetEmail(),
+		Inbounds: victim.GetInbounds(),
+		Proxies:  &common.Proxy{Hysteria: &common.Hysteria{Auth: uuid.New().String()}},
+	}
+	if err := backend.SyncUser(ctx, rotated); err != nil {
+		t.Fatalf("rotate the staying victim's key: %v", err)
+	}
+
+	afterRotation := openStreamProbe(t, clientPort)
+	time.Sleep(revokeReconnectProbe)
+	if got := afterRotation.received.Load(); got != 0 {
+		t.Fatalf("a connection authenticated with the rotated-out key carried %d bytes after the rotation", got)
 	}
 }
