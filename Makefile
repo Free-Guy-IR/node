@@ -161,8 +161,7 @@ test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic' ./common/protocol/quic/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderWinsOverForgedXForwardedFor|TestNoTrustedListUsesPeer|TestInvalidTrustedHeaderFallsBackToPeer' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderOnTunAndTunMulti|TestTrustedForwarderCIDRs' ./transport/internet/grpc/encoding/ ./common/protocol/http/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)
