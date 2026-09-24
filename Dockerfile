@@ -67,6 +67,7 @@ RUN apk update && apk add --no-cache git
 
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
@@ -77,6 +78,10 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && git apply --verbose /patches/xray-grpc-1.83.2.patch \
+ && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
+ && grep -q "golang.org/x/net v0.58.0$" go.mod \
+ && grep -q "golang.org/x/text v0.41.0 // indirect$" go.mod \
  && git apply --verbose /patches/xray-quic-sniff.patch \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
