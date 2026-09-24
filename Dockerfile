@@ -72,6 +72,7 @@ COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
@@ -97,7 +98,14 @@ RUN git init -q . \
  && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/splithttp/hub.go \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
- && ! grep -rq "x-real-ip" transport/internet/grpc
+ && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-xff-trusted-header.patch \
+ && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
+ && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \
+ && grep -q "if !peerIsTrustedForwarder(remoteAddr) {" common/protocol/http/trusted_forwarder.go \
+ && grep -q "return TrustedClientAddress(header.Values, trusted, remoteAddr)" common/protocol/http/headers.go \
+ && grep -q "return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)" transport/internet/grpc/encoding/remoteaddr.go \
+ && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main

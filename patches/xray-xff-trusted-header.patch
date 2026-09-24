@@ -1,9 +1,167 @@
+diff --git a/common/protocol/http/headers.go b/common/protocol/http/headers.go
+index 448bd1a..cedacb0 100644
+--- a/common/protocol/http/headers.go
++++ b/common/protocol/http/headers.go
+@@ -1,12 +1,10 @@
+ package http
+ 
+ import (
+-	"context"
+ 	"net/http"
+ 	"strconv"
+ 	"strings"
+ 
+-	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/common/net"
+ )
+ 
+@@ -26,30 +24,7 @@ func ParseXForwardedFor(header http.Header) []net.Address {
+ 
+ // ApplyTrustedXForwardedFor returns remoteAddr overridden by X-Forwarded-For only when a configured trusted header is present.
+ func ApplyTrustedXForwardedFor(header http.Header, trusted []string, remoteAddr net.Addr) net.Addr {
+-	value := header.Get("X-Forwarded-For")
+-	if value == "" {
+-		return remoteAddr
+-	}
+-	for _, t := range trusted {
+-		if len(header.Values(t)) > 0 {
+-			if idx := strings.IndexByte(value, ','); idx >= 0 {
+-				value = value[:idx]
+-			}
+-			if addr := net.ParseAddress(value); addr.Family().IsIP() {
+-				return &net.TCPAddr{
+-					IP:   addr.IP(),
+-					Port: 0,
+-				}
+-			}
+-			return remoteAddr
+-		}
+-	}
+-	if len(trusted) == 0 {
+-		errors.LogWarning(context.Background(), `received "X-Forwarded-For" from `, remoteAddr, ` but "sockopt.trustedXForwardedFor" is not configured; ignoring it and using the real remote address`)
+-	} else {
+-		errors.LogError(context.Background(), `ignored potentially forged "X-Forwarded-For" from `, remoteAddr, `: `, value)
+-	}
+-	return remoteAddr
++	return TrustedClientAddress(header.Values, trusted, remoteAddr)
+ }
+ 
+ // RemoveHopByHopHeaders removes hop by hop headers in http header list.
+diff --git a/common/protocol/http/trusted_forwarder.go b/common/protocol/http/trusted_forwarder.go
+new file mode 100644
+index 0000000..c82b5a8
+--- /dev/null
++++ b/common/protocol/http/trusted_forwarder.go
+@@ -0,0 +1,103 @@
++package http
++
++import (
++	"context"
++	gonet "net"
++	"net/netip"
++	"strings"
++	"sync"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/platform"
++)
++
++const trustedForwarderCIDRsEnv = "xray.trusted.forwarder.cidrs"
++
++var trustedForwarders = sync.OnceValue(func() []netip.Prefix {
++	return parseTrustedForwarderCIDRs(platform.NewEnvFlag(trustedForwarderCIDRsEnv).GetValue(func() string { return "" }))
++})
++
++func parseTrustedForwarderCIDRs(value string) []netip.Prefix {
++	var prefixes []netip.Prefix
++	for _, field := range strings.Split(value, ",") {
++		field = strings.TrimSpace(field)
++		if field == "" {
++			continue
++		}
++		prefix, err := netip.ParsePrefix(field)
++		if err != nil {
++			errors.LogError(context.Background(), `XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured: `, err)
++			return nil
++		}
++		prefixes = append(prefixes, prefix.Masked())
++	}
++	return prefixes
++}
++
++func peerIsTrustedForwarder(remoteAddr net.Addr) bool {
++	ip, ok := peerIP(remoteAddr)
++	if !ok {
++		return false
++	}
++	for _, prefix := range trustedForwarders() {
++		if prefix.Contains(ip) {
++			return true
++		}
++	}
++	return false
++}
++
++func peerIP(remoteAddr net.Addr) (netip.Addr, bool) {
++	var ip net.IP
++	switch addr := remoteAddr.(type) {
++	case *net.TCPAddr:
++		ip = addr.IP
++	case *net.UDPAddr:
++		ip = addr.IP
++	case nil:
++		return netip.Addr{}, false
++	default:
++		host, _, err := gonet.SplitHostPort(addr.String())
++		if err != nil {
++			return netip.Addr{}, false
++		}
++		ip = gonet.ParseIP(host)
++	}
++	parsed, ok := netip.AddrFromSlice(ip)
++	if !ok {
++		return netip.Addr{}, false
++	}
++	return parsed.Unmap(), true
++}
++
++func TrustedClientAddress(values func(string) []string, trusted []string, remoteAddr net.Addr) net.Addr {
++	for _, key := range trusted {
++		found := values(key)
++		if len(found) == 0 {
++			continue
++		}
++		if !peerIsTrustedForwarder(remoteAddr) {
++			errors.LogWarning(context.Background(), `ignored trusted header "`, key, `" from `, remoteAddr, ` because the peer is not inside XRAY_TRUSTED_FORWARDER_CIDRS`)
++			return remoteAddr
++		}
++		if len(found) == 1 {
++			if addr := net.ParseAddress(strings.TrimSpace(found[0])); addr.Family().IsIP() {
++				return &net.TCPAddr{
++					IP:   addr.IP(),
++					Port: 0,
++				}
++			}
++		}
++		errors.LogWarning(context.Background(), `ignored trusted header "`, key, `" from `, remoteAddr, ` because its value is not a single IP address`)
++		return remoteAddr
++	}
++	if forwardedFor := values("X-Forwarded-For"); len(forwardedFor) > 0 {
++		if len(trusted) == 0 {
++			errors.LogWarning(context.Background(), `received "X-Forwarded-For" from `, remoteAddr, ` but "sockopt.trustedXForwardedFor" is not configured; ignoring it and using the real remote address`)
++		} else {
++			errors.LogError(context.Background(), `ignored potentially forged "X-Forwarded-For" from `, remoteAddr, `: `, forwardedFor[0])
++		}
++	}
++	return remoteAddr
++}
 diff --git a/common/protocol/http/trusted_forwarder_test.go b/common/protocol/http/trusted_forwarder_test.go
 new file mode 100644
-index 0000000..01a374f
+index 0000000..7ea1d46
 --- /dev/null
 +++ b/common/protocol/http/trusted_forwarder_test.go
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,117 @@
 +package http_test
 +
 +import (
@@ -56,8 +214,18 @@ index 0000000..01a374f
 +		header := http.Header{}
 +		header.Set("CF-Connecting-IP", "fd00::7")
 +		peer := &gonet.TCPAddr{IP: gonet.ParseIP("127.0.0.1"), Port: 12345}
-+		for range 3 {
-+			fmt.Println("source=" + ApplyTrustedXForwardedFor(header, []string{"CF-Connecting-IP"}, peer).String())
++		sources := make([]string, 32)
++		var wg sync.WaitGroup
++		for i := range sources {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				sources[i] = ApplyTrustedXForwardedFor(header, []string{"CF-Connecting-IP"}, peer).String()
++			}()
++		}
++		wg.Wait()
++		for _, source := range sources {
++			fmt.Println("source=" + source)
 +		}
 +		handler.mu.Lock()
 +		defer handler.mu.Unlock()
@@ -72,12 +240,14 @@ index 0000000..01a374f
 +	}
 +	tests := []struct {
 +		cidrs       string
++		source      string
 +		invalidLogs string
 +	}{
-+		{cidrs: "127.0.0.1/32, not-a-cidr", invalidLogs: "1"},
-+		{cidrs: "127.0.0.1", invalidLogs: "1"},
-+		{cidrs: "127.0.0.1/32", invalidLogs: "0"},
++		{cidrs: "127.0.0.1/32, not-a-cidr", source: "127.0.0.1:12345", invalidLogs: "1"},
++		{cidrs: "127.0.0.1", source: "127.0.0.1:12345", invalidLogs: "1"},
++		{cidrs: "127.0.0.1/32", source: "[fd00::7]:0", invalidLogs: "0"},
 +	}
++	sources := regexp.MustCompile(`source=(\S+)`)
 +	logs := regexp.MustCompile(`invalid_cidr_logs=(\d+)`)
 +	for _, test := range tests {
 +		t.Run(test.cidrs, func(t *testing.T) {
@@ -92,6 +262,15 @@ index 0000000..01a374f
 +			out, err := cmd.CombinedOutput()
 +			if err != nil {
 +				t.Fatalf("child failed: %v\n%s", err, out)
++			}
++			seen := sources.FindAllStringSubmatch(string(out), -1)
++			if len(seen) != 32 {
++				t.Fatalf("child printed %d sources, want 32\n%s", len(seen), out)
++			}
++			for _, source := range seen {
++				if source[1] != test.source {
++					t.Fatalf("source %s, want %s", source[1], test.source)
++				}
 +			}
 +			match := logs.FindStringSubmatch(string(out))
 +			if match == nil || match[1] != test.invalidLogs {
@@ -316,6 +495,57 @@ index 0000000..e57a0b1
 +		})
 +	}
 +}
+diff --git a/transport/internet/grpc/encoding/remoteaddr.go b/transport/internet/grpc/encoding/remoteaddr.go
+index a28d919..b8a71c6 100644
+--- a/transport/internet/grpc/encoding/remoteaddr.go
++++ b/transport/internet/grpc/encoding/remoteaddr.go
+@@ -2,10 +2,9 @@ package encoding
+ 
+ import (
+ 	"context"
+-	"strings"
+ 
+-	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/common/net"
++	http_proto "github.com/xtls/xray-core/common/protocol/http"
+ 	"google.golang.org/grpc/metadata"
+ 	"google.golang.org/grpc/peer"
+ )
+@@ -26,33 +25,5 @@ func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
+ 		return remoteAddr
+ 	}
+ 
+-	if forwardedAddr := parseTrustedXForwardedFor(md, trusted, remoteAddr); forwardedAddr != nil && forwardedAddr.Family().IsIP() {
+-		remoteAddr = &net.TCPAddr{
+-			IP:   forwardedAddr.IP(),
+-			Port: 0,
+-		}
+-	}
+-	return remoteAddr
+-}
+-
+-func parseTrustedXForwardedFor(md metadata.MD, trusted []string, remoteAddr net.Addr) net.Address {
+-	values := md.Get("X-Forwarded-For")
+-	if len(values) == 0 || values[0] == "" {
+-		return nil
+-	}
+-	value := values[0]
+-	for _, t := range trusted {
+-		if len(md.Get(t)) > 0 {
+-			if idx := strings.IndexByte(value, ','); idx >= 0 {
+-				value = value[:idx]
+-			}
+-			return net.ParseAddress(value)
+-		}
+-	}
+-	if len(trusted) == 0 {
+-		errors.LogWarning(context.Background(), `received "X-Forwarded-For" from `, remoteAddr, ` but "sockopt.trustedXForwardedFor" is not configured; ignoring it and using the real remote address`)
+-	} else {
+-		errors.LogError(context.Background(), `ignored potentially forged "X-Forwarded-For" from `, remoteAddr, `: `, value)
+-	}
+-	return nil
++	return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)
+ }
 diff --git a/transport/internet/grpc/encoding/remoteaddr_test.go b/transport/internet/grpc/encoding/remoteaddr_test.go
 index a016c6f..e4ade78 100644
 --- a/transport/internet/grpc/encoding/remoteaddr_test.go
