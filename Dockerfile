@@ -67,6 +67,7 @@ RUN apk update && apk add --no-cache git
 
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
+COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
@@ -75,6 +76,9 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && git apply --verbose /patches/xray-quic-sniff.patch \
+ && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
+ && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
