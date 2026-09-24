@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -150,19 +151,35 @@ func TestShutdownDoesNotDeadlockWithAStreamThatJustAuthenticated(t *testing.T) {
 	}
 }
 
-func TestConcurrentShutdownCallsStopEveryInstanceOnce(t *testing.T) {
+func TestConcurrentShutdownCallsHandOverAccountingOnce(t *testing.T) {
 	for range shutdownRaceRounds {
 		ports := unusedListenPorts(t, 2)
 		raw := fmt.Sprintf(`{"instances":[`+
 			`{"tag":"mtproto-tg","port":%d,"fake_tls_domain":"localhost"},`+
 			`{"tag":"mtproto-tg-ad","port":%d,"fake_tls_domain":"localhost","ad_tag":%q}]}`, ports[0], ports[1], testAdTag)
 		backend := startBackend(t, raw, nil)
+		takeHandOver()
+		logs := backend.Logs()
 
 		var wg sync.WaitGroup
 		for range 8 {
 			wg.Go(backend.Shutdown)
 		}
 		wg.Wait()
+
+		if takeHandOver() == nil {
+			t.Fatal("eight concurrent Shutdown calls deposited no accounting hand-over")
+		}
+		for drained := false; !drained; {
+			select {
+			case line := <-logs:
+				if strings.Contains(line, "hand-over that no backend took was replaced") {
+					t.Fatalf("a concurrent Shutdown deposited a second hand-over: %s", line)
+				}
+			default:
+				drained = true
+			}
+		}
 	}
 }
 
