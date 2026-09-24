@@ -1,11 +1,17 @@
 # Upstream parity
 
-This fork tracks [PasarGuard/node](https://github.com/PasarGuard/node). This page records which upstream changes
-the fork has taken, which it has refused and why, and which upstream work is still pending. The daily drift check
-(`scripts/upstream_drift.sh`, run by `.github/workflows/upstream-drift.yml`) keeps it honest: it fails as soon as
-upstream `main` or `dev` has a commit that is neither ported nor waived with a reason.
+This fork tracks [PasarGuard/node](https://github.com/PasarGuard/node), and the node image builds four third-party
+upstreams: Xray-core, sing-box, sing-quic and mtg. This page records which upstream changes the fork has taken, which it
+has refused and why, and which upstream work is still pending. The daily drift check (`scripts/upstream_drift.sh`, run
+by `.github/workflows/upstream-drift.yml`) keeps it honest. It fails when an item is neither ported nor waived with a
+reason. An item is any of these:
 
-State as of 2026-09-23, release 0.6.21.
+- a commit on any PasarGuard/node branch or tag;
+- a published security advisory of any of the five repositories;
+- a security-looking commit on any active branch of the four third-party upstreams;
+- a third-party release published after our pin.
+
+State as of 2026-09-24, release 0.6.21.
 
 ## Fork point
 
@@ -13,6 +19,8 @@ State as of 2026-09-23, release 0.6.21.
   ("merge upstream PasarGuard/node v0.5.4 into fork", 2026-08-31). Everything reachable from `v0.5.4` is therefore in
   the fork's history.
 - Upstream `main` has no commit after `v0.5.4`. All later upstream work is on `dev`.
+- The other upstream branches are merged or open pull-request branches. They are listed in
+  [Other upstream branches](#other-upstream-branches).
 
 ## Upstream commits after the fork point
 
@@ -26,6 +34,8 @@ State as of 2026-09-23, release 0.6.21.
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
+| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | ported in 0.6.21. Upstream merged it on 2026-09-24, and 0.6.21 takes the grpc bump in a commit that carries `Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
+| `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24. release/v0.6.21 does not have it: the fork branch `fix/xray-sync-only-changed-users` was based on upstream `dev`. It is neither ported nor waived, so the check flags it until the release lead decides |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
@@ -82,8 +92,9 @@ not merged on `main` or `dev`. It is tracked here and **not ported**. Its main p
 that fences `Start` and every user-sync RPC, so a stale panel or bridge worker cannot overwrite a newer user snapshot.
 That is the node half of a fix for the stale-snapshot class of bugs, and it needs bridge 0.10 plus panel support.
 
-Because it is not a commit on upstream `main` or `dev`, the drift check does not see it today. When it is merged, its
-commits will appear on `dev` and the check will fail until each one is ported or waived.
+Its commits live on the contributor's fork, not on a PasarGuard/node branch or tag, so the drift check does not see
+it today. When it is merged, its commits will appear on `dev` and the check will fail until each one is ported or
+waived.
 
 Before porting it, all of this has to be true:
 
@@ -114,20 +125,229 @@ Other open upstream work that was reviewed:
 - PR #86, "xray: synchronize process status checks": the fork has had an equivalent fix since node 0.6.6 (a
   lock-free `coreState` snapshot and a `waitDone` channel in `backend/xray/core.go`).
 
+## Other upstream branches
+
+The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-09-24 the branches were:
+
+| branch | head | status in the fork |
+|---|---|---|
+| `main` | `e9a9ba286413c404854b80c847b588b620426660` | merged (`v0.5.4`) |
+| `dev` | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | see the table above |
+| `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` | fully in the fork's history, nothing to list |
+| `chunck` | `c194114eb1971d2e252fa1d117d655122c356d35` | `c194114` is a branch-only prototype; upstream squash-merged chunked user sync as `4f8568b` (#23), which the fork has. Superseded, waived |
+| `debug` | `8047fad98ec7e9955a405a97bf90a2411d8d6678` | `af0846e` and `8047fad` add diagnostic logging and were never merged upstream. Not applicable, waived |
+| `fix/xray-api` | `d09e5064d02555735ee815c8483dc88c42a8f669` | `2ae8ca9` and `d09e506` are pre-squash commits of `2cecc87` (#31), which the fork has. Superseded, waived |
+| `refactor/inbound-map-storage` | `72f7b4f0d0acde96cc642d2dd73defe5540921e6` | `0c44dc6` and `72f7b4f` are pre-squash commits of `c3f9e61` (#24), which the fork has. Superseded, waived |
+| `pr-61` | `4eb26fbd00387c88a4bcaf5c1d9e9e8dc4604b62` | 15 commits of the open PR #61. Rejected, waived (see below) |
+
+All 42 upstream tags, `v0.0.1` to `v0.5.4`, are in the fork's history.
+
+PR #61, "add MTProto proxy backend via telemt", is open and not merged. It adds `MTPROTO = 2` to `BackendType` and a
+telemt-based backend. The fork already ships its own MTProto backend on its mtg fork as `MTPROTO = 4`
+(`backend/mtproto`): multi-secret, live `UpdateSecrets`, and plain mode. Porting #61 would collide on the enum value and
+replace a working backend, so it is rejected. Revisit it if upstream merges it.
+
+Open upstream pull requests whose heads live on contributors' forks are not branches of PasarGuard/node, so the check
+does not see them. On 2026-09-24 they were:
+
+- #93 (the fork's own contribution);
+- #90 (WireGuard interface MTU);
+- #86 and #78 (assessed above);
+- #64 (WireGuard peers through the Xray user manager);
+- #61 (also a branch, above);
+- #58 (performance changes);
+- #55 (log fan-out).
+
+#90, #64, #58 and #55 are not assessed yet. When any of them is merged, its commits appear on `dev` and the check fails
+until they are ported or waived.
+
+## Third-party upstreams
+
+The node image also builds four third-party upstreams. U6 (2026-09-24) found two HIGH Xray fixes that had shipped
+upstream months after our pin, and nothing had noticed them. The drift check therefore watches these upstreams too.
+
+### Pins
+
+The script reads every pin from the checked commit, never from a hardcoded value:
+
+| component | upstream | pin read from | pin on 2026-09-24 | line branch |
+|---|---|---|---|---|
+| `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.14` (`25a600db24f7`) | `oldstable` |
+| `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.1` (`907fec5e8e6b`) | `main` |
+| `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `c543d656a39a`) | `master` |
+
+Three rules keep the pins honest:
+
+- **sing-box.** The fork is a squashed import, so reachability cannot tell which upstream release it is based on.
+  `SINGBOX_VERSION` must always name the upstream release the fork's tree is based on.
+- **sing-quic.** The sing-box fork `replace`s sing-quic with its `third_party` copy, which makes the `require` line
+  inert, so nothing else keeps it honest. When the vendored copy is upgraded, the `require` line must be bumped to the
+  same version.
+- **mtg.** The upstream commits that the fork has merged are excluded as well. The check refuses to run if the fork
+  commit does not contain the required upstream commit.
+
+### Rules
+
+For each component the script fetches every upstream branch and tag. It fetches commit objects only
+(`--filter=tree:0`), into a temporary bare repository. It then checks three kinds of item.
+
+1. **Advisories.** It checks every published advisory of the repository
+   (`GET /repos/<owner>/<repo>/security-advisories?state=published`), plus every reviewed advisory in the GitHub
+   Advisory Database for the Go module (`GET /advisories?ecosystem=go&affects=<module>`). Withdrawn advisories are
+   skipped.
+   - The status is `FIXED` when a commit reachable from the pin names the GHSA id in its message.
+   - It is `PORTED` when an `Upstream: <GHSA id>` line names it, or when a ported upstream commit names it in its
+     message.
+   - It is `WAIVED` when the waiver file lists it, and `UNPORTED` otherwise.
+
+   The same advisory check runs for PasarGuard/node, with the fork's own history as the pin.
+2. **Security-looking commits.** This rule covers every non-merge commit that meets all three conditions:
+   - it is on the line branch, or on any branch whose tip is newer than the pin commit ("active since the pin");
+   - it is not reachable from the pin (or from the fork commit);
+   - its message matches one of the patterns below.
+
+   The patterns are case-insensitive extended regular expressions, matched against every line of the subject and the
+   body. Such a commit is `PORTED` by an `Upstream:` line, or `WAIVED`, or else `UNPORTED`.
+3. **Releases.** This rule covers every tag named `vX.Y.Z`: digits and dots, an optional leading `v`, and no
+   pre-release suffix. The tag must be created after the pin commit, and its commit must not be reachable from the pin
+   (or the fork commit). Only a waiver on the tag's commit clears it. Moving the pin past it removes it.
+
+| pattern | meant to catch |
+|---|---|
+| `GHSA-[[:alnum:]]{4}-`, `CVE-[0-9]{4}-` | advisory references, including advisories that are not published yet |
+| `security`, `vulnerab`, `exploit` | explicit security wording |
+| `panic`, `crash`, `denial[- ]of[- ]service`, `(^\|[^[:alnum:]])d?dos([^[:alnum:]]\|$)` | remote crashes and DoS |
+| `(^\|[^[:alnum:]])races?([^[:alnum:]]\|$)`, `deadlock` | data races and lock-ups |
+| `overflow`, `out[- ]of[- ]bounds`, `unbounded\|not bounded`, `untrusted`, `exhaust`, `infinite loop`, `leak` | memory safety and resource exhaustion |
+| `bypass` | access-control bypasses |
+
+Why the rules look like this:
+
+- **The QUIC-sniffer advisories are not published.** On 2026-09-24 both advisory APIs answer 404 for
+  GHSA-hrp5-2rwj-wvmv, GHSA-xqmr-94vq-cxvx and GHSA-9h6x-9r9m-5qw2. They are visible only in the messages of
+  `e5a9fb7` and `8f15190`, and rule 2 catches those.
+- **Keywords miss fixes with bland subjects.** `711aea4` (XFF trust) and the grpc bump `cecc88f` match no pattern.
+- **Squash merges hide fixes too.** Xray PR #6640 was merged as "Config: Fix some issues", and it surfaced only
+  through its branch commit "Fix some other panic". That is why every active branch is scanned, not only the line
+  branch.
+- **Releases catch what the keywords miss.** Rule 3 forces an explicit decision on every release, so a fix with a bland
+  subject still reaches a human through its release.
+- **The keyword rule is a tripwire, not an audit.** A pin move still needs a full review of its range, as U6 did.
+- **Why the active-branch cut.** A branch whose tip predates the pin cannot hold anything newer than the pin. The cut
+  depends only on the pin and the upstream state, so it is deterministic. Moving the pin shrinks it.
+
+### How a port is recognised
+
+- **Commit messages.** An `Upstream: <sha>` line (7 to 40 hex digits, prefix match) or a
+  `(cherry picked from commit <sha>)` line in any commit message of the checked history.
+- **Patch files.** An `Upstream: <sha or GHSA id>` line in the header of a `patches/*.patch` file, meaning the lines
+  before the first `diff --git`. Lines inside the diff are ignored.
+- **Expected in 0.6.21.** The Xray patch commits of 0.6.21 carry `Upstream:` lines for:
+  - `e5a9fb752e0dcc127dd1740316c853571c16052f`;
+  - `8f15190c230fe6975c9b18e31316c6bc494f3863`;
+  - `711aea4e34b0a00073d2fea6577f28a5d7c9b5eb`;
+  - the grpc 1.83.2 bump `cecc88f43cb12f7ba0517080f3d82daaa07f816a`.
+- **What happens after they merge.** `e5a9fb7` and `8f15190` turn `PORTED`. If the QUIC-sniffer advisories are
+  published later, they show as `PORTED` automatically, because those two commits name them. `711aea4` and `cecc88f`
+  are not keyword items: their trailers document the port, and their releases stay waived until the pin moves.
+- **sing-box and sing-quic.** The normal port is a pin move: the fork is rebased on a newer release, and
+  `SINGBOX_VERSION` or the `require` line is bumped. The items then become reachable from the pin and disappear. A
+  single fix cherry-picked into the fork without a pin move needs an `Upstream:` line in the node commit that moves
+  `SINGBOX_COMMIT`.
+
+### State on 2026-09-24
+
+Heads checked:
+
+- XTLS/Xray-core `main` `60e2a0c502d3f5f191d71b4343efe09c32338399`, and 56 branches active since the pin.
+- SagerNet/sing-box `oldstable` `78d3eeedacdda487eca7f2793e29973cb2f8a86c`, and 8 active branches, including
+  `stable` and `testing`.
+- SagerNet/sing-quic `main` `6a3a24d65b99587fad1d4cdd567c88f212acdd63` and `dev`.
+- 9seconds/mtg `master` `d095108334deb1512f4b7aece588f6e00f5ec428` (equal to the pin), and one PR branch.
+
+**xray**
+
+- Advisories: one, GHSA-5wf9-h793-w73c. It is waived as not applicable: a client-side `pinnedPeerCertSha256` check
+  that only matters in users' apps.
+- Security-looking commits: 29.
+  - `e5a9fb7` and `8f15190` are expected to be ported, so they are not waived.
+  - 9 are pre-squash branch commits, waived as superseded.
+  - 18 are on `main`. Most are waived as pending the v26.9.x pin move, the client-side dialer fixes included. The
+    rest are not applicable: TUN, the client-side pinned-CA check, and fixes to code that only exists after the pin.
+- Releases: `v26.4.13` to `v26.9.9`, waived as `pending: breaking (d7fa207 bans unencrypted outbounds; REALITY
+  minimum client changes); planned project with xray-config-kit`.
+
+**sing-box**
+
+- Advisories: GHSA-r5hm-mp3j-285g, fixed in 2023, waived.
+- Security-looking commits: 26.
+  - 8 on `oldstable`: pending node 0.6.22, which moves the fork to `v1.13.21` with sing-quic `v0.6.5`.
+  - 15 on the 1.14 `stable` line and 3 on the newer lines: pending the 1.14 move, or not applicable (client-app
+    daemon, macOS, services that 1.13 lacks).
+- Releases:
+  - `v1.13.15` to `v1.13.21`: pending node 0.6.22;
+  - `v1.14.0` and `v1.14.1`: pending a separate 1.14 move.
+
+**sing-quic**
+
+- Advisories: none.
+- Security-looking commits: 5, all pending node 0.6.22. They are `2afc335`, the Salamander race (u6-3), plus four
+  leak and handshake-bound fixes.
+- Releases:
+  - `v0.6.3` and `v0.6.5`: pending node 0.6.22;
+  - `v0.7.0`: pending with sing-box 1.14.
+
+**mtg**
+
+- Nothing after the pin: no commit, no advisory, no release.
+
+Five Xray items are waived as pending even though they are server-side panics or races that the pinned code has. The
+release lead decides whether 0.6.21 takes them early as patches. Their waiver reasons record why each one is
+reachable:
+
+- `8ee131c`: an HTTP proxy inbound panic on a 100-continue response. The fix applies cleanly to the pin, so any node
+  with an HTTP inbound has the bug.
+- `598bde7`: a Router API data race. At the pin, `pickRouteInternal` reads `r.rules` without the lock that `AddRule`
+  and `RemoveRule` take. The node exposes `AddRoutingRule` and `RemoveRoutingRule` through `RoutingService`
+  (`backend/xray/routing.go:60-73`).
+- `0bafca9`: stats `GetOrRegister*` races. Per-user counters are registered on first traffic while the node polls
+  `QueryStats`.
+- `a2cec2e`: a `MustNewName` panic on a domain longer than 255 bytes. It is reachable when the core resolves
+  user-requested domains through xray DNS.
+- `d878fc8`: an SS2022 inbound dispatch panic. It is reachable where an SS2022 inbound exists.
+
+`d42c981`, the DomainMatcher race, fixes code that the geodata refactor `82624bc` added after the pin, so it does not
+apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
+
+### Not covered
+
+- **SagerNet/sing, sing-vmess, grpc-go and other Go dependencies.** The sing-box fork vendors or requires them. They
+  are covered by govulncheck in CI, not by this check.
+- **Open pull requests on contributors' forks** (listed above).
+- **Pre-release tags** (alpha, beta, rc). Their commits are covered by rule 2 on the active branches.
+- **Alpine packages and the geo data** (U6 u6-6).
+
 ## The drift check
 
-`scripts/upstream_drift.sh` fetches upstream `main` and `dev` into `refs/remotes/upstream/*` and lists every
-non-merge upstream commit that is not reachable from the checked commit. Each one is classified:
+`scripts/upstream_drift.sh` runs five sections: `node`, `xray`, `sing-box`, `sing-quic` and `mtg`. The node section
+fetches every PasarGuard/node branch and tag, pruning deleted ones, into `refs/upstream-drift/node/heads/*` and
+`refs/upstream-drift/node/tags/*`. It then lists every non-merge upstream commit that is reachable from any of them and
+not from the checked commit. The label on each line names the branches that contain the commit, or its tags when no
+branch does. Each commit is classified:
 
 | status | meaning |
 |---|---|
-| `PORTED` | a fork commit has the same `git patch-id --stable` (a verbatim cherry-pick), or a commit message in the fork's history has an `Upstream: <sha>` trailer or a `(cherry picked from commit <sha>)` line naming it (7 to 40 hex digits, prefix match) |
+| `PORTED` | a fork commit has the same `git patch-id --stable` (a verbatim cherry-pick), or a commit message in the fork's history has an `Upstream: <sha>` trailer or a `(cherry picked from commit <sha>)` line naming it (7 to 40 hex digits, prefix match), or a `patches/*.patch` header has such a line |
 | `EMPTY` | the upstream commit changes no file, so there is nothing to port |
 | `WAIVED` | `.github/upstream-waivers.txt` lists it with a reason |
 | `UNPORTED` | none of the above; the check exits 1 |
 
-Merge commits are skipped because their content is the commits they merge. Upstream commits the fork already has
-through a merge, such as everything up to `v0.5.4`, are reachable and never listed.
+The third-party sections are described above, and they use the same `PORTED`, `WAIVED` and `UNPORTED` statuses, plus
+`FIXED` for an advisory already fixed in the pin. Merge commits are skipped, because their content is the commits they
+merge. Upstream commits the fork already has through a merge, such as everything up to `v0.5.4`, are reachable and
+never listed. The check exits 0 when nothing is `UNPORTED`, 1 when something is, and 2 on any error: a failed fetch, a
+failed API call, a missing pin, or a malformed waiver.
 
 ### Porting an upstream commit
 
@@ -141,25 +361,32 @@ Upstream: a69d7ed6811af281ffc01e11478638d922130f0d
 matches only when the fork's diff equals upstream's including the unchanged context lines around each change: a
 cherry-pick of `#88` onto a `go.mod` that does not yet have `#84` and `#85` applies cleanly but has a different
 patch-id. A partial port, or several upstream commits folded into one, is recognised only by the trailer. So write the
-trailer (or use `-x`) on every port, and record a partial port in the table above.
+trailer (or use `-x`) on every port, and record a partial port in the table above. For a third-party fix carried as a
+patch file, the trailer can go in the porting commit or in the patch file's header. An advisory can be named directly
+with `Upstream: GHSA-xxxx-xxxx-xxxx`.
 
 The check trusts the trailer: it does not verify how much of the upstream commit was taken, and a port that is later
 reverted still counts as ported. Reviewers check the ported part against this page.
 
-### Waiving an upstream commit
+### Waiving an upstream item
 
 Add one line to `.github/upstream-waivers.txt`:
 
 ```
-<full 40-hex upstream sha> <category>: <reason>
+<full 40-hex upstream sha or GHSA id> <category>: <reason>
 ```
 
+- The id is the full upstream commit SHA. For a release, it is the SHA of the tag's commit, which the check prints.
+  For an advisory, it is the GHSA id.
 - `category` is one of `rejected`, `superseded`, `pending` or `not-applicable`.
 - The reason is mandatory and must say why, for example
-  `superseded: the fork fixed this in <fork sha>` or `not-applicable: upstream release tooling`.
+  `superseded: the fork fixed this in <fork sha>` or `not-applicable: upstream release tooling`. A `pending` reason
+  names the release or project that will take it.
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
-  duplicate SHA.
-- When a waived commit later turns out to be ported, the check prints a note that the waiver can be removed.
+  duplicate id.
+- When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
+- On a full run, a waiver that matches nothing checked also gets a note: its branch was deleted, or the pin moved past
+  it. Remove it.
 
 ### Running it locally
 
@@ -167,12 +394,17 @@ Add one line to `.github/upstream-waivers.txt`:
 bash scripts/upstream_drift.sh
 ```
 
-- `UPSTREAM_FETCH=0` skips the fetch and uses the existing `refs/remotes/upstream/*`.
+- It needs `git`, `curl` and `jq`. The GitHub API allows 60 unauthenticated requests an hour. A full run makes at least
+  10, one pair per component. With `GITHUB_TOKEN` set, it sends that token instead.
+- `DRIFT_COMPONENTS="node xray"` runs only the named sections. The default is all five.
+- `DRIFT_CACHE=<dir>` keeps the third-party repositories and the advisory answers in `<dir>`, instead of a temporary
+  directory. `UPSTREAM_FETCH=0` then skips every fetch and API call, and it reuses the node refs and that cache.
 - `DRIFT_TARGET=<ref>` checks another branch or commit instead of `HEAD`.
-- `UPSTREAM_BRANCHES`, `UPSTREAM_URL` and `UPSTREAM_WAIVERS` override the defaults.
+- `UPSTREAM_URL`, `UPSTREAM_SLUG` and `UPSTREAM_WAIVERS` override the defaults.
 - A shallow clone is refused, because commits behind the shallow boundary are invisible, which makes the result wrong
-  in both directions. `DRIFT_ALLOW_SHALLOW=1` runs anyway with a warning, for a quick local look only.
+  in both directions. `DRIFT_ALLOW_SHALLOW=1` runs anyway with a warning, for a quick local look only. Some local
+  checkouts are shallow: if `git rev-parse --is-shallow-repository` says `true`, run the check in a full clone.
 
-The workflow runs daily, on demand, and on every pull request to `main`. It has read-only repository permissions,
-uses no secrets, and pushes nothing. A red run on a pull request that did not touch upstream code means upstream moved:
-port or waive the new commits in their own pull request.
+The workflow runs daily, on demand, and on every pull request to `main`. It has read-only repository permissions. It
+passes only the job's own read-only `GITHUB_TOKEN`, for the API rate limit, and it pushes nothing. A red run on a pull
+request that did not touch upstream code means upstream moved: port or waive the new items in their own pull request.
