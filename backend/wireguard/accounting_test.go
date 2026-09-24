@@ -31,12 +31,18 @@ type accountingKernel struct {
 	producedInterfaceRx  int64
 	producedInterfaceTx  int64
 	linkReadGate         *linkReadGate
+	mtu                  int
+	mtuSets              []int
+	failSetMTU           error
+	ops                  []string
 }
 
 type linkReadGate struct {
 	entered chan struct{}
 	release chan struct{}
 }
+
+const accountingDefaultMTU = 1420
 
 func newAccountingKernel() *accountingKernel {
 	return &accountingKernel{peers: make(map[wgtypes.Key]*wgtypes.Peer)}
@@ -46,6 +52,7 @@ func (k *accountingKernel) ConfigureDevice(_ string, cfg wgtypes.Config) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	k.ops = append(k.ops, "configure")
 	if k.failConfigure != nil {
 		return k.failConfigure
 	}
@@ -98,6 +105,69 @@ func (k *accountingKernel) producedBytes() int64 {
 }
 
 func (k *accountingKernel) Close() error {
+	k.recordOp("close")
+	return nil
+}
+
+func (k *accountingKernel) recordOp(op string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.ops = append(k.ops, op)
+}
+
+func (k *accountingKernel) takeOps() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	ops := k.ops
+	k.ops = nil
+	return ops
+}
+
+func (k *accountingKernel) setExternalMTU(mtu int) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.mtu = mtu
+}
+
+func (k *accountingKernel) currentMTU() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.mtu
+}
+
+func (k *accountingKernel) takeMTUSets() []int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	sets := k.mtuSets
+	k.mtuSets = nil
+	return sets
+}
+
+func (k *accountingKernel) failNextSetMTU(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.failSetMTU = err
+}
+
+func (k *accountingKernel) linkExists() bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.linkUp
+}
+
+func (k *accountingKernel) setLinkMTU(_ netlink.Link, mtu int) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.ops = append(k.ops, "setMTU")
+	if k.failSetMTU != nil {
+		return k.failSetMTU
+	}
+	if !k.linkUp {
+		return linkNotFoundError()
+	}
+	k.mtu = mtu
+	k.mtuSets = append(k.mtuSets, mtu)
 	return nil
 }
 
@@ -108,6 +178,10 @@ func (k *accountingKernel) resetLink(up bool) {
 	k.linkUp = up
 	k.peers = make(map[wgtypes.Key]*wgtypes.Peer)
 	k.interfaceRx, k.interfaceTx = 0, 0
+	k.mtu = 0
+	if up {
+		k.mtu = accountingDefaultMTU
+	}
 }
 
 func (k *accountingKernel) addInterfaceTraffic(t *testing.T, rx, tx int64) {
@@ -141,6 +215,7 @@ func (k *accountingKernel) gateNextLinkRead() *linkReadGate {
 
 func (k *accountingKernel) readLink(name string) (netlink.Link, error) {
 	k.mu.Lock()
+	k.ops = append(k.ops, "linkByName")
 	gate := k.linkReadGate
 	k.linkReadGate = nil
 	if !k.linkUp {
@@ -149,6 +224,7 @@ func (k *accountingKernel) readLink(name string) (netlink.Link, error) {
 	}
 	link := &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{
 		Name:       name,
+		MTU:        k.mtu,
 		Statistics: &netlink.LinkStatistics{RxBytes: uint64(k.interfaceRx), TxBytes: uint64(k.interfaceTx)},
 	}}
 	k.mu.Unlock()
@@ -163,20 +239,25 @@ func (k *accountingKernel) readLink(name string) (netlink.Link, error) {
 func (k *accountingKernel) netlinkOps() mockNetlinkOps {
 	return mockNetlinkOps{
 		parseAddrFn: func(string) (*netlink.Addr, error) {
+			k.recordOp("parseAddr")
 			return &netlink.Addr{}, nil
 		},
 		linkAddFn: func(netlink.Link) error {
+			k.recordOp("linkAdd")
 			k.resetLink(true)
 			return nil
 		},
 		linkByName: k.readLink,
 		addrAddFn: func(netlink.Link, *netlink.Addr) error {
+			k.recordOp("addrAdd")
 			return nil
 		},
 		linkSetUpFn: func(netlink.Link) error {
+			k.recordOp("linkSetUp")
 			return nil
 		},
 		linkDelFn: func(netlink.Link) error {
+			k.recordOp("linkDel")
 			k.resetLink(false)
 			return nil
 		},
@@ -185,9 +266,10 @@ func (k *accountingKernel) netlinkOps() mockNetlinkOps {
 
 func (k *accountingKernel) managerFactory(interfaceName string) (*Manager, error) {
 	return &Manager{
-		client:    k,
-		iFaceName: interfaceName,
-		nl:        k.netlinkOps(),
+		client:     k,
+		iFaceName:  interfaceName,
+		nl:         k.netlinkOps(),
+		setLinkMTU: k.setLinkMTU,
 	}, nil
 }
 
@@ -270,7 +352,7 @@ func accountingNodeConfig() *nodeconfig.Config {
 	}
 }
 
-func newAccountingBackend(t *testing.T, k *accountingKernel, interfaceName string, users []*common.User) (*WireGuard, error) {
+func accountingConfig(t *testing.T, interfaceName string, mtu *int) *Config {
 	t.Helper()
 
 	privateKey, _, err := GenerateKeyPair()
@@ -278,13 +360,37 @@ func newAccountingBackend(t *testing.T, k *accountingKernel, interfaceName strin
 		t.Fatalf("failed to generate key pair: %v", err)
 	}
 
-	wgCfg := mustNewWireGuardConfigForLifecycle(t, fmt.Sprintf(`{
+	mtuField := ""
+	if mtu != nil {
+		mtuField = fmt.Sprintf(`"mtu":%d,`, *mtu)
+	}
+	return mustNewWireGuardConfigForLifecycle(t, fmt.Sprintf(`{
 		"interface_name":"%s",
 		"listen_port":51820,
+		%s
 		"private_key":"%s"
-	}`, interfaceName, privateKey))
+	}`, interfaceName, mtuField, privateKey))
+}
 
-	wg, err := newWithManagerFactory(accountingNodeConfig(), wgCfg, users, k.managerFactory)
+func newAccountingBackend(t *testing.T, k *accountingKernel, interfaceName string, users []*common.User) (*WireGuard, error) {
+	t.Helper()
+	return newAccountingBackendWithMTU(t, k, interfaceName, users, nil)
+}
+
+func startAccountingBackendWithMTU(t *testing.T, k *accountingKernel, interfaceName string, users []*common.User, mtu *int) *WireGuard {
+	t.Helper()
+
+	wg, err := newAccountingBackendWithMTU(t, k, interfaceName, users, mtu)
+	if err != nil {
+		t.Fatalf("failed to start wireguard backend: %v", err)
+	}
+	return wg
+}
+
+func newAccountingBackendWithMTU(t *testing.T, k *accountingKernel, interfaceName string, users []*common.User, mtu *int) (*WireGuard, error) {
+	t.Helper()
+
+	wg, err := newWithManagerFactory(accountingNodeConfig(), accountingConfig(t, interfaceName, mtu), users, k.managerFactory)
 	if err != nil {
 		return nil, err
 	}
