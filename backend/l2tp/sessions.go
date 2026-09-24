@@ -38,6 +38,7 @@ type l2tpSession struct {
 	tag      string
 	pid      int
 	started  int64
+	ifindex  string
 	proc     string
 }
 
@@ -109,6 +110,8 @@ func parseSession(raw []byte, ifname string) (l2tpSession, bool) {
 		case "started":
 			s.started, _ = strconv.ParseInt(v, 10, 64)
 			hasStarted = true
+		case "ifindex":
+			s.ifindex = v
 		case "proc":
 			s.proc = v
 		}
@@ -127,6 +130,7 @@ type finalRecord struct {
 	epoch       int64
 	identity    sessionIdentity
 	hasIdentity bool
+	hasPid      bool
 }
 
 func readFinalRecords(tag string) []finalRecord {
@@ -208,7 +212,25 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 	}
 	rec.identity.ifname = rec.ifname
 	rec.hasIdentity = hasPid && hasStarted
+	rec.hasPid = hasPid && !hasStarted && rec.identity.pid > 0
 	return rec, rec.user != "" && rec.ifname != ""
+}
+
+func sessionBytes(s l2tpSession) (rx int64, tx int64, ok bool) {
+	if s.ifindex == "" {
+		rx, tx = ifaceBytes(s.ifname)
+		return rx, tx, true
+	}
+	if !sameInterface(s.ifname, s.ifindex) {
+		return 0, 0, false
+	}
+	rx, tx = ifaceBytes(s.ifname)
+	return rx, tx, sameInterface(s.ifname, s.ifindex)
+}
+
+func sameInterface(ifname, ifindex string) bool {
+	b, err := os.ReadFile(filepath.Join(sysClassNet, ifname, "ifindex"))
+	return err == nil && strings.TrimSpace(string(b)) == ifindex
 }
 
 func ifaceBytes(ifname string) (rx int64, tx int64) {

@@ -77,6 +77,7 @@ type L2TP struct {
 	cancelPoll         context.CancelFunc
 	hostRoutingCleanup func()
 	finalRemoveFailing bool
+	pppdGone           map[string]int
 }
 
 func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *config.Config) (*L2TP, error) {
@@ -120,6 +121,7 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 		cumRx:          make(map[string]int64),
 		cumTx:          make(map[string]int64),
 		onlineIPs:      make(map[string]map[string]int64),
+		pppdGone:       make(map[string]int),
 		logChan:        make(chan string, bufferSize),
 		startTime:      time.Now(),
 		updateInterval: interval,

@@ -76,6 +76,9 @@ func (o *L2TP) collectLocked() []stats.Sample {
 			}
 			continue
 		}
+		if rec.hasPid {
+			o.emitLogf("Error", "l2tp: final record %s of pppd %d carries no session start, matched by interface and pid", rec.path, rec.identity.pid)
+		}
 		base := o.counted.consume(rec)
 		growthRx[rec.user] += max(rec.rx-base.rx, 0)
 		growthTx[rec.user] += max(rec.tx-base.tx, 0)
@@ -91,7 +94,10 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		if _, gone := ended[s.ifname]; gone {
 			continue
 		}
-		rx, tx := ifaceBytes(s.ifname)
+		rx, tx, ok := sessionBytes(s)
+		if !ok {
+			continue
+		}
 		base := o.counted.get(id)
 		growthRx[s.user] += max(rx-base.rx, 0)
 		growthTx[s.user] += max(tx-base.tx, 0)
@@ -99,6 +105,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	}
 	o.counted.retain(keep)
 	o.persistCountedLocked()
+	o.sweepPppdRecordsLocked()
 
 	var samples []stats.Sample
 	now := time.Now().Unix()

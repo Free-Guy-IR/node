@@ -103,7 +103,7 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 	}
 	var found []sessionIdentity
 	for id := range c.entries {
-		if id.ifname == rec.ifname && !c.consumed[id] {
+		if id.ifname == rec.ifname && !c.consumed[id] && (!rec.hasPid || id.pid == rec.identity.pid) {
 			found = append(found, id)
 		}
 	}
@@ -253,8 +253,9 @@ func (c *countedState) save(tag string) error {
 func presentAsCounted(tag string) *countedState {
 	c := newCountedState()
 	for _, s := range readSessions(tag) {
-		rx, tx := ifaceBytes(s.ifname)
-		c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		if rx, tx, ok := sessionBytes(s); ok {
+			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		}
 	}
 	for _, rec := range readFinalRecords(tag) {
 		c.counted[filepath.Base(rec.path)] = true

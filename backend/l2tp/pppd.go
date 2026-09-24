@@ -78,3 +78,45 @@ func removeIfUnchanged(path string, seen []byte) {
 		_ = os.Remove(hidden)
 	}
 }
+
+func (o *L2TP) sweepPppdRecordsLocked() {
+	entries, err := os.ReadDir(pppdRecordDir)
+	if err != nil {
+		return
+	}
+	if o.pppdGone == nil {
+		o.pppdGone = make(map[string]int)
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		pid, err := strconv.Atoi(name)
+		if e.IsDir() || err != nil || pid <= 0 {
+			continue
+		}
+		path := filepath.Join(pppdRecordDir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		rec, _ := parseSession(raw, "")
+		if !ownsRecord(rec.tag, o.config.InboundTag) {
+			continue
+		}
+		seen[name] = struct{}{}
+		if pppdState(pid, rec.proc) != processGone {
+			delete(o.pppdGone, name)
+			continue
+		}
+		o.pppdGone[name]++
+		if o.pppdGone[name] > countedGraceRounds {
+			removeIfUnchanged(path, raw)
+			delete(o.pppdGone, name)
+		}
+	}
+	for name := range o.pppdGone {
+		if _, ok := seen[name]; !ok {
+			delete(o.pppdGone, name)
+		}
+	}
+}
