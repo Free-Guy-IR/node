@@ -142,3 +142,23 @@ func TestPppdRecordIsKeptWhileItsProcessCannotBeRead(t *testing.T) {
 		t.Fatalf("a record whose pppd cannot be read must be kept: %v", err)
 	}
 }
+
+func TestSessionPppdIsProvenByItsStartTimeWhenTheBootIDCannotBeRead(t *testing.T) {
+	e := newAcctEnv(t)
+	h := newFakeHost(t, e)
+	p := h.spawn(4100, "7")
+	h.ipUp(p)
+	s, ok := h.session(p.ifname)
+	if !ok || s.proc == "" {
+		t.Fatalf("ip-up recorded no process fingerprint: %+v", s)
+	}
+	blockProcReads(t, func(name string) bool { return name == "sys/kernel/random/boot_id" })
+	if got := pppdState(p.pid, s.proc); got != processRunning {
+		t.Fatalf("a pppd whose pid and start time match must count as running, got %v", got)
+	}
+	h.exit(p)
+	h.spawn(4100, "8")
+	if got := pppdState(p.pid, s.proc); got != processGone {
+		t.Fatalf("a new pppd on the same pid must not count as the session's pppd, got %v", got)
+	}
+}
