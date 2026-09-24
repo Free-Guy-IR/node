@@ -600,8 +600,8 @@ func (m *ManagementClient) finishDrain(timeout time.Duration) bool {
 	case <-timer.C:
 	}
 
-	m.settleOpenSessions()
 	m.Close()
+	m.settleOpenSessions()
 	return drained
 }
 
