@@ -155,7 +155,7 @@ func (o *L2TP) writeIPScripts() error {
 		"src=",
 		`if load "$f" && { [ "$p" = 0 ] || [ "${r_pid:-0}" = 0 ] || [ "$r_pid" = "$p" ]; }; then`,
 		`  src="$f"`,
-		`elif [ "$p" != 0 ] && load "$own/$p" && [ "$r_ifname" = "$IF" ]; then`,
+		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ] && load "$own/$p" && [ "$r_ifname" = "$IF" ] && [ "$r_user" = "$PEERNAME" ]; then`,
 		`  src="$own/$p"`,
 		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ]; then`,
 		`  r_user="$PEERNAME"; r_tag="` + o.config.InboundTag + `"; r_pid="$p"; r_started=; r_ifindex=; r_proc=`,

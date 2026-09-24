@@ -76,6 +76,10 @@ func removeIfUnchanged(path string, seen []byte) {
 	}
 	if err := os.Link(hidden, path); err == nil || errors.Is(err, fs.ErrExist) {
 		_ = os.Remove(hidden)
+		return
+	}
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		_ = os.Rename(hidden, path)
 	}
 }
 
