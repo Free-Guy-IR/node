@@ -66,8 +66,16 @@ func (l *interleavedLedger) read(wg *WireGuard, kind int) {
 }
 
 func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testing.T) {
+	t.Run("without mtu", func(t *testing.T) {
+		runInterleavedStarts(t, "wgacct-interleave", nil)
+	})
+	t.Run("with mtu", func(t *testing.T) {
+		runInterleavedStarts(t, "wgacct-interleave-mtu", mtuValue(1340))
+	})
+}
+
+func runInterleavedStarts(t *testing.T, iface string, mtu *int) {
 	k := newAccountingKernel()
-	iface := "wgacct-interleave"
 	keys := []string{mustGeneratePublicKey(t), mustGeneratePublicKey(t), mustGeneratePublicKey(t)}
 	users := make([]*common.User, 0, len(keys))
 	emails := make([]string, 0, len(keys))
@@ -103,7 +111,7 @@ func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testin
 	for round := range 12 {
 		if round%3 == 2 {
 			k.failNextConfigure(errors.New("configure refused"))
-			if _, err := newAccountingBackend(t, k, iface, users); err == nil {
+			if _, err := newAccountingBackendWithMTU(t, k, iface, users, mtu); err == nil {
 				t.Fatal("expected the backend start to fail")
 			}
 			k.failNextConfigure(nil)
@@ -113,7 +121,7 @@ func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testin
 		if round%2 == 1 {
 			roundUsers = users[:2]
 		}
-		wg := startAccountingBackend(t, k, iface, roundUsers)
+		wg := startAccountingBackendWithMTU(t, k, iface, roundUsers, mtu)
 		current.Store(wg)
 
 		var workers sync.WaitGroup
@@ -139,6 +147,14 @@ func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testin
 				ledger.read(wg, kind)
 			}
 		})
+		if mtu != nil {
+			workers.Go(func() {
+				for range 4 {
+					k.setExternalMTU(accountingDefaultMTU)
+					_ = wg.Restart()
+				}
+			})
+		}
 		workers.Wait()
 
 		var stopping sync.WaitGroup
@@ -146,13 +162,14 @@ func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testin
 		stopping.Go(func() { _ = wg.Restart() })
 		stopping.Go(func() { _ = wg.SyncUsers(ctx, users) })
 		stopping.Go(func() { tick(wg) })
+		stopping.Go(func() { k.setExternalMTU(accountingDefaultMTU) })
 		for kind := range 4 {
 			stopping.Go(func() { ledger.read(wg, kind) })
 		}
 		stopping.Wait()
 	}
 
-	final := startAccountingBackend(t, k, iface, users)
+	final := startAccountingBackendWithMTU(t, k, iface, users, mtu)
 	current.Store(final)
 	close(stop)
 	readers.Wait()
@@ -168,5 +185,11 @@ func TestAccountingEveryByteReportedOnceAtNodeAndUserLevelAcrossStarts(t *testin
 	producedRx, producedTx := k.producedInterfaceBytes()
 	if producedRx == 0 || ledger.uplink.Load() != producedRx || ledger.downlink.Load() != producedTx {
 		t.Fatalf("interface reads reported uplink %d downlink %d, the interface received %d and sent %d", ledger.uplink.Load(), ledger.downlink.Load(), producedRx, producedTx)
+	}
+	if mtu != nil && k.currentMTU() != *mtu {
+		t.Fatalf("the final interface runs at mtu %d, want %d", k.currentMTU(), *mtu)
+	}
+	if sets := k.takeMTUSets(); (mtu == nil) != (len(sets) == 0) {
+		t.Fatalf("mtu sets %v with mtu %v", sets, mtu)
 	}
 }
