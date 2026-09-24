@@ -8,6 +8,14 @@ on:
     branches:
       - "dev"
       - "wg"
+      - "main"
+      - "release/**"
+    tags:
+      - "v*"
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:

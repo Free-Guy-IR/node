@@ -7,12 +7,19 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
+      - "release/**"
+    tags:
+      - "v*"
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: upstream-drift-${{ github.ref }}
+  group: upstream-drift-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +37,49 @@ jobs:
           persist-credentials: false
 
       - name: Compare with every upstream branch, tag, release and advisory
+        id: drift
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/upstream_drift.sh
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/upstream-drift.log"
+          status=0
+          bash scripts/upstream_drift.sh 2>&1 | tee "$log" || status=$?
+          kind=error
+          if [ "${status}" = 0 ]; then
+            kind=clean
+          elif [ "${status}" = 1 ] && grep -Eq '^upstream-drift: [0-9]+ unported items across' "$log"; then
+            kind=unported
+          fi
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "kind=${kind}" >> "$GITHUB_OUTPUT"
+          exit "${status}"
+
+      - name: Explain why this blocks image builds and releases
+        if: failure() && steps.drift.outcome == 'failure'
+        env:
+          DRIFT_STATUS: ${{ steps.drift.outputs.status }}
+          DRIFT_KIND: ${{ steps.drift.outputs.kind }}
+          CALLER: ${{ github.workflow }}
+        run: |
+          if [ "${DRIFT_KIND}" = unported ]; then
+            title="Unported upstream items block this build"
+            body="Upstream has commits, releases or advisories that this commit neither ports nor waives (the UNPORTED lines in the previous step)."
+            fix="Port each item with an 'Upstream: <full sha or GHSA id>' line in the porting commit, or waive it in .github/upstream-waivers.txt with a category and a reason, in its own pull request."
+          else
+            title="Upstream drift check could not complete"
+            body="The drift check stopped with exit ${DRIFT_STATUS:-unknown} before it finished: a fetch, a GitHub API call, a pin, the waiver file or the script itself failed, so parity is unknown (the upstream-drift: lines in the previous step)."
+            fix="Fix the error shown there, or re-run the job if it was a transient network or API failure."
+          fi
+          block="A red drift check blocks every image build and every release upload by design: docker-build-dev, docker-build and release need this job. This run belongs to workflow '${CALLER}'."
+          fix="${fix} See docs/upstream-parity.md, section 'The drift check'."
+          echo "::error title=${title}::${body} ${block} ${fix}"
+          {
+            echo "## ${title}"
+            echo
+            echo "${body}"
+            echo
+            echo "${block}"
+            echo
+            echo "${fix}"
+          } >> "$GITHUB_STEP_SUMMARY"

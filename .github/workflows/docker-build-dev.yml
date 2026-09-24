@@ -6,14 +6,20 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
   GHCR_IMAGE: ghcr.io/free-guy-ir/node:${{ github.ref_name }}
 
 jobs:
+  tests:
+    uses: ./.github/workflows/run-tests.yml
+
+  drift:
+    uses: ./.github/workflows/upstream-drift.yml
+
   build-and-push:
+    needs: [tests, drift]
     runs-on: ubuntu-latest
     permissions:
       contents: read
