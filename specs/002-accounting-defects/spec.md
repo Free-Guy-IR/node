@@ -279,6 +279,13 @@ server-to-client amount and check the labels and that the per-user sum is unchan
   the panel) remain lost, as for every other backend; the hand-over covers the in-process Start path.
 - Historical per-user and per-node charts written before this release are inverted for WireGuard, L2TP
   and OpenVPN; they are not rewritten.
+- A node is served by one panel. The in-process accounting hand-over (L2TP, WireGuard, MTProto,
+  OpenVPN) carries the bytes not yet read by the panel across a Start to whichever panel reads next.
+  When a node is moved to another panel, at most one poll of the old panel's unread per-user bytes would
+  reach the new panel, which bills them by numeric user id. Operational rule: restart the node container
+  before moving a node to another panel; the restart empties every in-process hand-over. Follow-up (not in
+  this release): a node-side panel identity carried in gRPC metadata, with the matching bridge change, so
+  the node can refuse a hand-over to a different panel mechanically.
 - Carrying accounting across a Start for Xray and sing-box (whose counters live in the core process that
   the Start replaces) is out of scope. MTProto and OpenVPN keep their counters in the node process and,
   by a scope decision on 2026-09-23, hand their unread accounting over like L2TP and WireGuard.

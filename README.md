@@ -43,6 +43,16 @@ You can run any other subcommand for that same node with the same prefix (`node-
 
 > ⚠️ **Important:** Never reuse ports between nodes. The connection port and every core's inbound/instance ports (Xray, sing-box, OpenVPN, MTProto, ...) attached to each node must be completely unique per node.
 
+# Moving a Node to Another Panel
+
+Restart the node container before you connect it to a different panel:
+
+```bash
+node-eu-1 restart
+```
+
+Within one panel, the node carries traffic that the panel has not read yet across a core restart, so no byte is lost or billed twice. A different panel would receive that carried traffic and bill it to its own users with the same numeric ids. Restarting the container first discards it.
+
 # L2TP/IPsec
 
 The installer prepares this automatically: it loads and persists the `tun` and `ppp_generic` kernel modules,
