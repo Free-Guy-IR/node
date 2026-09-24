@@ -1,3 +1,20 @@
+HTTP inbound: fix a panic in readResponseAndHandle100Continue
+
+Upstream: 8ee131cbbba4e9ed26e62fe3900cb9fdfb06ab89
+
+diff --git a/proxy/http/server.go b/proxy/http/server.go
+index 90a07b3..0deecad 100644
+--- a/proxy/http/server.go
++++ b/proxy/http/server.go
+@@ -330,7 +330,7 @@ func readResponseAndHandle100Continue(r *bufio.Reader, req *http.Request, writer
+ 					return nil, errors.New("failed to read http 1xx response").Base(err)
+ 				}
+ 				ResponseHeader1xx = append(ResponseHeader1xx, data...)
+-				if bytes.Equal(ResponseHeader1xx[len(ResponseHeader1xx)-4:], []byte{'\r', '\n', '\r', '\n'}) {
++				if len(ResponseHeader1xx) >= 4 && bytes.Equal(ResponseHeader1xx[len(ResponseHeader1xx)-4:], []byte{'\r', '\n', '\r', '\n'}) {
+ 					break
+ 				}
+ 				if len(ResponseHeader1xx) > 1024 {
 diff --git a/proxy/http/server_test.go b/proxy/http/server_test.go
 new file mode 100644
 index 0000000..2578d53
