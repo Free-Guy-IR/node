@@ -48,8 +48,31 @@ func newCountedState() *countedState {
 	}
 }
 
-func (c *countedState) get(id sessionIdentity) countedBytes {
-	return c.entries[id]
+func (c *countedState) lookup(id sessionIdentity) (countedBytes, bool) {
+	b, ok := c.entries[id]
+	return b, ok
+}
+
+func (c *countedState) inherit(id sessionIdentity, now countedBytes) countedBytes {
+	if id.pid == 0 {
+		return countedBytes{}
+	}
+	var prev sessionIdentity
+	found := false
+	for w := range c.entries {
+		if w.ifname == id.ifname && w.pid == id.pid && w.started < id.started && (!found || w.started > prev.started) {
+			prev, found = w, true
+		}
+	}
+	if !found {
+		return countedBytes{}
+	}
+	base := c.entries[prev]
+	if now.rx < base.rx || now.tx < base.tx {
+		return countedBytes{}
+	}
+	c.raise(prev, now)
+	return base
 }
 
 func (c *countedState) set(id sessionIdentity, b countedBytes) {

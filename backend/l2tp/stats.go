@@ -98,7 +98,10 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		if !ok {
 			continue
 		}
-		base := o.counted.get(id)
+		base, known := o.counted.lookup(id)
+		if !known && s.proc == "" {
+			base = o.counted.inherit(id, countedBytes{rx: rx, tx: tx})
+		}
 		growthRx[s.user] += max(rx-base.rx, 0)
 		growthTx[s.user] += max(tx-base.tx, 0)
 		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
