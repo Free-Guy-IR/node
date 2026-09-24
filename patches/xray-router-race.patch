@@ -1,0 +1,79 @@
+diff --git a/app/router/router_race_test.go b/app/router/router_race_test.go
+new file mode 100644
+index 0000000..04834e9
+--- /dev/null
++++ b/app/router/router_race_test.go
+@@ -0,0 +1,73 @@
++package router_test
++
++import (
++	"context"
++	"fmt"
++	"sync"
++	"testing"
++
++	. "github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
++)
++
++func TestRuleAndBalancerUpdatesRaceWithRoutePicking(t *testing.T) {
++	r := new(Router)
++	common.Must(r.Init(context.Background(), &Config{
++		Rule:          []*RoutingRule{{TargetTag: &RoutingRule_Tag{Tag: "direct"}, Networks: []net.Network{net.Network_TCP}}},
++		BalancingRule: []*BalancingRule{{Tag: "base", OutboundSelector: []string{"direct"}}},
++	}, nil, &mockOutboundManager{}, nil))
++	defer r.Close()
++
++	stop := make(chan struct{})
++	var readers sync.WaitGroup
++	for range 4 {
++		readers.Add(1)
++		go func() {
++			defer readers.Done()
++			ctx := routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
++				Target: net.TCPDestination(net.DomainAddress("example.com"), 443),
++			}}))
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				route, err := r.PickRoute(ctx)
++				if err != nil {
++					t.Error(err)
++					return
++				}
++				if tag := route.GetOutboundTag(); tag != "direct" {
++					t.Errorf("picked outbound %q, want direct", tag)
++					return
++				}
++				_, _ = r.GetOverrideTarget("base")
++				_ = r.ListRule()
++			}
++		}()
++	}
++
++	for i := range 300 {
++		ruleTag := fmt.Sprintf("dynamic-%d", i)
++		config := serial.ToTypedMessage(&Config{
++			Rule:          []*RoutingRule{{RuleTag: ruleTag, TargetTag: &RoutingRule_Tag{Tag: "dynamic"}, Networks: []net.Network{net.Network_UDP}}},
++			BalancingRule: []*BalancingRule{{Tag: fmt.Sprintf("balancer-%d", i), OutboundSelector: []string{"dynamic"}}},
++		})
++		if err := r.AddRule(config, true); err != nil {
++			t.Fatal(err)
++		}
++		if err := r.SetOverrideTarget("base", "direct"); err != nil {
++			t.Fatal(err)
++		}
++		if err := r.RemoveRule(ruleTag); err != nil {
++			t.Fatal(err)
++		}
++	}
++	close(stop)
++	readers.Wait()
++}

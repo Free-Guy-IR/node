@@ -1,0 +1,29 @@
+diff --git a/app/dns/overlong_name_test.go b/app/dns/overlong_name_test.go
+new file mode 100644
+index 0000000..43bed42
+--- /dev/null
++++ b/app/dns/overlong_name_test.go
+@@ -0,0 +1,23 @@
++package dns
++
++import (
++	"fmt"
++	"strings"
++	"testing"
++
++	dns_feature "github.com/xtls/xray-core/features/dns"
++)
++
++func TestBuildReqMsgsOverlongNameDoesNotPanic(t *testing.T) {
++	label := strings.Repeat("a", 63)
++	domain := strings.Join([]string{label, label, label, label}, ".") + ".example.invalid."
++	if len(domain) <= 255 {
++		t.Fatalf("test name is %d bytes, want more than 255", len(domain))
++	}
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("building a DNS query for a %d-byte name panicked: %v", len(domain), r)
++		}
++	}()
++	_ = fmt.Sprint(buildReqMsgs(domain, dns_feature.IPOption{IPv4Enable: true, IPv6Enable: true}, func() uint16 { return 1 }, nil))
++}

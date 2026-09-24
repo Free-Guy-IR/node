@@ -1,0 +1,134 @@
+diff --git a/app/dispatcher/stats_registration_race_test.go b/app/dispatcher/stats_registration_race_test.go
+new file mode 100644
+index 0000000..ea0cafa
+--- /dev/null
++++ b/app/dispatcher/stats_registration_race_test.go
+@@ -0,0 +1,128 @@
++package dispatcher_test
++
++import (
++	"bytes"
++	"context"
++	"fmt"
++	"sync"
++	"testing"
++
++	"github.com/xtls/xray-core/app/dispatcher"
++	"github.com/xtls/xray-core/app/policy"
++	"github.com/xtls/xray-core/app/stats"
++	"github.com/xtls/xray-core/app/stats/command"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport"
++)
++
++func TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset(t *testing.T) {
++	const (
++		rounds        = 200
++		users         = 4
++		connsPerUser  = 16
++		writesPerConn = 4
++		chunk         = 1000
++		uplinkBytes   = 3000
++	)
++	ctx := context.Background()
++	for round := range rounds {
++		manager, err := stats.NewManager(ctx, &stats.Config{})
++		if err != nil {
++			t.Fatal(err)
++		}
++		policies, err := policy.New(ctx, &policy.Config{Level: map[uint32]*policy.Policy{
++			0: {Stats: &policy.Policy_Stats{UserUplink: true, UserDownlink: true, UserOnline: true}},
++		}})
++		if err != nil {
++			t.Fatal(err)
++		}
++		server := command.NewStatsServer(manager)
++
++		collected := make(map[string]int64)
++		stop := make(chan struct{})
++		polled := make(chan struct{})
++		poll := func() {
++			response, err := server.QueryStats(ctx, &command.QueryStatsRequest{Pattern: "user>>>", Reset_: true})
++			if err != nil {
++				t.Error(err)
++				return
++			}
++			for _, stat := range response.Stat {
++				collected[stat.Name] += stat.Value
++			}
++		}
++		go func() {
++			defer close(polled)
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++					poll()
++				}
++			}
++		}()
++
++		start := make(chan struct{})
++		var wg sync.WaitGroup
++		for user := range users {
++			for conn := range connsPerUser {
++				wg.Add(1)
++				go func() {
++					defer wg.Done()
++					inbound := &session.Inbound{
++						User:   &protocol.MemoryUser{Email: fmt.Sprintf("user-%d", user)},
++						Source: net.TCPDestination(net.IPAddress([]byte{127, 0, 1, byte(conn + 1)}), net.Port(40000+conn)),
++					}
++					connCtx := session.ContextWithInbound(ctx, inbound)
++					<-start
++					link := dispatcher.WrapLink(connCtx, policies, manager, &transport.Link{
++						Reader: buf.NewReader(bytes.NewReader(make([]byte, uplinkBytes))),
++						Writer: buf.Discard,
++					})
++					for range writesPerConn {
++						b := buf.New()
++						b.Extend(chunk)
++						if err := link.Writer.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
++							t.Error(err)
++							return
++						}
++					}
++					for {
++						mb, err := link.Reader.ReadMultiBuffer()
++						buf.ReleaseMulti(mb)
++						if err != nil {
++							break
++						}
++					}
++				}()
++			}
++		}
++		close(start)
++		wg.Wait()
++		close(stop)
++		<-polled
++		poll()
++
++		for user := range users {
++			prefix := fmt.Sprintf("user>>>user-%d>>>", user)
++			if got, want := collected[prefix+"traffic>>>downlink"], int64(connsPerUser*writesPerConn*chunk); got != want {
++				t.Fatalf("round %d: user-%d downlink counted %d bytes, want exactly %d", round, user, got, want)
++			}
++			if got, want := collected[prefix+"traffic>>>uplink"], int64(connsPerUser*uplinkBytes); got != want {
++				t.Fatalf("round %d: user-%d uplink counted %d bytes, want exactly %d", round, user, got, want)
++			}
++			online := manager.GetOnlineMap(prefix + "online")
++			if online == nil || online.Count() != connsPerUser {
++				count := -1
++				if online != nil {
++					count = online.Count()
++				}
++				t.Fatalf("round %d: user-%d online map holds %d IPs, want %d", round, user, count, connsPerUser)
++			}
++		}
++	}
++}

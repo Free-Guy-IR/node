@@ -1,0 +1,49 @@
+diff --git a/proxy/shadowsocks_2022/invalid_destination_test.go b/proxy/shadowsocks_2022/invalid_destination_test.go
+new file mode 100644
+index 0000000..1f2b376
+--- /dev/null
++++ b/proxy/shadowsocks_2022/invalid_destination_test.go
+@@ -0,0 +1,43 @@
++package shadowsocks_2022
++
++import (
++	"context"
++	"testing"
++
++	M "github.com/sagernet/sing/common/metadata"
++	"github.com/xtls/xray-core/app/dispatcher"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/session"
++)
++
++func TestInvalidDestinationIsRejectedWithoutPanic(t *testing.T) {
++	metadata := M.Metadata{Destination: M.Socksaddr{Fqdn: "not a domain", Port: 443}}
++	single := &Inbound{}
++	multi := &MultiUserInbound{users: []*protocol.MemoryUser{{Email: "ss2022-user"}}}
++	relay := &RelayInbound{destinations: []*RelayDestination{{Email: "ss2022-user"}}}
++	tests := []struct {
++		name   string
++		handle func(ctx context.Context) error
++	}{
++		{"single-user tcp", func(ctx context.Context) error { return single.NewConnection(ctx, nil, metadata) }},
++		{"single-user udp", func(ctx context.Context) error { return single.NewPacketConnection(ctx, nil, metadata) }},
++		{"multi-user tcp", func(ctx context.Context) error { return multi.NewConnection(ctx, nil, metadata) }},
++		{"multi-user udp", func(ctx context.Context) error { return multi.NewPacketConnection(ctx, nil, metadata) }},
++		{"relay tcp", func(ctx context.Context) error { return relay.NewConnection(ctx, nil, metadata) }},
++		{"relay udp", func(ctx context.Context) error { return relay.NewPacketConnection(ctx, nil, metadata) }},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			ctx := session.ContextWithInbound(context.Background(), &session.Inbound{})
++			ctx = session.ContextWithDispatcher(ctx, &dispatcher.DefaultDispatcher{})
++			defer func() {
++				if r := recover(); r != nil {
++					t.Fatalf("dispatching an invalid destination panicked: %v", r)
++				}
++			}()
++			if err := test.handle(ctx); err == nil {
++				t.Fatal("an invalid destination was accepted")
++			}
++		})
++	}
++}
