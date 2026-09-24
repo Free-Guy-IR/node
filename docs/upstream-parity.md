@@ -369,6 +369,21 @@ apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
   - All of these run in `make test_xray_patches`.
 - **Removal condition:** drop this patch only when upstream Xray takes the address from the trusted header's value and gates it on the peer address, or when the owner decides to accept upstream's first-entry behaviour.
 
+### FORK DEVIATION: Dockerfile.xray removed
+
+- **Upstream file:** PasarGuard/node's `Dockerfile.xray` builds the node and ships the prebuilt upstream Xray release
+  that `make install_xray` downloads through `install_core.sh`.
+- **Why the fork removed it:** no workflow builds it, and every image built from it would carry an Xray core without
+  any of the fork's Xray patches: the commander message size, session revoke, the QUIC sniffer, trusted X-Forwarded-For,
+  the trusted header, the HTTP 1xx, DNS, SS2022, stats and router fixes, and the grpc, x/crypto and x/net bumps. The
+  only supported image is `Dockerfile`, whose xray-builder stage builds the pinned commit with every patch.
+- **Upstream changes to it:** on 2026-09-24 no upstream commit outside the fork head touches `Dockerfile.xray` (checked
+  on every upstream branch and tag). A later upstream change to it is waived as `not-applicable`, citing this entry.
+- **Kept:** the Makefile's `install_xray` target, which CI uses for the stock xray, and `Dockerfile.wireguard`, which
+  has no Xray.
+- **Residual:** `.specify/memory/constitution.md` still names `Dockerfile.xray` in its 1.1.1 sync report, as a record of
+  that amendment.
+
 ## The drift check
 
 `scripts/upstream_drift.sh` runs five sections: `node`, `xray`, `sing-box`, `sing-quic` and `mtg`. The node section
