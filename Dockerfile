@@ -72,6 +72,7 @@ COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
+COPY patches/xray-router-race.patch /patches/xray-router-race.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
@@ -96,6 +97,11 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-quic-sniff.patch \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
+ && git apply --verbose /patches/xray-router-race.patch \
+ && grep -qF "rules := r.rules" app/router/router.go \
+ && grep -qF "r.rules = slices.Clip(r.rules)" app/router/router.go \
+ && grep -qF "func (r *Router) balancer(tag string) (*Balancer, bool) {" app/router/router.go \
+ && ! grep -qF "r.balancers[tag]; ok" app/router/balancing.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \

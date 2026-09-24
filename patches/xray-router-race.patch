@@ -1,3 +1,138 @@
+Router: fix the routing API data race at the pin
+
+FORK DEVIATION: a minimal fix, not upstream code. Upstream fixes the same race with a larger
+refactor that does not apply to the pin. pickRouteInternal reads a snapshot of the rules taken
+under a read lock, ReloadRules clips the rule slice so appends never write into a published
+snapshot, and balancer lookups take the same lock.
+
+diff --git a/app/router/balancing.go b/app/router/balancing.go
+index 5f8cb1c..ea6cc51 100644
+--- a/app/router/balancing.go
++++ b/app/router/balancing.go
+@@ -136,7 +136,7 @@ func (b *Balancer) SelectOutbounds() ([]string, error) {
+ 
+ // GetPrincipleTarget implements routing.BalancerPrincipleTarget
+ func (r *Router) GetPrincipleTarget(tag string) ([]string, error) {
+-	if b, ok := r.balancers[tag]; ok {
++	if b, ok := r.balancer(tag); ok {
+ 		if s, ok := b.strategy.(BalancingPrincipleTarget); ok {
+ 			candidates, err := b.SelectOutbounds()
+ 			if err != nil {
+@@ -151,7 +151,7 @@ func (r *Router) GetPrincipleTarget(tag string) ([]string, error) {
+ 
+ // SetOverrideTarget implements routing.BalancerOverrider
+ func (r *Router) SetOverrideTarget(tag, target string) error {
+-	if b, ok := r.balancers[tag]; ok {
++	if b, ok := r.balancer(tag); ok {
+ 		b.override.Put(target)
+ 		return nil
+ 	}
+@@ -160,7 +160,7 @@ func (r *Router) SetOverrideTarget(tag, target string) error {
+ 
+ // GetOverrideTarget implements routing.BalancerOverrider
+ func (r *Router) GetOverrideTarget(tag string) (string, error) {
+-	if b, ok := r.balancers[tag]; ok {
++	if b, ok := r.balancer(tag); ok {
+ 		return b.override.Get(), nil
+ 	}
+ 	return "", errors.New("cannot find tag")
+diff --git a/app/router/balancing_override.go b/app/router/balancing_override.go
+index 96c0aea..cb960b3 100644
+--- a/app/router/balancing_override.go
++++ b/app/router/balancing_override.go
+@@ -7,14 +7,8 @@ import (
+ )
+ 
+ func (r *Router) OverrideBalancer(balancer string, target string) error {
+-	var b *Balancer
+-	for tag, bl := range r.balancers {
+-		if tag == balancer {
+-			b = bl
+-			break
+-		}
+-	}
+-	if b == nil {
++	b, ok := r.balancer(balancer)
++	if !ok {
+ 		return errors.New("balancer '", balancer, "' not found")
+ 	}
+ 	b.override.Put(target)
+diff --git a/app/router/router.go b/app/router/router.go
+index df770a3..d1ccf78 100644
+--- a/app/router/router.go
++++ b/app/router/router.go
+@@ -2,6 +2,7 @@ package router
+ 
+ import (
+ 	"context"
++	"slices"
+ 	"sync"
+ 
+ 	"github.com/xtls/xray-core/common"
+@@ -24,7 +25,7 @@ type Router struct {
+ 	ctx        context.Context
+ 	ohm        outbound.Manager
+ 	dispatcher routing.Dispatcher
+-	mu         sync.Mutex
++	mu         sync.RWMutex
+ }
+ 
+ // Route is an implementation of routing.Route.
+@@ -134,6 +135,7 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
+ 		r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
+ 		r.rules = make([]*Rule, 0, len(config.Rule))
+ 	}
++	r.rules = slices.Clip(r.rules)
+ 	for _, rule := range config.BalancingRule {
+ 		_, found := r.balancers[rule.Tag]
+ 		if found {
+@@ -232,8 +234,8 @@ func (r *Router) RemoveRule(tag string) error {
+ 
+ // ListRule implements routing.Router
+ func (r *Router) ListRule() []routing.Route {
+-	r.mu.Lock()
+-	defer r.mu.Unlock()
++	r.mu.RLock()
++	defer r.mu.RUnlock()
+ 	ruleList := make([]routing.Route, 0)
+ 	for _, rule := range r.rules {
+ 		ruleList = append(ruleList, &Route{
+@@ -254,7 +256,11 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+ 		ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
+ 	}
+ 
+-	for _, rule := range r.rules {
++	r.mu.RLock()
++	rules := r.rules
++	r.mu.RUnlock()
++
++	for _, rule := range rules {
+ 		if rule.Apply(ctx) {
+ 			return rule, ctx, nil
+ 		}
+@@ -267,7 +273,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+ 	ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
+ 
+ 	// Try applying rules again if we have IPs.
+-	for _, rule := range r.rules {
++	for _, rule := range rules {
+ 		if rule.Apply(ctx) {
+ 			return rule, ctx, nil
+ 		}
+@@ -276,6 +282,13 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+ 	return nil, ctx, common.ErrNoClue
+ }
+ 
++func (r *Router) balancer(tag string) (*Balancer, bool) {
++	r.mu.RLock()
++	defer r.mu.RUnlock()
++	b, ok := r.balancers[tag]
++	return b, ok
++}
++
+ // Start implements common.Runnable.
+ func (r *Router) Start() error {
+ 	return nil
 diff --git a/app/router/router_race_test.go b/app/router/router_race_test.go
 new file mode 100644
 index 0000000..04834e9
