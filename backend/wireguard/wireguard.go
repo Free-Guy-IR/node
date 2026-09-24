@@ -154,6 +154,9 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	}
 
 	wg.config = wgConfig
+	if err := validateMTU(wgConfig.MTU); err != nil {
+		return nil, err
+	}
 
 	log.Println("config loaded in", time.Since(start).Seconds(), "second.")
 
@@ -184,7 +187,7 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	}
 
 	// Initialize the WireGuard interface with peers in the same kernel configure call.
-	if err = manager.InitializeWithPeers(privateKey, wgConfig.ListenPort, wgConfig.Address, startupPeerConfigs); err != nil {
+	if err = manager.initializeWithPeers(privateKey, wgConfig.ListenPort, wgConfig.Address, startupPeerConfigs, wgConfig.MTU); err != nil {
 		manager.Close()
 		return nil, fmt.Errorf("failed to initialize interface: %w", err)
 	}
@@ -289,7 +292,7 @@ func (wg *WireGuard) restartLocked() error {
 
 	wg.flushPeerStats(manager)
 
-	if err := manager.ApplyConfig(config); err != nil {
+	if err := manager.applyConfig(config, cfg.MTU); err != nil {
 		return fmt.Errorf("failed to reconfigure interface during restart: %w", err)
 	}
 
