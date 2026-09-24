@@ -14,18 +14,6 @@ import (
 
 const onlineActivityThreshold = 45 * time.Second
 
-func (wg *WireGuard) getInterfaceCounters() (int64, int64, error) {
-	wg.mu.RLock()
-	mgr := wg.manager
-	wg.mu.RUnlock()
-
-	if mgr == nil {
-		return 0, 0, errWireGuardManagerNotInitialized
-	}
-
-	return mgr.GetInterfaceStats()
-}
-
 func (wg *WireGuard) handleUserStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
 	var keys []string
 	if peer := wg.peerStore.GetByEmail(request.GetName()); peer != nil {
@@ -43,11 +31,17 @@ func (wg *WireGuard) handleUsersStats(ctx context.Context, request *common.StatR
 }
 
 func (wg *WireGuard) handleInterfaceOutboundStats(name string, reset bool) (*common.StatResponse, error) {
+	wg.mu.Lock()
+	defer wg.mu.Unlock()
+
+	if err := wg.ensureRunningWithManagerLocked(); err != nil {
+		return nil, err
+	}
 	if name == "" {
 		name = wg.config.InterfaceName
 	}
 
-	currentRx, currentTx, err := wg.getInterfaceCounters()
+	currentRx, currentTx, err := wg.manager.GetInterfaceStats()
 	if err != nil {
 		return nil, err
 	}

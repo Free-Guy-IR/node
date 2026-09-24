@@ -44,7 +44,7 @@ func TestWireGuardRestartConcurrentWithShutdown(t *testing.T) {
 				parseAddrFn: func(_ string) (*netlink.Addr, error) { return nil, nil },
 				linkAddFn:   func(_ netlink.Link) error { return nil },
 				linkByName: func(name string) (netlink.Link, error) {
-					return nil, nil
+					return &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{Name: name}}, nil
 				},
 				addrAddFn:   func(_ netlink.Link, _ *netlink.Addr) error { return nil },
 				linkSetUpFn: func(_ netlink.Link) error { return nil },
