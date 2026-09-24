@@ -458,6 +458,30 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   - On the pin, round 0 counted 56000 of 64000 bytes.
   - With the fix, 5 runs of 200 rounds pass.
 
+### FORK DEVIATION: WireGuard outbound dials through the tunnel taken under the lock (patches/xray-wireguard-client-close.patch)
+
+- **The bug at the pin:** `Process` in `proxy/wireguard/client.go` called `processWireGuard` under `h.wgLock`, then
+  read `h.net` again after unlocking it (`:210` and `:225`).
+  - `Close` runs a goroutine that closes `h.net` and sets it to nil under the lock, so an in-flight `Process` raced it:
+    a data race, and a nil `h.net` panicked.
+  - After a `Close`, the next `Process` rebuilt the device and called `netBind.Close` a second time, which panicked
+    with "close of closed channel".
+- **Upstream:** the refactor `8626311` (#6287) removed this structurally, and it does not apply to the pin. `412898f`
+  fixes a race that the refactor itself added, so it is not applicable. There is no smaller upstream fix to carry, so
+  the patch has no `Upstream:` line.
+- **The fork fix:**
+  - `processWireGuard` returns the tunnel it read under the lock, and `Process` dials through that value only;
+  - a closed handler refuses new work;
+  - `netBind.Close` tolerates a second close.
+- **Reach:** the node never configures an xray WireGuard outbound by itself. The panel can push any xray config, so a
+  WireGuard outbound (for example WARP) is possible, and the handler is closed when the core stops or restarts.
+- **Test:**
+  - `TestProcessAfterCloseDoesNotPanic`.
+  - `TestProcessWhileClosingDoesNotRaceOrPanic`: four workers run the real `Process` while the handler is closed 50
+    times, under `-race`. On the pin it reported "close of closed channel", and then a data race at `client.go:87`
+    against `:225`. With the fix, 10 runs pass under `-race`.
+- **Removal condition:** drop the patch when the pin moves past `8626311`.
+
 ### FORK DEVIATION: Dockerfile.xray removed
 
 - **Upstream file:** PasarGuard/node's `Dockerfile.xray` builds the node and ships the prebuilt upstream Xray release

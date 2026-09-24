@@ -1,3 +1,105 @@
+WireGuard outbound: dial through the tunnel taken under the lock, and survive Close
+
+FORK DEVIATION: a minimal fix, not upstream code. Upstream removed this race with the refactor
+8626311 (#6287), which does not apply to the pin. processWireGuard returns the tunnel it read
+under wgLock and Process dials through that value; a closed handler refuses new work; and
+netBind.Close tolerates a second close.
+
+diff --git a/proxy/wireguard/bind.go b/proxy/wireguard/bind.go
+index f4ec6f2..d3c050b 100644
+--- a/proxy/wireguard/bind.go
++++ b/proxy/wireguard/bind.go
+@@ -108,7 +108,11 @@ func (bind *netBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error) {
+ func (bind *netBind) Close() error {
+ 	errors.LogDebug(context.Background(), "bind closed")
+ 	if bind.closedCh != nil {
+-		close(bind.closedCh)
++		select {
++		case <-bind.closedCh:
++		default:
++			close(bind.closedCh)
++		}
+ 	}
+ 	return nil
+ }
+diff --git a/proxy/wireguard/client.go b/proxy/wireguard/client.go
+index 3030ac7..c42d18b 100644
+--- a/proxy/wireguard/client.go
++++ b/proxy/wireguard/client.go
+@@ -55,6 +55,7 @@ type Handler struct {
+ 	endpoints        []netip.Addr
+ 	hasIPv4, hasIPv6 bool
+ 	wgLock           sync.Mutex
++	closed           bool
+ }
+ 
+ // New creates a new wireguard handler.
+@@ -82,6 +83,7 @@ func (h *Handler) Close() (err error) {
+ 		h.wgLock.Lock()
+ 		defer h.wgLock.Unlock()
+ 
++		h.closed = true
+ 		if h.net != nil {
+ 			_ = h.net.Close()
+ 			h.net = nil
+@@ -91,12 +93,15 @@ func (h *Handler) Close() (err error) {
+ 	return nil
+ }
+ 
+-func (h *Handler) processWireGuard(ctx context.Context, dialer internet.Dialer) (err error) {
++func (h *Handler) processWireGuard(ctx context.Context, dialer internet.Dialer) (tunnel Tunnel, err error) {
+ 	h.wgLock.Lock()
+ 	defer h.wgLock.Unlock()
+ 
++	if h.closed {
++		return nil, errors.New("wireguard outbound is closed")
++	}
+ 	if h.bind != nil && h.bind.dialer == dialer && h.net != nil {
+-		return nil
++		return h.net, nil
+ 	}
+ 
+ 	log.Record(&log.GeneralMessage{
+@@ -137,9 +142,9 @@ func (h *Handler) processWireGuard(ctx context.Context, dialer internet.Dialer)
+ 
+ 	h.net, err = h.makeVirtualTun()
+ 	if err != nil {
+-		return errors.New("failed to create virtual tun interface").Base(err)
++		return nil, errors.New("failed to create virtual tun interface").Base(err)
+ 	}
+-	return nil
++	return h.net, nil
+ }
+ 
+ // Process implements OutboundHandler.Dispatch().
+@@ -152,7 +157,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	ob.Name = "wireguard"
+ 	ob.CanSpliceCopy = 3
+ 
+-	if err := h.processWireGuard(ctx, dialer); err != nil {
++	tunnel, err := h.processWireGuard(ctx, dialer)
++	if err != nil {
+ 		return err
+ 	}
+ 
+@@ -207,7 +213,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	var responseFunc func() error
+ 
+ 	if command == protocol.RequestCommandTCP {
+-		conn, err := h.net.DialContextTCPAddrPort(ctx, addrPort)
++		conn, err := tunnel.DialContextTCPAddrPort(ctx, addrPort)
+ 		if err != nil {
+ 			return errors.New("failed to create TCP connection").Base(err)
+ 		}
+@@ -222,7 +228,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			return buf.Copy(buf.NewReader(conn), link.Writer, buf.UpdateActivity(timer))
+ 		}
+ 	} else if command == protocol.RequestCommandUDP {
+-		conn, err := h.net.DialUDPAddrPort(netip.AddrPort{}, addrPort)
++		conn, err := tunnel.DialUDPAddrPort(netip.AddrPort{}, addrPort)
+ 		if err != nil {
+ 			return errors.New("failed to create UDP connection").Base(err)
+ 		}
 diff --git a/proxy/wireguard/process_close_race_test.go b/proxy/wireguard/process_close_race_test.go
 new file mode 100644
 index 0000000..27fddcd
