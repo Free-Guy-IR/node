@@ -84,3 +84,26 @@ func TestIPDownOfALivePppdReadsItsOwnInterfaceCounters(t *testing.T) {
 	a.poll()
 	expectUsers(t, "tail read from the interface", takeUsers(t, a), map[string]int64{"7": 500})
 }
+
+func TestIPDownOfAPppdThatNeverRecordedASessionIgnoresAStaleRecordOfItsPid(t *testing.T) {
+	e := newAcctEnv(t)
+	h := newFakeHost(t, e)
+	a := e.instance("7", "8")
+	old := h.spawn(4100, "7")
+	h.grow(old, 300, 200)
+	h.ipUp(old)
+	h.ipDown(old)
+	h.exit(old)
+	a.poll()
+	expectUsers(t, "the old pppd", takeUsers(t, a), map[string]int64{"7": 500})
+
+	reused := h.spawn(4100, "")
+	h.grow(reused, 900, 900)
+	h.run(h.scripts.ipUpScriptPath(), "IFNAME="+reused.ifname, "PPPD_PID=4100")
+	h.run(h.scripts.ipDownScriptPath(), "IFNAME="+reused.ifname, "PPPD_PID=4100", "BYTES_RCVD=900", "BYTES_SENT=900")
+	if names := finalRecordPaths(t); len(names) != 0 {
+		t.Fatalf("a pppd without a session wrote final records %v from a stale record of its pid", names)
+	}
+	a.poll()
+	expectUsers(t, "a pppd without a session", takeUsers(t, a), map[string]int64{})
+}
