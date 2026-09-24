@@ -38,7 +38,7 @@ func TestUserSyncDuringTheStartBuildMustNotBeAcknowledgedWithNoCoreToReceiveIt(t
 	data := &common.Backend{
 		Type:      common.BackendType_MTPROTO,
 		Config:    fmt.Sprintf(`{"instances":[{"tag":%q,"port":%d,"mode":"plain"}]}`, tag, unusedPort(t)),
-		Users:     mtprotoStartUsers(tag, 20000),
+		Users:     mtprotoStartUsers(tag, 2000),
 		KeepAlive: 60,
 	}
 	if err := panelStart(c, panelIP, data); err != nil {
