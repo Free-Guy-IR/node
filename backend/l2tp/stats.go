@@ -186,26 +186,25 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 	case common.StatType_UsersStat:
 		return tracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
-		o.mu.Lock()
-		totalRx, totalTx, inbound := o.totalRx, o.totalTx, o.inboundStats
-		o.mu.Unlock()
-		interfaceSampled()
-		dRx, dTx := inbound.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := o.interfaceDelta(func() *stats.InterfaceCountersTracker { return o.inboundStats }, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
 		}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
-		o.mu.Lock()
-		totalRx, totalTx, outbound := o.totalRx, o.totalTx, o.interfaceStats
-		o.mu.Unlock()
-		interfaceSampled()
-		dRx, dTx := outbound.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := o.interfaceDelta(func() *stats.InterfaceCountersTracker { return o.interfaceStats }, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
 		}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
+}
+
+func (o *L2TP) interfaceDelta(tracker func() *stats.InterfaceCountersTracker, reset bool) (int64, int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	interfaceSampled()
+	return tracker().Delta(o.totalRx, o.totalTx, reset)
 }
 
 func (o *L2TP) GetUserOnlineStats(_ context.Context, email string) (*common.OnlineStatResponse, error) {

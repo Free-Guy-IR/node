@@ -93,8 +93,8 @@ func (o *L2TP) handOverLocked() {
 		counted:        o.counted,
 	}
 	o.statsTracker = stats.New()
-	o.interfaceStats = stats.NewInterfaceCountersTracker()
-	o.inboundStats = stats.NewInterfaceCountersTracker()
+	o.interfaceStats = newInterfaceTracker()
+	o.inboundStats = newInterfaceTracker()
 	o.cumRx = make(map[string]int64)
 	o.cumTx = make(map[string]int64)
 	o.totalRx, o.totalTx = 0, 0

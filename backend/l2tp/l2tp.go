@@ -118,8 +118,8 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 		cfg:             nodeCfg,
 		users:           newUserStore(l2Config.InboundTag),
 		statsTracker:    stats.New(),
-		interfaceStats:  stats.NewInterfaceCountersTracker(),
-		inboundStats:    stats.NewInterfaceCountersTracker(),
+		interfaceStats:  newInterfaceTracker(),
+		inboundStats:    newInterfaceTracker(),
 		counted:         newCountedState(),
 		cumRx:           make(map[string]int64),
 		cumTx:           make(map[string]int64),
@@ -130,6 +130,12 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 		startTime:       time.Now(),
 		updateInterval:  interval,
 	}
+}
+
+func newInterfaceTracker() *stats.InterfaceCountersTracker {
+	t := stats.NewInterfaceCountersTracker()
+	t.CountFromZero(0, 0)
+	return t
 }
 
 func (o *L2TP) startLocked() error {
