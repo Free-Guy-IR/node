@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pasarguard/node/common"
+	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -187,32 +188,139 @@ func TestWireGuardMTUIsReappliedAtRestart(t *testing.T) {
 	expectCurrentMTU(t, k, "SyncUsers", 1500)
 }
 
+func forbiddenMTUFactory(t *testing.T, k *accountingKernel) newManagerFunc {
+	return func(interfaceName string) (*Manager, error) {
+		manager, err := k.managerFactory(interfaceName)
+		if err != nil {
+			return nil, err
+		}
+		manager.setLinkMTU = func(_ netlink.Link, mtu int) error {
+			t.Errorf("the interface mtu was set to %d for a config without an mtu", mtu)
+			return errors.New("no mtu may be set for a config without an mtu")
+		}
+		return manager, nil
+	}
+}
+
+func runLifecycleWithoutMTU(t *testing.T, k *accountingKernel, wg *WireGuard, iface string, users []*common.User, extra *common.User, wantMTU int) {
+	t.Helper()
+
+	ctx := context.Background()
+	removedExtra := accountingUserWithoutInbound(extra.GetEmail(), extra.GetProxies().GetWireguard().GetPublicKey(), 3)
+	steps := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "Restart", run: wg.Restart},
+		{name: "SyncUsers", run: func() error { return wg.SyncUsers(ctx, append(slices.Clone(users), extra)) }},
+		{name: "SyncUser", run: func() error { return wg.SyncUser(ctx, removedExtra) }},
+		{name: "UpdateUsers", run: func() error { return wg.UpdateUsers(ctx, []*common.User{extra}) }},
+		{name: "UpdateUsersAndRestart", run: func() error { return wg.UpdateUsersAndRestart(ctx, []*common.User{removedExtra}) }},
+		{name: "tick", run: func() error { tick(wg); return nil }},
+		{name: "Outbounds read", run: func() error {
+			_, err := wg.GetStats(ctx, &common.StatRequest{Type: common.StatType_Outbounds, Reset_: true})
+			return err
+		}},
+		{name: "UsersStat read", run: func() error {
+			_, err := wg.GetStats(ctx, &common.StatRequest{Type: common.StatType_UsersStat, Reset_: true})
+			return err
+		}},
+	}
+	for _, step := range steps {
+		if err := step.run(); err != nil {
+			t.Fatalf("%s failed: %v", step.name, err)
+		}
+		expectCurrentMTU(t, k, step.name, wantMTU)
+	}
+	if ops := k.takeOps(); slices.Contains(ops, "setMTU") {
+		t.Fatalf("a lifecycle without an mtu set the mtu: %q", ops)
+	}
+}
+
+func TestWireGuardConfigWithoutMTUNeverSetsTheMTU(t *testing.T) {
+	configs := map[string]string{
+		"absent": `{"interface_name":"%s","listen_port":51820,"private_key":"%s"}`,
+		"null":   `{"interface_name":"%s","listen_port":51820,"mtu":null,"private_key":"%s"}`,
+	}
+	for name, raw := range configs {
+		t.Run(name, func(t *testing.T) {
+			k := newAccountingKernel()
+			iface := "wgmtu-never"
+			users := []*common.User{accountingUser(iface, "never@example.com", mustGeneratePublicKey(t), 2)}
+			extra := accountingUser(iface, "never-extra@example.com", mustGeneratePublicKey(t), 3)
+			t.Cleanup(func() { takeAccounting(iface) })
+
+			for start := range 2 {
+				privateKey, _, err := GenerateKeyPair()
+				if err != nil {
+					t.Fatalf("failed to generate key pair: %v", err)
+				}
+				wgCfg := mustNewWireGuardConfigForLifecycle(t, fmt.Sprintf(raw, iface, privateKey))
+				if wgCfg.MTU != nil {
+					t.Fatalf("config %s parsed to mtu %d", name, *wgCfg.MTU)
+				}
+				wg, err := newWithManagerFactory(accountingNodeConfig(), wgCfg, users, forbiddenMTUFactory(t, k))
+				if err != nil {
+					t.Fatalf("start %d failed: %v", start, err)
+				}
+				expectCurrentMTU(t, k, "New", accountingDefaultMTU)
+				runLifecycleWithoutMTU(t, k, wg, iface, users, extra, accountingDefaultMTU)
+				wg.Shutdown()
+			}
+		})
+	}
+}
+
 func TestWireGuardWithoutMTULeavesAnExternallySetMTUAlone(t *testing.T) {
 	k := newAccountingKernel()
 	iface := "wgmtu-guard"
-	ctx := context.Background()
 	users := []*common.User{accountingUser(iface, "guard@example.com", mustGeneratePublicKey(t), 2)}
 	extra := accountingUser(iface, "guard-extra@example.com", mustGeneratePublicKey(t), 3)
 
-	wg := startAccountingBackend(t, k, iface, users)
+	wg, err := newWithManagerFactory(accountingNodeConfig(), accountingConfig(t, iface, nil), users, forbiddenMTUFactory(t, k))
+	if err != nil {
+		t.Fatalf("failed to start wireguard backend: %v", err)
+	}
+	t.Cleanup(func() {
+		wg.Shutdown()
+		takeAccounting(iface)
+	})
 	expectCurrentMTU(t, k, "New", accountingDefaultMTU)
+
 	k.setExternalMTU(1340)
+	runLifecycleWithoutMTU(t, k, wg, iface, users, extra, 1340)
+}
 
-	if err := wg.Restart(); err != nil {
-		t.Fatalf("Restart failed: %v", err)
-	}
-	if err := wg.SyncUsers(ctx, append(slices.Clone(users), extra)); err != nil {
-		t.Fatalf("SyncUsers failed: %v", err)
-	}
-	if err := wg.UpdateUsersAndRestart(ctx, users); err != nil {
-		t.Fatalf("UpdateUsersAndRestart failed: %v", err)
-	}
-	tick(wg)
+func TestWireGuardConfiguredMTUAndAHostGuardAtTheSameValueDoNotFight(t *testing.T) {
+	k := newAccountingKernel()
+	iface := "wgmtu-samevalue"
+	ctx := context.Background()
+	users := []*common.User{accountingUser(iface, "same@example.com", mustGeneratePublicKey(t), 2)}
+	extra := accountingUser(iface, "same-extra@example.com", mustGeneratePublicKey(t), 3)
 
-	expectMTUSets(t, k, "a lifecycle without an mtu key")
-	expectCurrentMTU(t, k, "a lifecycle without an mtu key", 1340)
+	wg := startAccountingBackendWithMTU(t, k, iface, users, mtuValue(1340))
+	expectMTUSets(t, k, "New", 1340)
+	k.takeOps()
+
+	for range 3 {
+		k.setExternalMTU(1340)
+		if err := wg.Restart(); err != nil {
+			t.Fatalf("Restart failed: %v", err)
+		}
+		if err := wg.SyncUsers(ctx, append(slices.Clone(users), extra)); err != nil {
+			t.Fatalf("SyncUsers failed: %v", err)
+		}
+		if err := wg.UpdateUsersAndRestart(ctx, users); err != nil {
+			t.Fatalf("UpdateUsersAndRestart failed: %v", err)
+		}
+		if err := wg.SyncUsers(ctx, users); err != nil {
+			t.Fatalf("SyncUsers failed: %v", err)
+		}
+	}
+	expectMTUSets(t, k, "restarts and syncs with the host guard at the same mtu")
+	expectCurrentMTU(t, k, "restarts and syncs with the host guard at the same mtu", 1340)
 	if ops := k.takeOps(); slices.Contains(ops, "setMTU") {
-		t.Fatalf("a lifecycle without an mtu key set the mtu: %q", ops)
+		t.Fatalf("the node set the mtu the host guard already set: %q", ops)
 	}
 }
 
