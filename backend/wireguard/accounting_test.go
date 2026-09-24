@@ -139,16 +139,25 @@ func (k *accountingKernel) gateNextLinkRead() *linkReadGate {
 	return gate
 }
 
-func (k *accountingKernel) passLinkReadGate() {
+func (k *accountingKernel) readLink(name string) (netlink.Link, error) {
 	k.mu.Lock()
 	gate := k.linkReadGate
 	k.linkReadGate = nil
+	if !k.linkUp {
+		k.mu.Unlock()
+		return nil, linkNotFoundError()
+	}
+	link := &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{
+		Name:       name,
+		Statistics: &netlink.LinkStatistics{RxBytes: uint64(k.interfaceRx), TxBytes: uint64(k.interfaceTx)},
+	}}
 	k.mu.Unlock()
 
 	if gate != nil {
 		close(gate.entered)
 		<-gate.release
 	}
+	return link, nil
 }
 
 func (k *accountingKernel) netlinkOps() mockNetlinkOps {
@@ -160,18 +169,7 @@ func (k *accountingKernel) netlinkOps() mockNetlinkOps {
 			k.resetLink(true)
 			return nil
 		},
-		linkByName: func(name string) (netlink.Link, error) {
-			k.passLinkReadGate()
-			k.mu.Lock()
-			defer k.mu.Unlock()
-			if !k.linkUp {
-				return nil, linkNotFoundError()
-			}
-			return &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{
-				Name:       name,
-				Statistics: &netlink.LinkStatistics{RxBytes: uint64(k.interfaceRx), TxBytes: uint64(k.interfaceTx)},
-			}}, nil
-		},
+		linkByName: k.readLink,
 		addrAddFn: func(netlink.Link, *netlink.Addr) error {
 			return nil
 		},

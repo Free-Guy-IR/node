@@ -229,6 +229,63 @@ func TestAccountingInterfaceReadInFlightDuringShutdownIsCountedOnce(t *testing.T
 	}
 }
 
+func TestAccountingInterfaceReadsSampledOutOfOrderAreCountedOnce(t *testing.T) {
+	k := newAccountingKernel()
+	iface := "wgacct-iforder"
+	users := []*common.User{accountingUser(iface, "order@example.com", mustGeneratePublicKey(t), 2)}
+	request := &common.StatRequest{Type: common.StatType_Outbounds, Reset_: true}
+
+	wg := startAccountingBackend(t, k, iface, users)
+	expectInterfaceTraffic(t, wg, iface, request, 0, 0)
+	k.addInterfaceTraffic(t, 100, 50)
+
+	read := func(into chan<- *common.StatResponse) {
+		resp, err := wg.GetStats(context.Background(), request)
+		if err != nil {
+			resp = &common.StatResponse{}
+		}
+		into <- resp
+	}
+
+	gate := k.gateNextLinkRead()
+	slow := make(chan *common.StatResponse, 1)
+	go read(slow)
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the slow interface read never reached the device")
+	}
+
+	k.addInterfaceTraffic(t, 20, 10)
+	fast := make(chan *common.StatResponse, 1)
+	go read(fast)
+	select {
+	case resp := <-fast:
+		fast <- resp
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(gate.release)
+
+	var uplink, downlink int64
+	for _, results := range []chan *common.StatResponse{slow, fast} {
+		select {
+		case resp := <-results:
+			readUplink, readDownlink := interfaceTraffic(t, resp, iface)
+			uplink += readUplink
+			downlink += readDownlink
+		case <-time.After(5 * time.Second):
+			t.Fatal("an interface read never finished")
+		}
+	}
+	lastUplink, lastDownlink := readInterfaceTraffic(t, wg, iface, request)
+	uplink += lastUplink
+	downlink += lastDownlink
+
+	if uplink != 120 || downlink != 60 {
+		t.Fatalf("interface reads reported uplink %d downlink %d, the interface received 120 and sent 60", uplink, downlink)
+	}
+}
+
 func TestAccountingInterfaceUplinkIsWhatClientsSentAcrossHandover(t *testing.T) {
 	k := newAccountingKernel()
 	iface := "wgacct-ifdir"
