@@ -74,6 +74,7 @@ COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
+COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
@@ -102,6 +103,10 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \
  && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
  && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
+ && git apply --verbose /patches/xray-stats-register-race.patch \
+ && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
+ && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
+ && ! grep -rqE "(^|[^.[:alnum:]_])stats[.]GetOrRegister(Counter|OnlineMap|Channel)[(]" app proxy features \
  && git apply --verbose /patches/xray-trusted-xff.patch \
  && grep -q "func ApplyTrustedXForwardedFor" common/protocol/http/headers.go \
  && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/websocket/hub.go \
