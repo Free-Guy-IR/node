@@ -154,6 +154,8 @@ build_xray:
 
 test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic' ./common/protocol/quic/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust' ./transport/internet/websocket/
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)

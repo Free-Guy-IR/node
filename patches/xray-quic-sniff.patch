@@ -1,0 +1,22 @@
+diff --git a/common/protocol/quic/sniff_short_initial_test.go b/common/protocol/quic/sniff_short_initial_test.go
+new file mode 100644
+index 0000000..708c61f
+--- /dev/null
++++ b/common/protocol/quic/sniff_short_initial_test.go
+@@ -0,0 +1,16 @@
++package quic
++
++import "testing"
++
++func TestSniffQUICShortInitialNoPanic(t *testing.T) {
++	packet := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00}
++	b := packet[:len(packet):len(packet)]
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("SniffQUIC panicked on a 13-byte initial packet: %v", r)
++		}
++	}()
++	if _, err := SniffQUIC(b); err == nil {
++		t.Fatal("SniffQUIC accepted a truncated initial packet")
++	}
++}

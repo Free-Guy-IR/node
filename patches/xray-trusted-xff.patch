@@ -1,0 +1,62 @@
+diff --git a/transport/internet/websocket/forged_xff_test.go b/transport/internet/websocket/forged_xff_test.go
+new file mode 100644
+index 0000000..2596768
+--- /dev/null
++++ b/transport/internet/websocket/forged_xff_test.go
+@@ -0,0 +1,56 @@
++package websocket_test
++
++import (
++	"context"
++	gonet "net"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/gorilla/websocket"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/testing/servers/tcp"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	. "github.com/xtls/xray-core/transport/internet/websocket"
++)
++
++func TestForgedXForwardedForIgnoredWithoutTrust(t *testing.T) {
++	const forged = "::1"
++	listenPort := tcp.PickPort()
++	seen := make(chan string, 1)
++	listen, err := ListenWS(context.Background(), net.LocalHostIP, listenPort, &internet.MemoryStreamConfig{
++		ProtocolName:     "websocket",
++		ProtocolSettings: &Config{Path: "ws"},
++	}, func(conn stat.Connection) {
++		seen <- conn.RemoteAddr().String()
++		conn.Close()
++	})
++	common.Must(err)
++	defer listen.Close()
++
++	header := http.Header{}
++	header.Set("X-Forwarded-For", forged)
++	c, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:"+listenPort.String()+"/ws", header)
++	if err != nil {
++		t.Fatalf("dial: %v", err)
++	}
++	defer c.Close()
++
++	select {
++	case addr := <-seen:
++		host, _, err := gonet.SplitHostPort(addr)
++		if err != nil {
++			t.Fatalf("remote address %q: %v", addr, err)
++		}
++		if host == forged {
++			t.Fatalf("server recorded the client-forged X-Forwarded-For as the source address: %s", addr)
++		}
++		if host != "127.0.0.1" {
++			t.Fatalf("unexpected source address: %s", addr)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("no connection accepted")
++	}
++}
