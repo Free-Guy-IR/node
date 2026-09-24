@@ -1,0 +1,149 @@
+diff --git a/proxy/wireguard/process_close_race_test.go b/proxy/wireguard/process_close_race_test.go
+new file mode 100644
+index 0000000..27fddcd
+--- /dev/null
++++ b/proxy/wireguard/process_close_race_test.go
+@@ -0,0 +1,143 @@
++package wireguard
++
++import (
++	"bytes"
++	"context"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/policy"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet/stat"
++)
++
++type refusingDialer struct{}
++
++func (refusingDialer) Dial(context.Context, net.Destination) (stat.Connection, error) {
++	return nil, errors.New("this test has no network")
++}
++
++func (refusingDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func (refusingDialer) SetOutboundGateway(context.Context, *session.Outbound) {}
++
++func newTestClient(t *testing.T) *Handler {
++	t.Helper()
++	conf := &DeviceConfig{
++		SecretKey: strings.Repeat("11", 32),
++		Endpoint:  []string{"10.0.0.2"},
++		Peers: []*PeerConfig{{
++			PublicKey:  strings.Repeat("22", 32),
++			Endpoint:   "127.0.0.1:51820",
++			AllowedIps: []string{"0.0.0.0/0"},
++		}},
++		Mtu:         1420,
++		IsClient:    true,
++		NoKernelTun: true,
++	}
++	endpoints, hasIPv4, hasIPv6, err := parseEndpoints(conf)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return &Handler{
++		conf:          conf,
++		policyManager: policy.DefaultManager{},
++		endpoints:     endpoints,
++		hasIPv4:       hasIPv4,
++		hasIPv6:       hasIPv6,
++	}
++}
++
++func processOnce(h *Handler) (err error, recovered any) {
++	defer func() {
++		recovered = recover()
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{
++		Target: net.UDPDestination(net.IPAddress([]byte{10, 0, 0, 1}), 53),
++	}})
++	return h.Process(ctx, &transport.Link{
++		Reader: buf.NewReader(bytes.NewReader(nil)),
++		Writer: buf.Discard,
++	}, refusingDialer{}), nil
++}
++
++func waitClosed(t *testing.T, h *Handler) {
++	t.Helper()
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		h.wgLock.Lock()
++		closed := h.net == nil
++		h.wgLock.Unlock()
++		if closed {
++			return
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("the handler never closed its tunnel")
++		}
++		time.Sleep(time.Millisecond)
++	}
++}
++
++func TestProcessAfterCloseDoesNotPanic(t *testing.T) {
++	h := newTestClient(t)
++	if _, r := processOnce(h); r != nil {
++		t.Fatalf("the first Process panicked: %v", r)
++	}
++	_ = h.Close()
++	waitClosed(t, h)
++	err, r := processOnce(h)
++	if r != nil {
++		t.Fatalf("Process after Close panicked: %v", r)
++	}
++	if err == nil {
++		t.Fatal("Process after Close was accepted")
++	}
++}
++
++func TestProcessWhileClosingDoesNotRaceOrPanic(t *testing.T) {
++	h := newTestClient(t)
++	defer h.Close()
++
++	var first sync.Once
++	var firstPanic any
++	stop := make(chan struct{})
++	var workers sync.WaitGroup
++	for range 4 {
++		workers.Add(1)
++		go func() {
++			defer workers.Done()
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				if _, r := processOnce(h); r != nil {
++					first.Do(func() {
++						firstPanic = r
++					})
++					return
++				}
++			}
++		}()
++	}
++	for range 50 {
++		time.Sleep(2 * time.Millisecond)
++		_ = h.Close()
++	}
++	close(stop)
++	workers.Wait()
++	if firstPanic != nil {
++		t.Fatalf("Process panicked while the handler was being closed: %v", firstPanic)
++	}
++}

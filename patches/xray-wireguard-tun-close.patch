@@ -1,0 +1,49 @@
+diff --git a/proxy/wireguard/gvisortun/close_in_flight_test.go b/proxy/wireguard/gvisortun/close_in_flight_test.go
+new file mode 100644
+index 0000000..10363e0
+--- /dev/null
++++ b/proxy/wireguard/gvisortun/close_in_flight_test.go
+@@ -0,0 +1,43 @@
++package gvisortun
++
++import (
++	gonet "net"
++	"net/netip"
++	"testing"
++	"time"
++)
++
++func TestCloseWithPacketInFlightDoesNotPanic(t *testing.T) {
++	for round := range 20 {
++		dev, tnet, _, err := CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.0.0.2")}, 1420, false)
++		if err != nil {
++			t.Fatal(err)
++		}
++		conn, err := tnet.DialUDPAddrPort(netip.AddrPort{}, netip.MustParseAddrPort("10.0.0.1:53"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		writing := make(chan struct{})
++		result := make(chan any, 1)
++		go func() {
++			defer func() {
++				result <- recover()
++			}()
++			close(writing)
++			_, _ = conn.WriteTo([]byte("query in flight"), &gonet.UDPAddr{IP: gonet.IPv4(10, 0, 0, 1), Port: 53})
++		}()
++		<-writing
++		time.Sleep(20 * time.Millisecond)
++		if err := dev.Close(); err != nil {
++			t.Fatal(err)
++		}
++		select {
++		case r := <-result:
++			if r != nil {
++				t.Fatalf("round %d: closing the tun with a packet in flight panicked: %v", round, r)
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatalf("round %d: the in-flight write never returned after Close", round)
++		}
++	}
++}
