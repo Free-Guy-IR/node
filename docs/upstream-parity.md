@@ -328,6 +328,37 @@ apply. `dbb1ea3` patches the WireGuard proxy's post-pin `netstack.go`.
 - **Pre-release tags** (alpha, beta, rc). Their commits are covered by rule 2 on the active branches.
 - **Alpine packages and the geo data** (U6 u6-6).
 
+## Fork deviations in the Xray build
+
+### FORK DEVIATION: trusted forwarder CIDRs and the trusted header's own value (patches/xray-xff-trusted-header.patch)
+
+- **Builds on:** upstream 711aea4e34b0a00073d2fea6577f28a5d7c9b5eb (#6309), carried as patches/xray-trusted-xff.patch. The new patch applies after it in lexical order (Makefile glob and Dockerfile).
+- **Upstream behaviour (711aea4):** when a header named in `streamSettings.sockopt.trustedXForwardedFor` is present, WebSocket, HTTPUpgrade, XHTTP (splithttp) and gRPC (Tun/TunMulti) take the client address from the FIRST `X-Forwarded-For` entry. The trusted header only gates that choice. Cloudflare appends to a client-sent `X-Forwarded-For`, so behind CF the first entry stays client-controlled. Anyone can also send the trusted header straight to the port.
+- **Pinned v26.3.27 without any XFF patch:** `sockopt.trustedXForwardedFor` is already parsed (infra/conf/transport_internet.go:1079, config.proto field 23). With the list empty, the websocket, httpupgrade and splithttp hubs honour `X-Forwarded-For` unconditionally (websocket/hub.go:68-78). gRPC honours `x-real-ip` metadata with no setting at all.
+- **Fork behaviour (this patch):**
+  - A header is trusted only when BOTH conditions hold: (a) `sockopt.trustedXForwardedFor` names a header that is present, and (b) the environment variable `XRAY_TRUSTED_FORWARDER_CIDRS` is set and the TCP peer IP is inside one of its CIDRs. IPv4-mapped IPv6 peers are unmapped first.
+  - With the variable unset or empty, no header is trusted, even when `trustedXForwardedFor` is configured, and the TCP peer is always used. This fails closed for relay and direct inbounds.
+  - Once trusted, the address comes from the trusted header's own value, for example `CF-Connecting-IP`, which Cloudflare always overwrites. The first `X-Forwarded-For` entry is never used.
+  - A value that is not exactly one valid IP (non-IP text, a comma list, or repeated header lines) falls back to the TCP peer, never to `X-Forwarded-For`. When `X-Forwarded-For` itself is the trusted key, a single-value header is accepted and a list falls back to the peer.
+  - With no trusted list, the TCP peer is used. gRPC no longer reads `x-real-ip`; that removal is already part of 711aea4.
+- **Environment parsing:**
+  - The variable is read once per process (sync.OnceValue) from `XRAY_TRUSTED_FORWARDER_CIDRS`, the xray platform env flag `xray.trusted.forwarder.cidrs`.
+  - Entries are comma-separated. Whitespace around each entry is trimmed, and empty entries between commas are ignored. A value made only of separators counts as empty, so nothing is trusted.
+  - Any entry that is not a valid CIDR makes the whole setting fail closed: no header is trusted, and exactly one error is logged ("XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured"). The core does not panic.
+  - A bare IP without a prefix length counts as invalid.
+- **Why the environment and not config:** the node starts xray with `cmd.Env = append(os.Environ(), ...)` (backend/xray/core.go:269), so the container environment reaches the core with no Xray proto or panel change. The variable is per node and applies to every inbound of that node's xray.
+- **Residuals:**
+  1. On CF-fronted inbounds that sit behind a local socat TLS terminator (the Cloudflare-fronting recipe), the TCP peer xray sees is 127.0.0.1. The CIDR check cannot tell Cloudflare from a direct client that connects to socat. Those ports must be firewalled to Cloudflare's published ranges at the host.
+  2. Rollout: every inbound that relies on `trustedXForwardedFor` today reports the TCP peer after this patch until `XRAY_TRUSTED_FORWARDER_CIDRS` is set on that node's container. For socat-fronted ports the value is 127.0.0.1/32 (see residual 1). For inbounds reached directly by Cloudflare it is Cloudflare's ranges.
+  3. `ApplyTrustedXForwardedFor` keeps its name and its upstream doc comment. The comment still says "overridden by X-Forwarded-For"; the code now takes the trusted header's value. Under the no-comment rule the comment was left untouched.
+  4. `ParseXForwardedFor` stays in common/protocol/http/headers.go (from the 711aea4 carry). No transport calls it, and the build guard fails if one does.
+- **Tests:**
+  - `testing/trustedheader` holds 14 scenarios, run in websocket, httpupgrade, splithttp, grpc/encoding (Tun and TunMulti) and common/protocol/http. Each scenario re-executes the test binary with its own `XRAY_TRUSTED_FORWARDER_CIDRS`.
+  - `TestInvalidCIDRListLogsOnce` covers 32 concurrent first uses; it passes under `-race`.
+  - The upstream `TestDialWithRemoteAddr` (ws, httpupgrade, splithttp), `TestApplyTrustedXForwardedFor` and `TestRemoteAddrFromContext` now expect the TCP peer when the variable is unset.
+  - All of these run in `make test_xray_patches`.
+- **Removal condition:** drop this patch only when upstream Xray takes the address from the trusted header's value and gates it on the peer address, or when the owner decides to accept upstream's first-entry behaviour.
+
 ## The drift check
 
 `scripts/upstream_drift.sh` runs five sections: `node`, `xray`, `sing-box`, `sing-quic` and `mtg`. The node section
