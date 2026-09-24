@@ -73,6 +73,7 @@ COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
+COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
@@ -98,6 +99,9 @@ RUN git init -q . \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
  && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
+ && git apply --verbose /patches/xray-ss2022-dispatch.patch \
+ && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
+ && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
  && git apply --verbose /patches/xray-trusted-xff.patch \
  && grep -q "func ApplyTrustedXForwardedFor" common/protocol/http/headers.go \
  && grep -q "http_proto.ApplyTrustedXForwardedFor" transport/internet/websocket/hub.go \
