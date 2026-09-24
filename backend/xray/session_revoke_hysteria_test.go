@@ -181,7 +181,20 @@ func TestRemovedUserStreamsOnAConnectionAuthenticatedBeforeAResyncAreRefused(t *
 	afterResync.waitForBytes(t, "stream after a resync of a staying user", revokeWarmupBytes)
 	closeAndDrain(t, afterResync)
 
-	if err := backend.SyncUser(ctx, withoutInbounds(victim)); err != nil {
+	rotated := &common.User{
+		Email:    victim.GetEmail(),
+		Inbounds: victim.GetInbounds(),
+		Proxies:  &common.Proxy{Hysteria: &common.Hysteria{Auth: uuid.New().String()}},
+	}
+	if err := backend.SyncUser(ctx, rotated); err != nil {
+		t.Fatalf("resync the staying victim with a rotated key: %v", err)
+	}
+
+	afterRotation := openStreamProbe(t, clientPort)
+	afterRotation.waitForBytes(t, "stream after the staying user's key was rotated", revokeWarmupBytes)
+	closeAndDrain(t, afterRotation)
+
+	if err := backend.SyncUser(ctx, withoutInbounds(rotated)); err != nil {
 		t.Fatalf("remove victim: %v", err)
 	}
 

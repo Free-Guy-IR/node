@@ -209,7 +209,7 @@ func TestSyncUserReportsAFailedRevoke(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "revoke 1.alice on b") || !strings.Contains(err.Error(), "connection reset by peer") {
 		t.Fatalf("a failed revoke was not reported: %v", err)
 	}
-	assertOperations(t, service.take(), "a:remove", "a:add", "b:revoke", "b:remove", "c:revoke", "c:remove")
+	assertOperations(t, service.take(), "b:revoke", "b:remove", "c:revoke", "c:remove")
 	if emails := clientEmails(x, "b"); len(emails) != 0 {
 		t.Fatalf("the removed user stayed in the node's desired state for b: %v", emails)
 	}

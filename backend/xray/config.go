@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -57,7 +58,22 @@ type Inbound struct {
 	clients        map[string]api.Account // Runtime-only map: email -> account (never serialized)
 }
 
+func lastEntryPerEmail(users []*common.User) []*common.User {
+	index := make(map[string]int, len(users))
+	unique := make([]*common.User, 0, len(users))
+	for _, user := range users {
+		if i, seen := index[user.GetEmail()]; seen {
+			unique[i] = user
+			continue
+		}
+		index[user.GetEmail()] = len(unique)
+		unique = append(unique, user)
+	}
+	return unique
+}
+
 func (c *Config) syncUsers(users []*common.User) {
+	users = lastEntryPerEmail(users)
 	for _, i := range c.InboundConfigs {
 		if i.exclude {
 			continue
@@ -87,7 +103,7 @@ func (c *Config) buildInboundUpdates(users []*common.User) (map[string]*Inbound,
 		}
 	}
 
-	for _, user := range users {
+	for _, user := range lastEntryPerEmail(users) {
 		settings, _ := setupUserAccount(user)
 		userInbounds := user.GetInbounds()
 		userEmail := user.GetEmail()
@@ -296,6 +312,28 @@ func (i *Inbound) updateUsers(accounts []api.Account, removeEmails []string) {
 	for _, email := range removeEmails {
 		delete(i.clients, email)
 	}
+}
+
+func (i *Inbound) hasAccount(account api.Account) bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	current, ok := i.clients[account.GetEmail()]
+	return ok && reflect.DeepEqual(current, account)
+}
+
+func (i *Inbound) changedAccounts(accounts []api.Account) []api.Account {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	changed := make([]api.Account, 0, len(accounts))
+	for _, account := range accounts {
+		current, ok := i.clients[account.GetEmail()]
+		if !ok || !reflect.DeepEqual(current, account) {
+			changed = append(changed, account)
+		}
+	}
+	return changed
 }
 
 func (i *Inbound) removeUser(email string) {
