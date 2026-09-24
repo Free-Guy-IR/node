@@ -77,6 +77,9 @@ type L2TP struct {
 	cancelPoll         context.CancelFunc
 	hostRoutingCleanup func()
 	finalRemoveFailing bool
+	finalReadFailing   bool
+	setAsideFailing    bool
+	finalUnreadable    map[string]int
 	pppdGone           map[string]int
 }
 
@@ -111,20 +114,21 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 	}
 
 	return &L2TP{
-		config:         l2Config,
-		cfg:            nodeCfg,
-		users:          newUserStore(l2Config.InboundTag),
-		statsTracker:   stats.New(),
-		interfaceStats: stats.NewInterfaceCountersTracker(),
-		inboundStats:   stats.NewInterfaceCountersTracker(),
-		counted:        newCountedState(),
-		cumRx:          make(map[string]int64),
-		cumTx:          make(map[string]int64),
-		onlineIPs:      make(map[string]map[string]int64),
-		pppdGone:       make(map[string]int),
-		logChan:        make(chan string, bufferSize),
-		startTime:      time.Now(),
-		updateInterval: interval,
+		config:          l2Config,
+		cfg:             nodeCfg,
+		users:           newUserStore(l2Config.InboundTag),
+		statsTracker:    stats.New(),
+		interfaceStats:  stats.NewInterfaceCountersTracker(),
+		inboundStats:    stats.NewInterfaceCountersTracker(),
+		counted:         newCountedState(),
+		cumRx:           make(map[string]int64),
+		cumTx:           make(map[string]int64),
+		onlineIPs:       make(map[string]map[string]int64),
+		pppdGone:        make(map[string]int),
+		finalUnreadable: make(map[string]int),
+		logChan:         make(chan string, bufferSize),
+		startTime:       time.Now(),
+		updateInterval:  interval,
 	}
 }
 

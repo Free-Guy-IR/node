@@ -146,6 +146,14 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 	return found[0], true
 }
 
+func (c *countedState) holdInterface(ifname string, keep map[sessionIdentity]struct{}) {
+	for id := range c.entries {
+		if id.ifname == ifname {
+			keep[id] = struct{}{}
+		}
+	}
+}
+
 func (c *countedState) retain(keep map[sessionIdentity]struct{}) {
 	for id := range c.entries {
 		if _, ok := keep[id]; ok {
@@ -280,8 +288,12 @@ func presentAsCounted(tag string) *countedState {
 			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
 		}
 	}
-	for _, rec := range readFinalRecords(tag) {
+	scan := scanFinalRecords(tag)
+	for _, rec := range scan.records {
 		c.counted[filepath.Base(rec.path)] = true
+	}
+	for _, u := range scan.unreadable {
+		c.counted[filepath.Base(u.path)] = true
 	}
 	c.dirty = true
 	return c

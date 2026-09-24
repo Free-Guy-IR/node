@@ -51,7 +51,8 @@ func (o *L2TP) pollLocked() {
 func (o *L2TP) collectLocked() []stats.Sample {
 	tag := o.config.InboundTag
 	sessions := readSessions(tag)
-	finals := readFinalRecords(tag)
+	scan := scanFinalRecords(tag)
+	finals := scan.records
 
 	perUser := make(map[string][]l2tpSession)
 	for _, s := range sessions {
@@ -63,6 +64,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	ended := make(map[string]struct{}, len(finals))
 
 	keep := make(map[sessionIdentity]struct{}, len(sessions))
+	o.sortOutFinalRecordsLocked(scan, keep)
 	removeFailed := false
 	for _, rec := range finals {
 		ended[rec.ifname] = struct{}{}

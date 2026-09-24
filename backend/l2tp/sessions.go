@@ -133,38 +133,60 @@ type finalRecord struct {
 	hasPid      bool
 }
 
+type unreadableFinal struct {
+	path string
+	err  error
+}
+
+type finalScan struct {
+	records    []finalRecord
+	unreadable []unreadableFinal
+	unusable   []string
+}
+
 func readFinalRecords(tag string) []finalRecord {
+	return scanFinalRecords(tag).records
+}
+
+func scanFinalRecords(tag string) finalScan {
+	var scan finalScan
 	entries, err := os.ReadDir(sessionFinalDir)
 	if err != nil {
-		return nil
+		return scan
 	}
-	out := make([]finalRecord, 0, len(entries))
+	scan.records = make([]finalRecord, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(sessionFinalDir, e.Name())
-		rec, ok := parseFinalRecord(path)
-		if !ok {
-			_ = os.Remove(path)
+		rec, usable, err := parseFinalRecord(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
 			continue
-		}
-		if !ownsRecord(rec.tag, tag) {
+		case err != nil:
+			scan.unreadable = append(scan.unreadable, unreadableFinal{path: path, err: err})
+			continue
+		case !ownsRecord(rec.tag, tag):
+			continue
+		case !usable:
+			scan.unusable = append(scan.unusable, path)
 			continue
 		}
 		rec.pid, rec.epoch = parseFinalName(e.Name())
-		out = append(out, rec)
+		scan.records = append(scan.records, rec)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].epoch != out[j].epoch {
-			return out[i].epoch < out[j].epoch
+	sort.Slice(scan.records, func(i, j int) bool {
+		a, b := scan.records[i], scan.records[j]
+		if a.epoch != b.epoch {
+			return a.epoch < b.epoch
 		}
-		if out[i].pid != out[j].pid {
-			return out[i].pid < out[j].pid
+		if a.pid != b.pid {
+			return a.pid < b.pid
 		}
-		return out[i].path < out[j].path
+		return a.path < b.path
 	})
-	return out
+	return scan
 }
 
 func parseFinalName(name string) (pid, epoch int64) {
@@ -177,14 +199,32 @@ func parseFinalName(name string) (pid, epoch int64) {
 	return pid, epoch
 }
 
-func parseFinalRecord(path string) (finalRecord, bool) {
+func finalNameInterface(name string) string {
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.Join(parts[:len(parts)-2], ".")
+}
+
+func parseFinalRecord(path string) (finalRecord, bool, error) {
 	rec := finalRecord{path: path}
 	f, err := openFinalRecord(path)
 	if err != nil {
-		return rec, false
+		return rec, false, err
 	}
 	defer f.Close()
-	var hasPid, hasStarted bool
+	var hasPid, hasStarted, hasRx, hasTx, malformed bool
+	number := func(v string, emptyIsZero bool) int64 {
+		if v == "" && emptyIsZero {
+			return 0
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			malformed = true
+		}
+		return n
+	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
@@ -199,21 +239,22 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 		case "ifname":
 			rec.ifname = v
 		case "rx":
-			rec.rx, _ = strconv.ParseInt(v, 10, 64)
+			rec.rx, hasRx = number(v, false), true
 		case "tx":
-			rec.tx, _ = strconv.ParseInt(v, 10, 64)
+			rec.tx, hasTx = number(v, false), true
 		case "pid":
-			rec.identity.pid, _ = strconv.Atoi(v)
-			hasPid = true
+			rec.identity.pid, hasPid = int(number(v, true)), true
 		case "started":
-			rec.identity.started, _ = strconv.ParseInt(v, 10, 64)
-			hasStarted = true
+			rec.identity.started, hasStarted = number(v, true), true
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return rec, false, err
 	}
 	rec.identity.ifname = rec.ifname
 	rec.hasIdentity = hasPid && hasStarted
 	rec.hasPid = hasPid && !hasStarted && rec.identity.pid > 0
-	return rec, rec.user != "" && rec.ifname != ""
+	return rec, !malformed && hasRx && hasTx && rec.user != "" && rec.ifname != "", nil
 }
 
 func sessionBytes(s l2tpSession) (rx int64, tx int64, ok bool) {
