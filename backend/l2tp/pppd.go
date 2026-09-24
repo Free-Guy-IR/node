@@ -53,10 +53,7 @@ func pppdState(pid int, fingerprint string) processState {
 		return processGone
 	}
 	current, err := readProcFile("sys/kernel/random/boot_id")
-	if err != nil {
-		return processUnknown
-	}
-	if strings.TrimSpace(string(current)) != boot {
+	if err == nil && strings.TrimSpace(string(current)) != boot {
 		return processGone
 	}
 	return processRunning
