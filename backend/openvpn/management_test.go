@@ -298,7 +298,6 @@ func TestManagementClient_EnforceAuthorized(t *testing.T) {
 	close(finish)
 }
 
-
 // TestManagementClient_ConcurrentSessionCap checks the per-user
 // concurrent-connection cap enforced in handleAuthRequest: a second CONNECT
 // for a user already at their cap must be denied, but a REAUTH on an
