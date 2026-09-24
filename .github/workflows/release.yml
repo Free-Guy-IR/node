@@ -4,8 +4,18 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
+  tests:
+    uses: ./.github/workflows/run-tests.yml
+
+  drift:
+    uses: ./.github/workflows/upstream-drift.yml
+
   build:
+    needs: [tests, drift]
     permissions:
       contents: write
     strategy:
@@ -112,8 +122,8 @@ jobs:
           else
             _NAME="${GOOS}-${GOARCH}"
           fi
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-          echo "BINARY_NAME=pasarguard-node-${_NAME}" >> $GITHUB_ENV
+          echo "ASSET_NAME=$_NAME" >> "$GITHUB_ENV"
+          echo "BINARY_NAME=pasarguard-node-${_NAME}" >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v7

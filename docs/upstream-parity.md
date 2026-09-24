@@ -553,6 +553,35 @@ bash scripts/upstream_drift.sh
   in both directions. `DRIFT_ALLOW_SHALLOW=1` runs anyway with a warning, for a quick local look only. Some local
   checkouts are shallow: if `git rev-parse --is-shallow-repository` says `true`, run the check in a full clone.
 
-The workflow runs daily, on demand, and on every pull request to `main`. It has read-only repository permissions. It
-passes only the job's own read-only `GITHUB_TOKEN`, for the API rate limit, and it pushes nothing. A red run on a pull
-request that did not touch upstream code means upstream moved: port or waive the new items in their own pull request.
+### In CI: a red drift check blocks image builds and releases
+
+`.github/workflows/upstream-drift.yml` runs the check daily, on demand, on every pull request to `main`, and on every
+push to `main`, to a `release/**` branch or of a `v*` tag. It has read-only repository permissions. It passes only the
+job's own read-only `GITHUB_TOKEN`, for the API rate limit, and it pushes nothing. A pull request from a fork gets the
+same read-only token, so the check needs no secret.
+
+`upstream-drift.yml` and `run-tests.yml` (the test suite, the MTProto fronting leg and govulncheck) are also reusable
+workflows (`workflow_call`). Every workflow that publishes something calls both of them first, on the same commit, and
+its publishing job `needs:` both:
+
+| workflow | trigger | gated job | what it publishes |
+|---|---|---|---|
+| `docker-build-dev.yml` | push to a branch whose name has no `/` | `build-and-push` | `ghcr.io/free-guy-ir/node:<branch>` |
+| `docker-build.yml` | release published, or run by hand | `build-and-push` | the signed image `:<tag>`, and `:latest` unless it is a prerelease |
+| `release.yml` | release published | `build` | the release's binary zips and their checksums |
+
+So a red drift check blocks every image build and every release upload, by design: nothing ships while an upstream
+item is neither ported nor waived, even when the commit being built did not cause the drift. A new upstream commit turns
+every build red until someone ports or waives it. The failing job ends with an annotation that names the case:
+
+- **Unported upstream items (exit 1).** Port or waive them in their own pull request. A re-run checks the same commit
+  again and stays red, so build from a commit that has the port or the waiver: push the branch again, or publish the
+  release from such a commit.
+- **The check could not complete (exit 2, or any other failure).** A fetch, an API call, a pin, the waiver file or the
+  script failed, so parity is unknown. Fix the error, or re-run the workflow if it was a transient network or API
+  failure.
+
+A red run on a pull request that did not touch upstream code means upstream moved, in the same way. A newer run of the
+same workflow for the same event and ref cancels an older drift job that is still running, and the older build then
+does not run. Only the builds are gated: the GitHub release entry itself is published by hand before the workflows
+run, so a blocked release shows up as a release without assets and without an image.

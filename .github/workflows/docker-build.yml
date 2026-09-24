@@ -11,8 +11,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -21,7 +19,14 @@ env:
   IMAGE_NAME: free-guy-ir/node
 
 jobs:
+  tests:
+    uses: ./.github/workflows/run-tests.yml
+
+  drift:
+    uses: ./.github/workflows/upstream-drift.yml
+
   build-and-push:
+    needs: [tests, drift]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -43,14 +48,18 @@ jobs:
 
       - name: Set Docker tags
         id: tags
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
-          VERSION="${{ github.event.inputs.tag }}"
-          if [ -z "$VERSION" ]; then VERSION="${{ github.ref_name }}"; fi
-          BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-            echo "DOCKER_TAGS=${BASE}:${VERSION}" >> $GITHUB_ENV
+          VERSION="${INPUT_TAG}"
+          if [ -z "$VERSION" ]; then VERSION="${REF_NAME}"; fi
+          BASE="${REGISTRY}/${IMAGE_NAME}"
+          if [ "${PRERELEASE}" = "true" ]; then
+            echo "DOCKER_TAGS=${BASE}:${VERSION}" >> "$GITHUB_ENV"
           else
-            echo "DOCKER_TAGS=${BASE}:${VERSION},${BASE}:latest" >> $GITHUB_ENV
+            echo "DOCKER_TAGS=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_ENV"
           fi
 
       - name: Build and push Docker image
