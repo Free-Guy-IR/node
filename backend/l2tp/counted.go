@@ -100,10 +100,16 @@ func (c *countedState) consume(rec finalRecord) countedBytes {
 	}
 	id, ok := c.match(rec)
 	if !ok {
-		if rec.hasIdentity {
-			c.markConsumed(rec.identity, countedBytes{rx: rec.rx, tx: rec.tx})
+		if !rec.hasIdentity {
+			return countedBytes{}
 		}
-		return countedBytes{}
+		final := countedBytes{rx: rec.rx, tx: rec.tx}
+		var base countedBytes
+		if rec.proc == "" {
+			base = c.inherit(rec.identity, final)
+		}
+		c.markConsumed(rec.identity, final)
+		return base
 	}
 	base := c.entries[id]
 	c.markConsumed(id, countedBytes{rx: rec.rx, tx: rec.tx})
@@ -144,6 +150,21 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 		return a.pid > b.pid
 	})
 	return found[0], true
+}
+
+func (c *countedState) hold(rec finalRecord, keep map[sessionIdentity]struct{}) {
+	if id, ok := c.match(rec); ok {
+		keep[id] = struct{}{}
+		return
+	}
+	if !rec.hasIdentity || rec.proc != "" || rec.identity.pid == 0 {
+		return
+	}
+	for id := range c.entries {
+		if id.ifname == rec.ifname && id.pid == rec.identity.pid {
+			keep[id] = struct{}{}
+		}
+	}
 }
 
 func (c *countedState) holdInterface(ifname string, keep map[sessionIdentity]struct{}) {

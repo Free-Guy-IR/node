@@ -131,6 +131,7 @@ type finalRecord struct {
 	identity    sessionIdentity
 	hasIdentity bool
 	hasPid      bool
+	proc        string
 }
 
 type unreadableFinal struct {
@@ -246,6 +247,8 @@ func parseFinalRecord(path string) (finalRecord, bool, error) {
 			rec.identity.pid, hasPid = int(number(v, true)), true
 		case "started":
 			rec.identity.started, hasStarted = number(v, true), true
+		case "proc":
+			rec.proc = v
 		}
 	}
 	if err := sc.Err(); err != nil {

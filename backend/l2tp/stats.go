@@ -73,9 +73,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 				o.emitLogf("Error", "l2tp: cannot remove final record %s, it is billed once it can be removed: %v", rec.path, err)
 			}
 			removeFailed = true
-			if id, ok := o.counted.match(rec); ok {
-				keep[id] = struct{}{}
-			}
+			o.counted.hold(rec, keep)
 			continue
 		}
 		if rec.hasPid {
