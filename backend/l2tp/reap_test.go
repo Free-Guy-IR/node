@@ -162,3 +162,16 @@ func TestSessionPppdIsProvenByItsStartTimeWhenTheBootIDCannotBeRead(t *testing.T
 		t.Fatalf("a new pppd on the same pid must not count as the session's pppd, got %v", got)
 	}
 }
+
+func TestPppdRecordOfAnInboundThatNoLongerRunsIsDroppedAfterTheGrace(t *testing.T) {
+	e := newAcctEnv(t)
+	a := e.instance("7")
+	record := filepath.Join(pppdRecordDir, "4100")
+	e.write(record, "user=9\ntunnel_ip=127.0.0.1\nclient=\ntag=a-removed-inbound\npid=4100\nstarted=1700000000\nifname=ppp3\nifindex=41\nproc=\n")
+	for i := 0; i <= countedGraceRounds; i++ {
+		a.poll()
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("the record of a gone pppd of any inbound must be dropped after the grace, stat err = %v", err)
+	}
+}
