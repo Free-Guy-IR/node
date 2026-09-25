@@ -1,3 +1,37 @@
+WebSocket client: avoid a panic before the real dial in delayDialConn
+
+Upstream: cd4ce973e9f6ef3a7acf9a7030927b4143f9ea47
+
+diff --git a/transport/internet/websocket/dialer.go b/transport/internet/websocket/dialer.go
+index e535490..febc353 100644
+--- a/transport/internet/websocket/dialer.go
++++ b/transport/internet/websocket/dialer.go
+@@ -162,6 +162,25 @@ type delayDialConn struct {
+ 	streamSettings *internet.MemoryStreamConfig
+ }
+ 
++// LocalAddr returns nil until the deferred WebSocket dial has completed.
++// Without this method, Go promotes LocalAddr from the embedded net.Conn; the
++// embedded interface is nil before the first Write, so the promoted call panics.
++func (d *delayDialConn) LocalAddr() net.Addr {
++	if d.Conn == nil {
++		return nil
++	}
++	return d.Conn.LocalAddr()
++}
++
++// RemoteAddr returns nil until the deferred WebSocket dial has completed.
++// See LocalAddr for why an explicit method is required here.
++func (d *delayDialConn) RemoteAddr() net.Addr {
++	if d.Conn == nil {
++		return nil
++	}
++	return d.Conn.RemoteAddr()
++}
++
+ func (d *delayDialConn) Write(b []byte) (int, error) {
+ 	if d.closed {
+ 		return 0, io.ErrClosedPipe
 diff --git a/transport/internet/websocket/early_data_addr_test.go b/transport/internet/websocket/early_data_addr_test.go
 new file mode 100644
 index 0000000..de8eb97

@@ -78,6 +78,7 @@ COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-websocket-early-data.patch /patches/xray-websocket-early-data.patch
 COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-close.patch
 COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
 COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
@@ -127,6 +128,9 @@ RUN git init -q . \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-websocket-early-data.patch \
+ && grep -qF "func (d *delayDialConn) LocalAddr() net.Addr {" transport/internet/websocket/dialer.go \
+ && grep -qF "func (d *delayDialConn) RemoteAddr() net.Addr {" transport/internet/websocket/dialer.go \
  && git apply --verbose /patches/xray-wireguard-client-close.patch \
  && grep -qF "tunnel, err := h.processWireGuard(ctx, dialer)" proxy/wireguard/client.go \
  && grep -qF "if h.closed {" proxy/wireguard/client.go \
