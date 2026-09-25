@@ -60,8 +60,80 @@ jobs:
       - name: Run regular test suite
         run: TEST_INTEGRATION=true go test ./... -v -p 1
 
-      - name: Run wireguard integration tests
-        run: sudo -E make test-integration-wireguard
+  wireguard-integration:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: auto
+      REQUIRED_TESTS: >-
+        TestIntegrationMTUWithoutKeyKeepsTheKernelDefaultAndAHostSetValue
+        TestIntegrationMTUFromConfigIsAppliedAndReapplied
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.6"
+          check-latest: true
+
+      - name: Get project dependencies
+        run: make deps
+
+      - name: Install the WireGuard tools
+        run: make install_wg
+
+      - name: Load the wireguard kernel module
+        run: |
+          if ! sudo modprobe wireguard; then
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe wireguard
+          fi
+          test -d /sys/module/wireguard
+          echo "kernel $(uname -r), wireguard module loaded"
+
+      - name: Run the real-kernel WireGuard integration tests
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/wireguard-integration.log"
+          status=0
+          sudo -E env "PATH=$PATH" make test-integration-wireguard 2>&1 | tee "$log" || status=$?
+          results="$RUNNER_TEMP/wireguard-integration.results"
+          awk '$1 == "---" && ($2 == "PASS:" || $2 == "FAIL:" || $2 == "SKIP:") { sub(":", "", $2); print $3, $2 }' "$log" > "$results"
+          {
+            echo "## WireGuard real-kernel integration tests"
+            echo
+            echo "make test-integration-wireguard exited ${status}; kernel $(uname -r)."
+            echo
+            echo "| test | result |"
+            echo "|---|---|"
+            awk '{ printf "| %s | %s |\n", $1, $2 }' "$results"
+            echo
+            echo "$(awk '$2 == "PASS"' "$results" | wc -l | tr -d ' ') passed, $(awk '$2 == "FAIL"' "$results" | wc -l | tr -d ' ') failed, $(awk '$2 == "SKIP"' "$results" | wc -l | tr -d ' ') skipped."
+          } >> "$GITHUB_STEP_SUMMARY"
+          bad=0
+          if [ ! -s "$results" ]; then
+            echo "::error title=No WireGuard integration test ran::the log has no PASS, FAIL or SKIP line"
+            bad=1
+          fi
+          while read -r name result; do
+            if [ "$result" = SKIP ]; then
+              echo "::warning title=WireGuard integration test skipped::${name}"
+            fi
+          done < "$results"
+          read -r -a required <<< "${REQUIRED_TESTS}"
+          for name in "${required[@]}"; do
+            result=$(awk -v name="$name" '$1 == name { print $2 }' "$results")
+            if [ "$result" != PASS ]; then
+              echo "::error title=Required WireGuard test did not pass::${name}: ${result:-did not run}"
+              echo "Required test ${name}: ${result:-did not run}" >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+            fi
+          done
+          if [ "$status" != 0 ] || [ "$bad" != 0 ]; then
+            exit 1
+          fi
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -107,13 +179,74 @@ jobs:
 
       - name: Run the MTProto domain-fronting leg
         run: |
+          set -o pipefail
+          {
+            echo "## MTProto domain-fronting leg"
+            echo
+            echo "| attempt | result | seconds |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          delay=15
           for attempt in 1 2 3; do
-            if make test-integration-mtproto; then
-              echo "fronting leg passed on attempt $attempt"
-              exit 0
+            log="$RUNNER_TEMP/mtproto-attempt-${attempt}.log"
+            start=$(date +%s)
+            status=0
+            make test-integration-mtproto 2>&1 | tee "$log" || status=$?
+            seconds=$(( $(date +%s) - start ))
+            if [ "$status" = 0 ] && grep -Eq '^--- PASS: TestLiveSmoke_MTProto' "$log"; then
+              result=pass
+            elif [ "$status" = 0 ]; then
+              result="no test ran"
+            else
+              result="fail (exit ${status})"
             fi
-            echo "attempt $attempt failed"
-            sleep 10
+            echo "| ${attempt} | ${result} | ${seconds} |" >> "$GITHUB_STEP_SUMMARY"
+            case "$result" in
+              pass)
+                echo "the fronting leg passed on attempt ${attempt} of 3"
+                echo "Passed on attempt ${attempt} of 3." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              "no test ran")
+                echo "::error title=MTProto fronting leg ran no test::make test-integration-mtproto passed without a PASS line for TestLiveSmoke_MTProto"
+                exit 1
+                ;;
+            esac
+            echo "::warning title=MTProto fronting attempt ${attempt} failed::${result} after ${seconds}s"
+            if [ "$attempt" != 3 ]; then
+              echo "waiting ${delay}s before attempt $((attempt + 1))"
+              sleep "$delay"
+              delay=$((delay * 3))
+            fi
           done
-          echo "the fronting leg failed three times; that is beyond network flake"
+          echo "Failed all 3 attempts." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=MTProto fronting leg failed::three attempts failed, which is beyond network flake; this blocks every image build and release"
           exit 1
+
+  workflow-policy:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.6"
+          check-latest: true
+
+      - name: Install actionlint and shellcheck
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+
+      - name: Check the workflows against the policy
+        run: bash scripts/workflow_policy.sh

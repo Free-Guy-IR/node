@@ -1,0 +1,116 @@
+name: Image
+
+on:
+  workflow_call:
+    inputs:
+      tags:
+        description: Space-separated image tags to point at the new image; empty pushes it by digest only
+        type: string
+        default: ""
+      branch:
+        description: Move the tags only while this branch still points at the built commit
+        type: string
+        default: ""
+    outputs:
+      digest:
+        description: Digest of the pushed multi-arch image
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/free-guy-ir/node
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check the requested tags
+        env:
+          TAGS: ${{ inputs.tags }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+          tags_re="^(${tag}( ${tag})*)?\$"
+          if ! [[ ${TAGS} =~ ${tags_re} ]]; then
+            echo "::error title=Invalid image tags::'${TAGS}' is not a space-separated list of image tags"
+            exit 1
+          fi
+          branch_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+          if [ -n "${BRANCH}" ] && ! [[ ${BRANCH} =~ ${branch_re} ]]; then
+            echo "::error title=Invalid branch::'${BRANCH}' is not a branch name"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push the multi-arch image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the pushed image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Point the tags at the image while the commit is still current
+        env:
+          TAGS: ${{ inputs.tags }}
+          BRANCH: ${{ inputs.branch }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "Built ${IMAGE}@${DIGEST} from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "${TAGS}" ]; then
+            echo "No tag requested; the image is pushed by digest only." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -n "${BRANCH}" ]; then
+            ref="refs/heads/${BRANCH}"
+            listing=$(git ls-remote origin "${ref}")
+            head=$(printf '%s\n' "${listing}" | awk -v ref="${ref}" '$2 == ref { print $1 }')
+            if [ "${head}" != "${GITHUB_SHA}" ]; then
+              msg="${BRANCH} is now at ${head:-nothing, the branch is gone}, not at ${GITHUB_SHA}, so the tags ${TAGS} stay where they are; this build remains available as ${IMAGE}@${DIGEST}"
+              echo "::notice title=Image tags not moved::${msg}"
+              echo "${msg}." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          read -r -a tags <<< "${TAGS}"
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "${IMAGE}:${tag}")
+          done
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          for tag in "${tags[@]}"; do
+            echo "Tagged ${IMAGE}:${tag}." >> "$GITHUB_STEP_SUMMARY"
+          done

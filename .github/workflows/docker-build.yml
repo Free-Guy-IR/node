@@ -1,86 +1,107 @@
-name: Build and Push Docker Image (On Release)
+name: Build and Push Docker Image (Manual)
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (defaults to the branch/tag name)"
+        description: "Image tag to publish instead of the ref name; only from main or a published release tag"
         required: false
 
 permissions:
   contents: read
 
-env:
-  REGISTRY: ghcr.io
-  # The fork publishes only to its own GHCR namespace. Upstream hardcodes
-  # "pasarguard/" here and also pushes to Docker Hub; neither applies to us.
-  IMAGE_NAME: free-guy-ir/node
-
 jobs:
+  tags:
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+      branch: ${{ steps.tags.outputs.branch }}
+    steps:
+      - name: Choose the image tags for this ref
+        id: tags
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_re='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+          name="${GITHUB_REF_NAME}"
+          if ! [[ ${name} =~ ${tag_re} ]]; then
+            echo "::error title=Ref name is not an image tag::'${name}' cannot be used as an image tag"
+            exit 1
+          fi
+          latest=false
+          branch=""
+          why=""
+          case "${GITHUB_REF}" in
+            refs/heads/main)
+              latest=true
+              branch=main
+              why="dispatched from main"
+              ;;
+            refs/heads/*)
+              branch="${name}"
+              why="dispatched from branch ${name}, which is not main"
+              ;;
+            refs/tags/*)
+              status=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
+                -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${name}")
+              case "${status}" in
+                200)
+                  if [ "$(jq -r .prerelease "$RUNNER_TEMP/release.json")" = false ]; then
+                    latest=true
+                    why="dispatched from the published release ${name}"
+                  else
+                    why="${name} is a prerelease"
+                  fi
+                  ;;
+                404)
+                  why="${name} has no published release"
+                  ;;
+                *)
+                  echo "::error title=Release lookup failed::GitHub returned HTTP ${status} for the release of ${name}"
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "::error title=Unsupported ref::${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
+          version="${name}"
+          if [ -n "${INPUT_TAG}" ] && [ "${INPUT_TAG}" != "${name}" ]; then
+            if [ "${latest}" != true ]; then
+              echo "::error title=Custom image tag refused::a custom tag is only allowed from main or a published release tag; ${why}, so the image can only be tagged ${name}"
+              exit 1
+            fi
+            if ! [[ ${INPUT_TAG} =~ ${tag_re} ]] || [ "${INPUT_TAG}" = latest ]; then
+              echo "::error title=Invalid image tag::'${INPUT_TAG}' is not an allowed image tag"
+              exit 1
+            fi
+            version="${INPUT_TAG}"
+          fi
+          tags="${version}"
+          if [ "${latest}" = true ]; then
+            tags="${tags} latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "Image tags: ${tags} (${why})." >> "$GITHUB_STEP_SUMMARY"
+
   tests:
     uses: ./.github/workflows/run-tests.yml
 
   drift:
     uses: ./.github/workflows/upstream-drift.yml
 
-  build-and-push:
-    needs: [tests, drift]
-    runs-on: ubuntu-latest
+  image:
+    needs: [tags, tests, drift]
     permissions:
       contents: read
       packages: write
       id-token: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Log in to the Container registry
-        uses: docker/login-action@v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Set Docker tags
-        id: tags
-        env:
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
-          PRERELEASE: ${{ github.event.release.prerelease }}
-        run: |
-          VERSION="${INPUT_TAG}"
-          if [ -z "$VERSION" ]; then VERSION="${REF_NAME}"; fi
-          BASE="${REGISTRY}/${IMAGE_NAME}"
-          if [ "${PRERELEASE}" = "true" ]; then
-            echo "DOCKER_TAGS=${BASE}:${VERSION}" >> "$GITHUB_ENV"
-          else
-            echo "DOCKER_TAGS=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build and push Docker image
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ env.DOCKER_TAGS }}
-          provenance: mode=max
-          sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign the published image
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+    uses: ./.github/workflows/image.yml
+    with:
+      tags: ${{ needs.tags.outputs.tags }}
+      branch: ${{ needs.tags.outputs.branch }}
