@@ -284,12 +284,12 @@ func waitForOnline(t *testing.T, b *Backend, tag, email string, want int) {
 	}
 }
 
-func handoverUser(email, password string, tags ...string) *common.User {
+func handoverUser(email, pw string, tags ...string) *common.User {
 	return &common.User{
 		Email:    email,
 		Inbounds: tags,
 		Proxies: &common.Proxy{
-			OpenVpn: &common.OpenVpnUser{Username: email, Password: password},
+			OpenVpn: &common.OpenVpnUser{Username: email, Password: pw},
 		},
 	}
 }
