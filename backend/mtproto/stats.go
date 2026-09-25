@@ -78,9 +78,9 @@ func newEventAccumulator(outboundRx, outboundTx, inboundRx, inboundTx *atomic.In
 
 func (a *eventAccumulator) authenticated(streamID, username, email string) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.streamUser[streamID] = username
 	a.email[username] = email
-	a.mu.Unlock()
 }
 
 func (a *eventAccumulator) traffic(streamID string, n uint, isRead bool) {
@@ -109,8 +109,8 @@ func (a *eventAccumulator) traffic(streamID string, n uint, isRead bool) {
 
 func (a *eventAccumulator) finished(streamID string) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	delete(a.streamUser, streamID)
-	a.mu.Unlock()
 }
 
 func (a *eventAccumulator) idle() bool {
@@ -208,13 +208,15 @@ func (a *eventAccumulator) snapshotLocked(tag string) []stats.Sample {
 type mtprotoEventStream struct {
 	accumulator *eventAccumulator
 	emailOf     func(username string) string
+	panics      *panicGuard
 }
 
 func newMtprotoEventStream(accumulator *eventAccumulator, emailOf func(string) string) *mtprotoEventStream {
-	return &mtprotoEventStream{accumulator: accumulator, emailOf: emailOf}
+	return &mtprotoEventStream{accumulator: accumulator, emailOf: emailOf, panics: strayPanics}
 }
 
 func (s *mtprotoEventStream) Send(_ context.Context, event mtglib.Event) {
+	defer s.panics.absorb()
 	switch e := event.(type) {
 	case mtglib.EventAuthenticated:
 		s.accumulator.authenticated(e.StreamID(), e.SecretID, s.emailOf(e.SecretID))
