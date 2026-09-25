@@ -69,6 +69,7 @@ RUN apk update && apk add --no-cache git
 WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
 COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
+COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
@@ -77,6 +78,8 @@ COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-close.patch
+COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
 COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 RUN git init -q . \
@@ -89,6 +92,8 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-dns-long-domain.patch \
  && grep -q "name, err := dnsmessage.NewName(domain)" app/dns/dnscommon.go \
  && ! grep -q "MustNewName" app/dns/dnscommon.go \
+ && git apply --verbose /patches/xray-dokodemo-unix-socket.patch \
+ && grep -qF "if dest.Port == 0 && port != \"\" {" proxy/dokodemo/dokodemo.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
  && grep -q "golang.org/x/net v0.58.0$" go.mod \
@@ -122,6 +127,13 @@ RUN git init -q . \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-wireguard-client-close.patch \
+ && grep -qF "tunnel, err := h.processWireGuard(ctx, dialer)" proxy/wireguard/client.go \
+ && grep -qF "if h.closed {" proxy/wireguard/client.go \
+ && ! grep -qE "h[.]net[.]Dial" proxy/wireguard/client.go \
+ && git apply --verbose /patches/xray-wireguard-tun-close.patch \
+ && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
+ && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \
  && git apply --verbose /patches/xray-x-net-0.59.0.patch \
  && grep -q "golang.org/x/crypto v0.57.0$" go.mod \
  && grep -q "golang.org/x/net v0.59.0$" go.mod \

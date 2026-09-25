@@ -1,0 +1,110 @@
+Tunnel inbound: fix the panic on a unix socket listener with no port
+
+Upstream: e61eeae258065b32214630c053bff33c420a516b
+
+Partial port: only the proxy/dokodemo/dokodemo.go line of upstream e61eeae. Its app/commander half adds
+a new feature (the API listening on a unix socket) and is not carried.
+
+diff --git a/proxy/dokodemo/dokodemo.go b/proxy/dokodemo/dokodemo.go
+index e56363d..2532c8c 100644
+--- a/proxy/dokodemo/dokodemo.go
++++ b/proxy/dokodemo/dokodemo.go
+@@ -87,7 +87,7 @@ func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn st
+ 				}
+ 			}
+ 		}
+-		if dest.Port == 0 {
++		if dest.Port == 0 && port != "" {
+ 			dest.Port = net.Port(common.Must2(strconv.Atoi(port)))
+ 		}
+ 		if d.portMap != nil && d.portMap[port] != "" {
+diff --git a/proxy/dokodemo/unix_listener_test.go b/proxy/dokodemo/unix_listener_test.go
+new file mode 100644
+index 0000000..3b34a07
+--- /dev/null
++++ b/proxy/dokodemo/unix_listener_test.go
+@@ -0,0 +1,84 @@
++package dokodemo_test
++
++import (
++	"context"
++	gonet "net"
++	"testing"
++
++	"github.com/xtls/xray-core/app/policy"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/proxy/dokodemo"
++	"github.com/xtls/xray-core/transport"
++)
++
++type unixSocketConn struct {
++	gonet.Conn
++}
++
++func (unixSocketConn) LocalAddr() gonet.Addr {
++	return &gonet.UnixAddr{Name: "/run/xray/tunnel.sock", Net: "unix"}
++}
++
++func (unixSocketConn) RemoteAddr() gonet.Addr {
++	return &gonet.UnixAddr{Name: "@", Net: "unix"}
++}
++
++type recordingDispatcher struct {
++	destinations chan net.Destination
++}
++
++func (*recordingDispatcher) Type() interface{} {
++	return routing.DispatcherType()
++}
++
++func (*recordingDispatcher) Start() error {
++	return nil
++}
++
++func (*recordingDispatcher) Close() error {
++	return nil
++}
++
++func (d *recordingDispatcher) Dispatch(ctx context.Context, destination net.Destination) (*transport.Link, error) {
++	d.destinations <- destination
++	return nil, errors.New("recorded")
++}
++
++func (d *recordingDispatcher) DispatchLink(ctx context.Context, destination net.Destination, link *transport.Link) error {
++	d.destinations <- destination
++	return errors.New("recorded")
++}
++
++func TestTunnelOnUnixSocketWithoutPortDoesNotPanic(t *testing.T) {
++	policies, err := policy.New(context.Background(), &policy.Config{})
++	common.Must(err)
++	door := new(dokodemo.DokodemoDoor)
++	common.Must(door.Init(&dokodemo.Config{Networks: []net.Network{net.Network_TCP}}, policies, nil))
++
++	server, client := gonet.Pipe()
++	defer server.Close()
++	defer client.Close()
++	dispatcher := &recordingDispatcher{destinations: make(chan net.Destination, 1)}
++	ctx := session.ContextWithInbound(context.Background(), &session.Inbound{})
++
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("a tunnel inbound on a unix socket panicked on an accepted connection: %v", r)
++		}
++	}()
++	if err := door.Process(ctx, net.Network_TCP, unixSocketConn{server}, dispatcher); err == nil {
++		t.Fatal("Process returned no error although the dispatcher refused the link")
++	}
++	select {
++	case destination := <-dispatcher.destinations:
++		if destination.Port != 0 || destination.Address.String() != "localhost" {
++			t.Fatalf("dispatched to %v, want localhost with no port", destination)
++		}
++	default:
++		t.Fatal("the connection was never dispatched")
++	}
++}

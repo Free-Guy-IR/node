@@ -9,7 +9,7 @@ fetch=${UPSTREAM_FETCH:-1}
 components=${DRIFT_COMPONENTS:-node xray sing-box sing-quic mtg}
 all_components='node xray sing-box sing-quic mtg'
 api_url=${GITHUB_API_URL:-https://api.github.com}
-categories='rejected|superseded|pending|not-applicable'
+categories='rejected|superseded|pending|not-applicable|allowed-merge'
 ghsa_re='GHSA(-[23456789cfghjmpqrvwx]{4}){3}'
 node_ns=refs/upstream-drift/node
 
@@ -50,16 +50,32 @@ trap 'rm -rf "$work"' EXIT
 store=${DRIFT_CACHE:-$work/store}
 mkdir -p "$store"
 
+today=${DRIFT_TODAY:-$(date -u +%Y-%m-%d)}
+printf '%s\n' "$today" | grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}' || die "DRIFT_TODAY must be YYYY-MM-DD, got: $today"
+
 : >"$work/waivers"
 : >"$work/pending"
+: >"$work/expired"
 line_no=0
 while IFS= read -r line || [ -n "$line" ]; do
   line_no=$((line_no + 1))
   printf '%s\n' "$line" | grep -Eq "^([0-9a-f]{40}|$ghsa_re) ($categories): [^[:space:]].{8,}$" ||
-    die "$waiver_file:$line_no: expected '<40-hex upstream sha or GHSA id> <rejected|superseded|pending|not-applicable>: <reason>', got: $line"
+    die "$waiver_file:$line_no: expected '<40-hex sha or GHSA id> <rejected|superseded|pending|not-applicable|allowed-merge>: <reason>', got: $line"
+  case "$line" in
+    *" pending: "*)
+      until_date=$(printf '%s\n' "$line" | sed -n 's/.*[[:space:]]until:\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/p')
+      if [ -z "$until_date" ] && ! printf '%s\n' "$line" | grep -Eq '[[:space:]]issue:[^[:space:]]+'; then
+        die "$waiver_file:$line_no: a pending waiver needs 'until:YYYY-MM-DD' (at most 30 days ahead) or 'issue:<owner>/<repo>#<number>', got: $line"
+      fi
+      if [ -n "$until_date" ] && [ "$until_date" \< "$today" ]; then
+        printf '%s %s %s\n' "${line%% *}" "$until_date" "${line#* }" >>"$work/expired"
+        continue
+      fi
+      ;;
+  esac
   printf '%s\n' "$line" >>"$work/waivers"
 done <"$waiver_file"
-duplicates=$(cut -d' ' -f1 "$work/waivers" | sort | uniq -d | tr '\n' ' ')
+duplicates=$({ cut -d' ' -f1 "$work/waivers"; cut -d' ' -f1 "$work/expired"; } | sort | uniq -d | tr '\n' ' ')
 [ -z "$duplicates" ] || die "$waiver_file lists these ids more than once: $duplicates"
 : >"$work/used"
 
@@ -204,6 +220,35 @@ check_node() {
     "$(git for-each-ref "$node_ns/tags/" | wc -l | tr -d ' ')" \
     "$(git for-each-ref --sort=-v:refname --count=1 --format='%(refname:strip=4)' "$node_ns/tags/")"
 
+  git rev-list $node_refs | sort -u >"$work/upstream-all"
+  git rev-list --parents "$target_sha" --not $node_refs |
+    awk 'NR == FNR { up[$1] = 1; next } { for (i = 2; i <= NF; i++) if ($i in up) print $1, $i }' \
+      "$work/upstream-all" - >"$work/entry-edges"
+  entries=0
+  entries_allowed=0
+  while read -r sha parent <&8; do
+    entries=$((entries + 1))
+    waiver=$(waiver_for "$sha")
+    case "$waiver" in
+      allowed-merge:*)
+        printf '%s\n' "$sha" >>"$work/used"
+        status=ALLOWED
+        detail=$waiver
+        entries_allowed=$((entries_allowed + 1))
+        ;;
+      *)
+        status=UNPORTED
+        detail="a fork commit with an upstream parent brings upstream history in without porting it: a 'git merge -s ours' of an upstream head looks exactly like this and hides every upstream commit it reaches. Check that it really carries the upstream changes, then add '$sha allowed-merge: <reason>' to $waiver_file"
+        count_unported
+        ;;
+    esac
+    printf '%-8s node entry %s (upstream parent %s) %s\n' "$status" "$(git rev-parse --short=12 "$sha")" \
+      "$(git rev-parse --short=12 "$parent")" "$(git log -1 --format=%s "$sha")"
+    printf '         %s\n' "$detail"
+  done 8<"$work/entry-edges"
+  printf 'upstream-drift: node: %d fork commits with an upstream parent: %d allowed, %d not allowed\n' \
+    "$entries" "$entries_allowed" "$((entries - entries_allowed))"
+
   : >"$work/upstream-raw"
   while IFS= read -r ref; do
     case $ref in
@@ -270,6 +315,36 @@ check_node() {
 
   printf 'upstream-drift: node: %d upstream commits outside the target: %d ported, %d empty, %d waived, %d unported\n' \
     "$total" "$ported" "$empty" "$waived" "$unported"
+
+  : >"$work/upstream-merges"
+  while IFS= read -r ref; do
+    git rev-list --merges "$ref" --not "$target_sha" >>"$work/upstream-merges"
+  done <"$work/node-refs"
+  merges=0
+  merges_own=0
+  for sha in $(sort -u "$work/upstream-merges"); do
+    merges=$((merges + 1))
+    git show --cc --format= --no-color "$sha" | grep -q . || continue
+    merges_own=$((merges_own + 1))
+    waiver=$(waiver_for "$sha")
+    [ -z "$waiver" ] || printf '%s\n' "$sha" >>"$work/used"
+    trailer=$(trailer_ref "$sha")
+    if [ -n "$trailer" ]; then
+      status=PORTED
+      detail="referenced by an Upstream/cherry-pick trailer ($trailer)"
+    elif [ -n "$waiver" ]; then
+      status=WAIVED
+      detail=$waiver
+      note_pending "$sha" "node merge" "$waiver"
+    else
+      status=UNPORTED
+      detail="upstream merge whose combined diff is not empty: it carries changes that none of its parents has (git show --cc $(git rev-parse --short=12 "$sha")), so porting its parents is not enough"
+      count_unported
+    fi
+    printf '%-8s node merge %s %s\n' "$status" "$(git rev-parse --short=12 "$sha")" "$(git log -1 --format=%s "$sha")"
+    printf '         %s\n' "$detail"
+  done
+  printf 'upstream-drift: node: %d upstream merges outside the target, %d with changes of their own\n' "$merges" "$merges_own"
   check_advisories node "$upstream_slug" "$(git show "$target_sha:go.mod" | awk '$1 == "module" { print $2; exit }')" \
     "$(git rev-parse --git-common-dir)" "$work/node-refs" "$target_sha"
 }
@@ -502,6 +577,13 @@ if [ "$components" = "$all_components" ]; then
   done 7<"$work/waivers"
 fi
 
+expired_count=$(wc -l <"$work/expired" | tr -d ' ')
+if [ "$expired_count" -gt 0 ]; then
+  printf '\n==================== EXPIRED WAIVERS (%d) ====================\n' "$expired_count"
+  printf 'these pending waivers passed their until: date on or before %s and no longer waive anything\n' "$today"
+  sort "$work/expired" | awk '{ id = $1; d = $2; $1 = ""; $2 = ""; sub(/^  /, ""); printf "EXPIRED  %s until %s\n         %s\n", id, d, $0 }'
+  printf '===============================================================\n'
+fi
 pending_count=$(wc -l <"$work/pending" | tr -d ' ')
 printf '\n==================== PENDING WAIVERS (%d) ====================\n' "$pending_count"
 printf 'waived as pending: they do not fail this job, but each one still needs a port or a decision\n'
