@@ -75,14 +75,14 @@ func rotationKinds() []rotationKind {
 		}
 	}
 	shadowsocksOutbound := func(port int, _ string, credential rotationCredential) map[string]any {
-		password := credential.secret
+		key := credential.secret
 		if credential.method == rotationSS2022 {
-			password = rotationServerKey + ":" + common.EnsureBase64Password(credential.secret, rotationSS2022)
+			key = rotationServerKey + ":" + common.EnsureBase64Password(credential.secret, rotationSS2022)
 		}
 		return map[string]any{
 			"protocol": Shadowsocks,
 			"settings": map[string]any{"servers": []any{map[string]any{
-				"address": "127.0.0.1", "port": port, "method": credential.method, "password": password,
+				"address": "127.0.0.1", "port": port, "method": credential.method, "password": key,
 			}}},
 			"streamSettings": map[string]any{"network": "tcp"},
 		}

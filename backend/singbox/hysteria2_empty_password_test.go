@@ -12,12 +12,12 @@ const emptyPasswordRawConfig = `{"inbounds": [
 	{"type": "vless", "tag": "vless-in", "users": []}
 ], "outbounds": [{"type": "direct"}]}`
 
-func hy2AndVlessUser(email, password string) *common.User {
+func hy2AndVlessUser(email, pw string) *common.User {
 	return &common.User{
 		Email:    email,
 		Inbounds: []string{"hy2-in", "vless-in"},
 		Proxies: &common.Proxy{
-			Hysteria2: &common.Hysteria2{Password: password},
+			Hysteria2: &common.Hysteria2{Password: pw},
 			Vless:     &common.Vless{Id: "0b6f2a4e-6a54-4a51-9a3a-6f1e2b1f7c11"},
 		},
 	}

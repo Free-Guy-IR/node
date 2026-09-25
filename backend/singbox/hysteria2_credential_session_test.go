@@ -328,8 +328,8 @@ func (n *hysteria2Node) generatedUsers(t *testing.T) []string {
 }
 
 func TestAnEmptyHysteria2PasswordIsNeverAccepted(t *testing.T) {
-	const bobPassword = "bob-own-hysteria2-password"
-	node := startHysteria2Node(t, []*common.User{hy2User("1", "", credentialTag), hy2User("2", bobPassword, credentialTag)})
+	const bobSecret = "bob-own-hy2-key"
+	node := startHysteria2Node(t, []*common.User{hy2User("1", "", credentialTag), hy2User("2", bobSecret, credentialTag)})
 
 	if listed := node.generatedUsers(t); !slices.Equal(listed, []string{"2"}) {
 		t.Fatalf("the config handed to sing-box lists %v on the hysteria2 inbound, want only the user with a password", listed)
@@ -339,7 +339,7 @@ func TestAnEmptyHysteria2PasswordIsNeverAccepted(t *testing.T) {
 	if moved := transferred(t, node.client(t, ""), credentialWarmup, credentialRefusal); moved != 0 {
 		t.Fatalf("a client with an empty hysteria2 password moved %d bytes (%v)", moved, node.drainTraffic(t))
 	}
-	if moved := transferred(t, node.client(t, bobPassword), credentialWarmup, 15*time.Second); moved < credentialWarmup {
+	if moved := transferred(t, node.client(t, bobSecret), credentialWarmup, 15*time.Second); moved < credentialWarmup {
 		t.Fatalf("the user with a password moved only %d bytes", moved)
 	}
 
@@ -347,7 +347,7 @@ func TestAnEmptyHysteria2PasswordIsNeverAccepted(t *testing.T) {
 		t.Fatalf("emptying the password failed the sync: %v", err)
 	}
 	time.Sleep(credentialFlushSleep)
-	if moved := transferred(t, node.client(t, bobPassword), credentialWarmup, credentialRefusal); moved != 0 {
+	if moved := transferred(t, node.client(t, bobSecret), credentialWarmup, credentialRefusal); moved != 0 {
 		t.Fatalf("the user whose password became empty still connected with the old password and moved %d bytes", moved)
 	}
 	if moved := transferred(t, node.client(t, ""), credentialWarmup, credentialRefusal); moved != 0 {
