@@ -216,7 +216,7 @@ func (i *Inbound) syncUsers(users []*common.User) {
 
 	case Hysteria:
 		for _, user := range users {
-			if user.GetProxies().GetHysteria() == nil {
+			if !hasHysteriaAuth(user) {
 				continue
 			}
 			if slices.Contains(user.Inbounds, i.Tag) {
