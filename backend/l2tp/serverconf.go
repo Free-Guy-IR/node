@@ -67,6 +67,30 @@ func (o *L2TP) writeConfig() error {
 	return nil
 }
 
+const scriptHelpers = `load() {
+  r_user=; r_tag=; r_pid=; r_started=; r_ifname=; r_ifindex=; r_proc=
+  [ -f "$1" ] || return 1
+  while IFS='=' read -r k v; do
+    case "$k" in
+      user) r_user="$v" ;;
+      tag) r_tag="$v" ;;
+      pid) r_pid="$v" ;;
+      started) r_started="$v" ;;
+      ifname) r_ifname="$v" ;;
+      ifindex) r_ifindex="$v" ;;
+      proc) r_proc="$v" ;;
+    esac
+  done 2>/dev/null < "$1"
+  [ -n "$r_user$r_pid$r_started" ]
+}
+readone() {
+  r=
+  { read -r r < "$1"; } 2>/dev/null
+}
+isnum() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+}`
+
 func (o *L2TP) writeIPScripts() error {
 	up := strings.Join([]string{
 		"#!/bin/sh",
@@ -74,17 +98,43 @@ func (o *L2TP) writeIPScripts() error {
 		`REMOTE="${IPREMOTE:-$PPP_REMOTE}"`,
 		`[ -n "$PEERNAME" ] || exit 0`,
 		`[ -n "$IF" ] || exit 0`,
+		"set -f",
 		"d=" + sessionStateDir,
-		`mkdir -p "$d"; umask 077`,
+		"own=" + pppdRecordDir,
+		"sys=" + sysClassNet,
+		"proc=" + procRoot,
+		scriptHelpers,
+		`mkdir -p "$d" "$own"; umask 077`,
+		`p="${PPPD_PID:-0}"`,
+		`readone "$sys/$IF/ifindex"`,
+		`ifindex="$r"`,
+		"fp=",
+		`if [ "$p" != 0 ]; then`,
+		`  readone "$proc/sys/kernel/random/boot_id"`,
+		`  boot="$r"`,
+		`  readone "$proc/$p/stat"`,
+		`  set -- ${r##*") "}`,
+		`  if [ -n "$boot" ] && [ $# -ge 20 ]; then`,
+		"    shift 19",
+		`    fp="$boot:$1"`,
+		"  fi",
+		"fi",
+		"started=$(date +%s)",
+		`if [ "$p" != 0 ] && load "$own/$p" && isnum "$r_started"; then`,
+		`  if [ -n "$fp" ] && [ "$r_proc" = "$fp" ] && [ "$r_ifname" = "$IF" ] &&`,
+		`    { [ -z "$ifindex" ] || [ -z "$r_ifindex" ] || [ "$r_ifindex" = "$ifindex" ]; }; then`,
+		`    started="$r_started"`,
+		`  elif ! isnum "$started" || [ "$r_started" -ge "$started" ]; then`,
+		`    started=$((r_started + 1))`,
+		"  fi",
+		"fi",
+		"record() {",
+		`  printf '%s\n' "user=$PEERNAME" "tunnel_ip=$REMOTE" "client=$REMOTENUMBER" "tag=` + o.config.InboundTag + `" \`,
+		`    "pid=$p" "started=$started" "ifname=$IF" "ifindex=$ifindex" "proc=$fp"`,
+		"}",
+		`[ "$p" = 0 ] || { record > "$own/.$p.$$" && mv -f "$own/.$p.$$" "$own/$p"; }`,
 		`tmp="$d/.$IF.$$"`,
-		"{",
-		`  echo "user=$PEERNAME"`,
-		`  echo "tunnel_ip=$REMOTE"`,
-		`  echo "client=$REMOTENUMBER"`,
-		`  echo "tag=` + o.config.InboundTag + `"`,
-		`  echo "pid=${PPPD_PID:-0}"`,
-		`  echo "started=$(date +%s)"`,
-		`} > "$tmp" && mv -f "$tmp" "$d/$IF"`,
+		`{ record; } > "$tmp" && mv -f "$tmp" "$d/$IF"`,
 		"",
 	}, "\n")
 
@@ -92,45 +142,79 @@ func (o *L2TP) writeIPScripts() error {
 		"#!/bin/sh",
 		`IF="${IFNAME:-$PPP_IFACE}"`,
 		`[ -n "$IF" ] || exit 0`,
+		"set -f",
 		"d=" + sessionStateDir,
+		"own=" + pppdRecordDir,
+		"sys=" + sysClassNet,
+		"fin=" + sessionFinalDir,
+		scriptHelpers,
+		`p="${PPPD_PID:-0}"`,
 		`f="$d/$IF"`,
-		`if [ -f "$f" ]; then`,
-		`  user=$(sed -n 's/^user=//p' "$f")`,
-		`  tag=$(sed -n 's/^tag=//p' "$f")`,
-		`  pid=$(sed -n 's/^pid=//p' "$f")`,
-		`  started=$(sed -n 's/^started=//p' "$f")`,
-		`  s=/sys/class/net/$IF/statistics`,
-		`  rx=$(cat "$s/rx_bytes" 2>/dev/null)`,
-		`  tx=$(cat "$s/tx_bytes" 2>/dev/null)`,
-		`  [ -n "$rx" ] || rx="${BYTES_RCVD:-0}"`,
-		`  [ -n "$tx" ] || tx="${BYTES_SENT:-0}"`,
-		"  fin=" + sessionFinalDir,
-		`  mkdir -p "$fin"; umask 077`,
-		`  tmp="$fin/.$IF.$$"`,
-		"  {",
-		`    echo "user=$user"`,
-		`    echo "tag=$tag"`,
-		`    echo "ifname=$IF"`,
-		`    echo "pid=$pid"`,
-		`    echo "started=$started"`,
-		`    echo "rx=$rx"`,
-		`    echo "tx=$tx"`,
-		`  } > "$tmp" && mv -f "$tmp" "$fin/$IF.$$.$(date +%s)"`,
+		"src=",
+		`if load "$f" && { [ "$p" = 0 ] || [ "${r_pid:-0}" = 0 ] || [ "$r_pid" = "$p" ]; }; then`,
+		`  src="$f"`,
+		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ] && load "$own/$p" && [ "$r_ifname" = "$IF" ] && [ "$r_user" = "$PEERNAME" ]; then`,
+		`  src="$own/$p"`,
+		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ]; then`,
+		`  r_user="$PEERNAME"; r_tag="` + o.config.InboundTag + `"; r_pid="$p"; r_started=; r_ifindex=; r_proc=`,
+		"  src=env",
 		"fi",
-		`rm -f "$f"`,
+		`[ -n "$src" ] || exit 0`,
+		`s="$sys/$IF"`,
+		"rx=; tx=",
+		`if [ -n "$r_ifindex" ]; then`,
+		`  readone "$s/ifindex"`,
+		`  if [ "$r" = "$r_ifindex" ]; then`,
+		`    readone "$s/statistics/rx_bytes"; rx="$r"`,
+		`    readone "$s/statistics/tx_bytes"; tx="$r"`,
+		`    readone "$s/ifindex"`,
+		`    [ "$r" = "$r_ifindex" ] || { rx=; tx=; }`,
+		"  fi",
+		"fi",
+		`if [ -z "$rx" ] || [ -z "$tx" ]; then`,
+		`  if [ -n "$BYTES_RCVD$BYTES_SENT" ]; then`,
+		`    rx="${BYTES_RCVD:-0}"; tx="${BYTES_SENT:-0}"`,
+		`  elif [ -z "$r_ifindex" ] && [ "$src" != env ]; then`,
+		`    readone "$s/statistics/rx_bytes"; rx="$r"`,
+		`    readone "$s/statistics/tx_bytes"; tx="$r"`,
+		"  fi",
+		"fi",
+		`[ -n "$rx" ] || rx=0`,
+		`[ -n "$tx" ] || tx=0`,
+		`mkdir -p "$fin"; umask 077`,
+		`tmp="$fin/.$IF.$$"`,
+		"{",
+		`  printf '%s\n' "user=$r_user" "tag=$r_tag" "ifname=$IF"`,
+		`  [ -z "$r_pid" ] || printf '%s\n' "pid=$r_pid"`,
+		`  [ -z "$r_started" ] || printf '%s\n' "started=$r_started"`,
+		`  [ -z "$r_proc" ] || printf '%s\n' "proc=$r_proc"`,
+		`  printf '%s\n' "rx=$rx" "tx=$tx"`,
+		`} > "$tmp" && mv -f "$tmp" "$fin/$IF.$$.$(date +%s)"`,
+		`if [ "$src" = "$f" ]; then`,
+		`  q_pid="$r_pid"; q_started="$r_started"`,
+		`  g="$d/.$IF.down.$$"`,
+		`  if mv -f "$f" "$g" 2>/dev/null; then`,
+		`    if ! load "$g" || [ "$r_pid" != "$q_pid" ] || [ "$r_started" != "$q_started" ]; then`,
+		`      ln "$g" "$f" 2>/dev/null || [ -e "$f" ] || mv "$g" "$f"`,
+		"    fi",
+		`    rm -f "$g"`,
+		"  fi",
+		"fi",
 		"exit 0",
 		"",
 	}, "\n")
 
 	for path, content := range map[string]string{o.ipUpScriptPath(): up, o.ipDownScriptPath(): down} {
-		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		if err := writeFileAtomic(path, []byte(content), 0o755); err != nil {
 			return err
 		}
 	}
-	if err := os.MkdirAll(sessionFinalDir, 0o700); err != nil {
-		return err
+	for _, dir := range []string{sessionFinalDir, pppdRecordDir, sessionStateDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
 	}
-	return os.MkdirAll(sessionStateDir, 0o700)
+	return nil
 }
 
 func (o *L2TP) writeSwanctl() error {

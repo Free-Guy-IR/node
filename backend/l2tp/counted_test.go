@@ -28,11 +28,15 @@ type acctEnv struct {
 func newAcctEnv(t *testing.T) *acctEnv {
 	t.Helper()
 	useTempSessionDirs(t)
-	prevNet, prevCounted := sysClassNet, sessionCountedDir
+	prevNet, prevCounted, prevProc, prevRecords := sysClassNet, sessionCountedDir, procRoot, pppdRecordDir
 	root := t.TempDir()
 	sysClassNet = filepath.Join(root, "net")
 	sessionCountedDir = filepath.Join(root, "counted")
-	t.Cleanup(func() { sysClassNet, sessionCountedDir = prevNet, prevCounted })
+	procRoot = filepath.Join(root, "proc")
+	pppdRecordDir = filepath.Join(root, "pppd")
+	t.Cleanup(func() {
+		sysClassNet, sessionCountedDir, procRoot, pppdRecordDir = prevNet, prevCounted, prevProc, prevRecords
+	})
 	return &acctEnv{t: t, tag: fmt.Sprintf("acct-%d", acctTagSeq.Add(1)), root: root}
 }
 

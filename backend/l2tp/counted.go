@@ -48,8 +48,31 @@ func newCountedState() *countedState {
 	}
 }
 
-func (c *countedState) get(id sessionIdentity) countedBytes {
-	return c.entries[id]
+func (c *countedState) lookup(id sessionIdentity) (countedBytes, bool) {
+	b, ok := c.entries[id]
+	return b, ok
+}
+
+func (c *countedState) inherit(id sessionIdentity, now countedBytes) countedBytes {
+	if id.pid == 0 {
+		return countedBytes{}
+	}
+	var prev sessionIdentity
+	found := false
+	for w := range c.entries {
+		if w.ifname == id.ifname && w.pid == id.pid && w.started < id.started && (!found || w.started > prev.started) {
+			prev, found = w, true
+		}
+	}
+	if !found {
+		return countedBytes{}
+	}
+	base := c.entries[prev]
+	if now.rx < base.rx || now.tx < base.tx {
+		return countedBytes{}
+	}
+	c.raise(prev, now)
+	return base
 }
 
 func (c *countedState) set(id sessionIdentity, b countedBytes) {
@@ -77,10 +100,16 @@ func (c *countedState) consume(rec finalRecord) countedBytes {
 	}
 	id, ok := c.match(rec)
 	if !ok {
-		if rec.hasIdentity {
-			c.markConsumed(rec.identity, countedBytes{rx: rec.rx, tx: rec.tx})
+		if !rec.hasIdentity {
+			return countedBytes{}
 		}
-		return countedBytes{}
+		final := countedBytes{rx: rec.rx, tx: rec.tx}
+		var base countedBytes
+		if rec.proc == "" {
+			base = c.inherit(rec.identity, final)
+		}
+		c.markConsumed(rec.identity, final)
+		return base
 	}
 	base := c.entries[id]
 	c.markConsumed(id, countedBytes{rx: rec.rx, tx: rec.tx})
@@ -103,7 +132,7 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 	}
 	var found []sessionIdentity
 	for id := range c.entries {
-		if id.ifname == rec.ifname && !c.consumed[id] {
+		if id.ifname == rec.ifname && !c.consumed[id] && (!rec.hasPid || id.pid == rec.identity.pid) {
 			found = append(found, id)
 		}
 	}
@@ -121,6 +150,29 @@ func (c *countedState) match(rec finalRecord) (sessionIdentity, bool) {
 		return a.pid > b.pid
 	})
 	return found[0], true
+}
+
+func (c *countedState) hold(rec finalRecord, keep map[sessionIdentity]struct{}) {
+	if id, ok := c.match(rec); ok {
+		keep[id] = struct{}{}
+		return
+	}
+	if !rec.hasIdentity || rec.proc != "" || rec.identity.pid == 0 {
+		return
+	}
+	for id := range c.entries {
+		if id.ifname == rec.ifname && id.pid == rec.identity.pid {
+			keep[id] = struct{}{}
+		}
+	}
+}
+
+func (c *countedState) holdInterface(ifname string, keep map[sessionIdentity]struct{}) {
+	for id := range c.entries {
+		if id.ifname == ifname {
+			keep[id] = struct{}{}
+		}
+	}
 }
 
 func (c *countedState) retain(keep map[sessionIdentity]struct{}) {
@@ -253,11 +305,16 @@ func (c *countedState) save(tag string) error {
 func presentAsCounted(tag string) *countedState {
 	c := newCountedState()
 	for _, s := range readSessions(tag) {
-		rx, tx := ifaceBytes(s.ifname)
-		c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		if rx, tx, ok := sessionBytes(s); ok {
+			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		}
 	}
-	for _, rec := range readFinalRecords(tag) {
+	scan := scanFinalRecords(tag)
+	for _, rec := range scan.records {
 		c.counted[filepath.Base(rec.path)] = true
+	}
+	for _, u := range scan.unreadable {
+		c.counted[filepath.Base(u.path)] = true
 	}
 	c.dirty = true
 	return c

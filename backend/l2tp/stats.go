@@ -16,6 +16,7 @@ import (
 
 var (
 	beforeApplySamples = func() {}
+	interfaceSampled   = func() {}
 	removeFinalRecord  = os.Remove
 )
 
@@ -50,7 +51,8 @@ func (o *L2TP) pollLocked() {
 func (o *L2TP) collectLocked() []stats.Sample {
 	tag := o.config.InboundTag
 	sessions := readSessions(tag)
-	finals := readFinalRecords(tag)
+	scan := scanFinalRecords(tag)
+	finals := scan.records
 
 	perUser := make(map[string][]l2tpSession)
 	for _, s := range sessions {
@@ -62,6 +64,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	ended := make(map[string]struct{}, len(finals))
 
 	keep := make(map[sessionIdentity]struct{}, len(sessions))
+	o.sortOutFinalRecordsLocked(scan, keep)
 	removeFailed := false
 	for _, rec := range finals {
 		ended[rec.ifname] = struct{}{}
@@ -70,10 +73,11 @@ func (o *L2TP) collectLocked() []stats.Sample {
 				o.emitLogf("Error", "l2tp: cannot remove final record %s, it is billed once it can be removed: %v", rec.path, err)
 			}
 			removeFailed = true
-			if id, ok := o.counted.match(rec); ok {
-				keep[id] = struct{}{}
-			}
+			o.counted.hold(rec, keep)
 			continue
+		}
+		if rec.hasPid {
+			o.emitLogf("Error", "l2tp: final record %s of pppd %d carries no session start, matched by interface and pid", rec.path, rec.identity.pid)
 		}
 		base := o.counted.consume(rec)
 		growthRx[rec.user] += max(rec.rx-base.rx, 0)
@@ -90,14 +94,21 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		if _, gone := ended[s.ifname]; gone {
 			continue
 		}
-		rx, tx := ifaceBytes(s.ifname)
-		base := o.counted.get(id)
+		rx, tx, ok := sessionBytes(s)
+		if !ok {
+			continue
+		}
+		base, known := o.counted.lookup(id)
+		if !known && s.proc == "" {
+			base = o.counted.inherit(id, countedBytes{rx: rx, tx: tx})
+		}
 		growthRx[s.user] += max(rx-base.rx, 0)
 		growthTx[s.user] += max(tx-base.tx, 0)
 		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
 	}
 	o.counted.retain(keep)
 	o.persistCountedLocked()
+	o.sweepPppdRecordsLocked()
 
 	var samples []stats.Sample
 	now := time.Now().Unix()
@@ -173,24 +184,25 @@ func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*comm
 	case common.StatType_UsersStat:
 		return tracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Inbound, common.StatType_Inbounds:
-		o.mu.Lock()
-		totalRx, totalTx, inbound := o.totalRx, o.totalTx, o.inboundStats
-		o.mu.Unlock()
-		dRx, dTx := inbound.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := o.interfaceDelta(func() *stats.InterfaceCountersTracker { return o.inboundStats }, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "inbound", dRx, dTx),
 		}, nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
-		o.mu.Lock()
-		totalRx, totalTx, outbound := o.totalRx, o.totalTx, o.interfaceStats
-		o.mu.Unlock()
-		dRx, dTx := outbound.Delta(totalRx, totalTx, request.GetReset_())
+		dRx, dTx := o.interfaceDelta(func() *stats.InterfaceCountersTracker { return o.interfaceStats }, request.GetReset_())
 		return &common.StatResponse{
 			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
 		}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", backend.ErrStatTypeNotSupported, request.GetType())
 	}
+}
+
+func (o *L2TP) interfaceDelta(tracker func() *stats.InterfaceCountersTracker, reset bool) (int64, int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	interfaceSampled()
+	return tracker().Delta(o.totalRx, o.totalTx, reset)
 }
 
 func (o *L2TP) GetUserOnlineStats(_ context.Context, email string) (*common.OnlineStatResponse, error) {

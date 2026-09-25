@@ -77,6 +77,10 @@ type L2TP struct {
 	cancelPoll         context.CancelFunc
 	hostRoutingCleanup func()
 	finalRemoveFailing bool
+	finalReadFailing   bool
+	setAsideFailing    bool
+	finalUnreadable    map[string]int
+	pppdGone           map[string]int
 }
 
 func New(_ context.Context, l2Config *Config, users []*common.User, nodeCfg *config.Config) (*L2TP, error) {
@@ -110,20 +114,28 @@ func newInstance(l2Config *Config, nodeCfg *config.Config) *L2TP {
 	}
 
 	return &L2TP{
-		config:         l2Config,
-		cfg:            nodeCfg,
-		users:          newUserStore(l2Config.InboundTag),
-		statsTracker:   stats.New(),
-		interfaceStats: stats.NewInterfaceCountersTracker(),
-		inboundStats:   stats.NewInterfaceCountersTracker(),
-		counted:        newCountedState(),
-		cumRx:          make(map[string]int64),
-		cumTx:          make(map[string]int64),
-		onlineIPs:      make(map[string]map[string]int64),
-		logChan:        make(chan string, bufferSize),
-		startTime:      time.Now(),
-		updateInterval: interval,
+		config:          l2Config,
+		cfg:             nodeCfg,
+		users:           newUserStore(l2Config.InboundTag),
+		statsTracker:    stats.New(),
+		interfaceStats:  newInterfaceTracker(),
+		inboundStats:    newInterfaceTracker(),
+		counted:         newCountedState(),
+		cumRx:           make(map[string]int64),
+		cumTx:           make(map[string]int64),
+		onlineIPs:       make(map[string]map[string]int64),
+		pppdGone:        make(map[string]int),
+		finalUnreadable: make(map[string]int),
+		logChan:         make(chan string, bufferSize),
+		startTime:       time.Now(),
+		updateInterval:  interval,
 	}
+}
+
+func newInterfaceTracker() *stats.InterfaceCountersTracker {
+	t := stats.NewInterfaceCountersTracker()
+	t.CountFromZero(0, 0)
+	return t
 }
 
 func (o *L2TP) startLocked() error {
@@ -336,7 +348,7 @@ func (o *L2TP) killSessions(usernames []string) {
 		targets[u] = struct{}{}
 	}
 	for _, s := range readSessions(o.config.InboundTag) {
-		if _, ok := targets[s.user]; !ok || s.pid <= 0 || !processIsPppd(s.pid) {
+		if _, ok := targets[s.user]; !ok || s.pid <= 0 || pppdState(s.pid, s.proc) != processRunning {
 			continue
 		}
 		if p, err := os.FindProcess(s.pid); err == nil {

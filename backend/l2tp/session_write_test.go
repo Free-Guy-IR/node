@@ -2,6 +2,7 @@ package l2tp
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,5 +94,43 @@ func TestIPUpWritesTheSessionFileAtomically(t *testing.T) {
 	sessions := readSessions(e.tag)
 	if len(sessions) != 1 || sessions[0].user != "7" || sessions[0].pid != 4343 || sessions[0].started <= 0 {
 		t.Fatalf("session read back = %+v", sessions)
+	}
+}
+
+func TestRewritingTheScriptsLeavesACopyBeingRunIntact(t *testing.T) {
+	e := newAcctEnv(t)
+	o := e.prepare("7")
+	if err := os.MkdirAll(o.config.workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.writeIPScripts(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{o.ipUpScriptPath(), o.ipDownScriptPath()} {
+		running, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { running.Close() })
+		before, err := running.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := o.writeIPScripts(); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if os.SameFile(before, after) {
+			t.Fatalf("%s was rewritten in place, a pppd running it can read a truncated script", filepath.Base(path))
+		}
+		if after.Mode().Perm() != 0o755 {
+			t.Fatalf("%s mode = %v, want 0755", filepath.Base(path), after.Mode().Perm())
+		}
+		if raw, err := io.ReadAll(running); err != nil || !strings.HasPrefix(string(raw), "#!/bin/sh\n") {
+			t.Fatalf("the copy being run changed: %q, %v", raw, err)
+		}
 	}
 }

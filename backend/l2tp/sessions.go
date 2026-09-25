@@ -2,6 +2,9 @@ package l2tp
 
 import (
 	"bufio"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +17,17 @@ var (
 	sessionFinalDir   = "/run/pg-l2tp/final"
 	sessionCountedDir = "/run/pg-l2tp/counted"
 	sysClassNet       = "/sys/class/net"
+	procRoot          = "/proc"
+	pppdRecordDir     = "/run/pg-l2tp/pppd"
+)
+
+var (
+	readProcFile = func(name string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(procRoot, name))
+	}
+	openFinalRecord = func(path string) (io.ReadCloser, error) {
+		return os.Open(path)
+	}
 )
 
 type l2tpSession struct {
@@ -24,26 +38,22 @@ type l2tpSession struct {
 	tag      string
 	pid      int
 	started  int64
+	ifindex  string
+	proc     string
 }
 
 func (s l2tpSession) identity() sessionIdentity {
 	return sessionIdentity{ifname: s.ifname, pid: s.pid, started: s.started}
 }
 
-var sessionIsAlive = func(s l2tpSession) bool {
+var sessionIsAlive = pppdSessionIsAlive
+
+func pppdSessionIsAlive(s l2tpSession) bool {
 	if s.pid > 0 {
-		return processIsPppd(s.pid)
+		return pppdState(s.pid, s.proc) != processGone
 	}
 	_, err := os.Stat(filepath.Join(sysClassNet, s.ifname))
-	return err == nil
-}
-
-func processIsPppd(pid int) bool {
-	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(comm), "pppd")
+	return !errors.Is(err, fs.ErrNotExist)
 }
 
 func ownsRecord(recordTag, tag string) bool {
@@ -61,12 +71,16 @@ func readSessions(tag string) []l2tpSession {
 			continue
 		}
 		path := filepath.Join(sessionStateDir, e.Name())
-		s, complete := parseSessionFile(path, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		s, complete := parseSession(raw, e.Name())
 		if !complete || s.user == "" || s.ifname == "" || !ownsRecord(s.tag, tag) {
 			continue
 		}
 		if !sessionIsAlive(s) {
-			_ = os.Remove(path)
+			removeIfUnchanged(path, raw)
 			continue
 		}
 		out = append(out, s)
@@ -74,17 +88,11 @@ func readSessions(tag string) []l2tpSession {
 	return out
 }
 
-func parseSessionFile(path, ifname string) (l2tpSession, bool) {
+func parseSession(raw []byte, ifname string) (l2tpSession, bool) {
 	s := l2tpSession{ifname: ifname}
-	f, err := os.Open(path)
-	if err != nil {
-		return s, false
-	}
-	defer f.Close()
 	hasStarted := false
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
 			continue
 		}
@@ -102,6 +110,10 @@ func parseSessionFile(path, ifname string) (l2tpSession, bool) {
 		case "started":
 			s.started, _ = strconv.ParseInt(v, 10, 64)
 			hasStarted = true
+		case "ifindex":
+			s.ifindex = v
+		case "proc":
+			s.proc = v
 		}
 	}
 	return s, hasStarted
@@ -118,40 +130,64 @@ type finalRecord struct {
 	epoch       int64
 	identity    sessionIdentity
 	hasIdentity bool
+	hasPid      bool
+	proc        string
+}
+
+type unreadableFinal struct {
+	path string
+	err  error
+}
+
+type finalScan struct {
+	records    []finalRecord
+	unreadable []unreadableFinal
+	unusable   []string
 }
 
 func readFinalRecords(tag string) []finalRecord {
+	return scanFinalRecords(tag).records
+}
+
+func scanFinalRecords(tag string) finalScan {
+	var scan finalScan
 	entries, err := os.ReadDir(sessionFinalDir)
 	if err != nil {
-		return nil
+		return scan
 	}
-	out := make([]finalRecord, 0, len(entries))
+	scan.records = make([]finalRecord, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		path := filepath.Join(sessionFinalDir, e.Name())
-		rec, ok := parseFinalRecord(path)
-		if !ok {
-			_ = os.Remove(path)
+		rec, usable, err := parseFinalRecord(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
 			continue
-		}
-		if !ownsRecord(rec.tag, tag) {
+		case err != nil:
+			scan.unreadable = append(scan.unreadable, unreadableFinal{path: path, err: err})
+			continue
+		case !ownsRecord(rec.tag, tag):
+			continue
+		case !usable:
+			scan.unusable = append(scan.unusable, path)
 			continue
 		}
 		rec.pid, rec.epoch = parseFinalName(e.Name())
-		out = append(out, rec)
+		scan.records = append(scan.records, rec)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].epoch != out[j].epoch {
-			return out[i].epoch < out[j].epoch
+	sort.Slice(scan.records, func(i, j int) bool {
+		a, b := scan.records[i], scan.records[j]
+		if a.epoch != b.epoch {
+			return a.epoch < b.epoch
 		}
-		if out[i].pid != out[j].pid {
-			return out[i].pid < out[j].pid
+		if a.pid != b.pid {
+			return a.pid < b.pid
 		}
-		return out[i].path < out[j].path
+		return a.path < b.path
 	})
-	return out
+	return scan
 }
 
 func parseFinalName(name string) (pid, epoch int64) {
@@ -164,14 +200,32 @@ func parseFinalName(name string) (pid, epoch int64) {
 	return pid, epoch
 }
 
-func parseFinalRecord(path string) (finalRecord, bool) {
+func finalNameInterface(name string) string {
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.Join(parts[:len(parts)-2], ".")
+}
+
+func parseFinalRecord(path string) (finalRecord, bool, error) {
 	rec := finalRecord{path: path}
-	f, err := os.Open(path)
+	f, err := openFinalRecord(path)
 	if err != nil {
-		return rec, false
+		return rec, false, err
 	}
 	defer f.Close()
-	var hasPid, hasStarted bool
+	var hasPid, hasStarted, hasRx, hasTx, malformed bool
+	number := func(v string, emptyIsZero bool) int64 {
+		if v == "" && emptyIsZero {
+			return 0
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			malformed = true
+		}
+		return n
+	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
@@ -186,20 +240,41 @@ func parseFinalRecord(path string) (finalRecord, bool) {
 		case "ifname":
 			rec.ifname = v
 		case "rx":
-			rec.rx, _ = strconv.ParseInt(v, 10, 64)
+			rec.rx, hasRx = number(v, false), true
 		case "tx":
-			rec.tx, _ = strconv.ParseInt(v, 10, 64)
+			rec.tx, hasTx = number(v, false), true
 		case "pid":
-			rec.identity.pid, _ = strconv.Atoi(v)
-			hasPid = true
+			rec.identity.pid, hasPid = int(number(v, true)), true
 		case "started":
-			rec.identity.started, _ = strconv.ParseInt(v, 10, 64)
-			hasStarted = true
+			rec.identity.started, hasStarted = number(v, true), true
+		case "proc":
+			rec.proc = v
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return rec, false, err
 	}
 	rec.identity.ifname = rec.ifname
 	rec.hasIdentity = hasPid && hasStarted
-	return rec, rec.user != "" && rec.ifname != ""
+	rec.hasPid = hasPid && !hasStarted && rec.identity.pid > 0
+	return rec, !malformed && hasRx && hasTx && rec.user != "" && rec.ifname != "", nil
+}
+
+func sessionBytes(s l2tpSession) (rx int64, tx int64, ok bool) {
+	if s.ifindex == "" {
+		rx, tx = ifaceBytes(s.ifname)
+		return rx, tx, true
+	}
+	if !sameInterface(s.ifname, s.ifindex) {
+		return 0, 0, false
+	}
+	rx, tx = ifaceBytes(s.ifname)
+	return rx, tx, sameInterface(s.ifname, s.ifindex)
+}
+
+func sameInterface(ifname, ifindex string) bool {
+	b, err := os.ReadFile(filepath.Join(sysClassNet, ifname, "ifindex"))
+	return err == nil && strings.TrimSpace(string(b)) == ifindex
 }
 
 func ifaceBytes(ifname string) (rx int64, tx int64) {
