@@ -78,6 +78,42 @@ For a manual (non-installer) deployment, add the override file to the compose co
 docker compose -f docker-compose.yml -f docker-compose.l2tp.yml up -d
 ```
 
+# Releasing
+
+Releases are published by CI, never by hand. A release gets its binaries and its image only after every gate passes on
+the release commit: the test suite, the real-kernel WireGuard tests, the MTProto fronting leg, govulncheck, the workflow
+policy check and the upstream drift check.
+
+1. Tag the release commit and push the tag. Never move or reuse a tag that was already released.
+
+   ```bash
+   git tag v0.6.21 <commit>
+   git push origin v0.6.21
+   ```
+
+2. On GitHub, draft a release on that existing tag: write the notes, tick "Set as a pre-release" if it is one, and
+   choose **Save draft**. Do not publish it.
+
+3. Run the **Publish Release** workflow from the tag: Actions, Publish Release, Run workflow, and under "Use workflow
+   from" pick the tag. Or:
+
+   ```bash
+   gh workflow run release.yml --ref v0.6.21
+   ```
+
+The workflow refuses a branch, and a tag whose release is already published. It runs every gate on the tag's commit
+and builds the binaries and the multi-arch image. Then one job checks that the draft exists and the tag has not moved,
+uploads the zips and their `.sha256` files, tags the signed image `ghcr.io/free-guy-ir/node:<tag>` (and `:latest`
+unless the draft is a pre-release), and publishes the draft. If a gate fails, the draft stays a draft without assets:
+re-run the workflow after a transient failure, otherwise fix the cause on a new commit and release that under the next
+version.
+
+A release published by hand, or by any tool other than Publish Release, is turned back into a draft by the
+**Release Guard** workflow, which fails with a note saying so. Run Publish Release for it instead.
+
+**Build and Push Docker Image (Manual)** rebuilds an image by hand. It adds `:latest` only when run from `main` or from
+a tag with a published, non-prerelease release. From any other ref it publishes only the ref-named tag.
+
 # Contributors
 
 We ❤️‍🔥 contributors! If you'd like to contribute, please check out our [Contributing Guidelines](CONTRIBUTING.md) and feel free to submit a pull request or open an issue. We also welcome you to join our [Telegram](https://t.me/Pasar_Guard) group for either support or contributing guidance.

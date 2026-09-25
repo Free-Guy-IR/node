@@ -1,0 +1,33 @@
+name: Release Guard
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  refuse-hand-published:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Turn a release published outside Publish Release back into a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          gh release edit --draft=true -- "${TAG}"
+          msg="${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again. Run Publish Release from the tag ${TAG} to test, build and publish it."
+          echo "::error title=Release turned back into a draft::${msg}"
+          {
+            echo "## Release turned back into a draft"
+            echo
+            echo "${msg}"
+            echo
+            echo "See the Releasing section of README.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1

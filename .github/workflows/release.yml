@@ -1,23 +1,59 @@
-name: Create Release
+name: Publish Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a release tag that is not published yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_re='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+          if [ "${GITHUB_REF_TYPE}" != tag ]; then
+            echo "::error title=Run this from the release tag::Publish Release was dispatched from ${GITHUB_REF}; dispatch it with the draft release's tag as the ref"
+            exit 1
+          fi
+          if ! [[ ${GITHUB_REF_NAME} =~ ${tag_re} ]]; then
+            echo "::error title=Tag is not an image tag::'${GITHUB_REF_NAME}' cannot be used as an image tag"
+            exit 1
+          fi
+          status=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}")
+          case "${status}" in
+            404)
+              echo "Releasing ${GITHUB_REF_NAME} at ${GITHUB_SHA}; the draft release is checked again before it is published." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            200)
+              echo "::error title=Release already published::${GITHUB_REF_NAME} already has a published release"
+              exit 1
+              ;;
+            *)
+              echo "::error title=Release lookup failed::GitHub returned HTTP ${status} for the release of ${GITHUB_REF_NAME}"
+              exit 1
+              ;;
+          esac
+
   tests:
+    needs: resolve
     uses: ./.github/workflows/run-tests.yml
 
   drift:
+    needs: resolve
     uses: ./.github/workflows/upstream-drift.yml
 
-  build:
+  assets:
     needs: [tests, drift]
-    permissions:
-      contents: write
     strategy:
       matrix:
         # Include amd64 on all platforms.
@@ -141,11 +177,127 @@ jobs:
           # Create zip file with max compression and include README & LICENSE
           zip -9 "./pasarguard-node-${{ env.ASSET_NAME }}.zip" "./pasarguard-node-${{ env.ASSET_NAME }}" README.md LICENSE
 
-      - name: Checksum and upload release asset
+      - name: Checksum the release asset
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ASSET: pasarguard-node-${{ env.ASSET_NAME }}.zip
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: sha256sum "${ASSET}" > "${ASSET}.sha256"
+
+      - name: Hand the asset to the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: asset-${{ env.ASSET_NAME }}
+          path: |
+            pasarguard-node-${{ env.ASSET_NAME }}.zip
+            pasarguard-node-${{ env.ASSET_NAME }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  image:
+    needs: [tests, drift]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/image.yml
+
+  publish:
+    needs: [assets, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+      IMAGE: ghcr.io/free-guy-ir/node
+      DIGEST: ${{ needs.image.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Find the draft release for this tag
+        id: draft
         run: |
-          sha256sum "${ASSET}" > "${ASSET}.sha256"
-          gh release upload "${RELEASE_TAG}" "${ASSET}" "${ASSET}.sha256" --clobber
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          jq -s --arg tag "${TAG}" '[.[][] | select(.tag_name == $tag)]' "$RUNNER_TEMP/releases.json" > "$RUNNER_TEMP/matches.json"
+          count=$(jq length "$RUNNER_TEMP/matches.json")
+          if [ "${count}" != 1 ]; then
+            echo "::error title=No single draft release::found ${count} releases for ${TAG}; create one draft release on that tag, then run this workflow again"
+            exit 1
+          fi
+          if [ "$(jq -r '.[0].draft' "$RUNNER_TEMP/matches.json")" != true ]; then
+            echo "::error title=Release already published::the release for ${TAG} is not a draft any more"
+            exit 1
+          fi
+          echo "prerelease=$(jq -r '.[0].prerelease' "$RUNNER_TEMP/matches.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Check that the tag still points at the tested commit
+        run: |
+          object=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
+          type=$(jq -r .object.type <<< "${object}")
+          sha=$(jq -r .object.sha <<< "${object}")
+          for _ in 1 2 3 4 5; do
+            [ "${type}" = tag ] || break
+            object=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")
+            type=$(jq -r .object.type <<< "${object}")
+            sha=$(jq -r .object.sha <<< "${object}")
+          done
+          if [ "${type}" != commit ] || [ "${sha}" != "${GITHUB_SHA}" ]; then
+            echo "::error title=Tag moved::${TAG} now points at ${type} ${sha}, but the gates tested ${GITHUB_SHA}"
+            exit 1
+          fi
+          if ! [[ ${DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=No image digest::the image job returned '${DIGEST}'"
+            exit 1
+          fi
+
+      - name: Collect the assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: asset-*
+          merge-multiple: true
+          path: dist
+
+      - name: Verify the asset checksums
+        working-directory: dist
+        run: |
+          shopt -s nullglob
+          zips=(pasarguard-node-*.zip)
+          if [ "${#zips[@]}" = 0 ]; then
+            echo "::error title=No assets::the build jobs produced no zip"
+            exit 1
+          fi
+          for zip in "${zips[@]}"; do
+            sha256sum -c "${zip}.sha256"
+          done
+
+      - name: Upload the assets to the draft release
+        run: gh release upload "${TAG}" dist/* --clobber
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Tag the tested image
+        env:
+          PRERELEASE: ${{ steps.draft.outputs.prerelease }}
+        run: |
+          tags=("${TAG}")
+          if [ "${PRERELEASE}" = false ]; then
+            tags+=(latest)
+          fi
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=(--tag "${IMAGE}:${tag}")
+          done
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          echo "Tagged ${IMAGE}@${DIGEST} as ${tags[*]}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        run: |
+          gh release edit "${TAG}" --draft=false
+          echo "Published ${TAG} at ${GITHUB_SHA} with $(find dist -type f | wc -l | tr -d ' ') asset files." >> "$GITHUB_STEP_SUMMARY"

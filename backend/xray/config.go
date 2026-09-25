@@ -56,6 +56,7 @@ type Inbound struct {
 	mu             sync.RWMutex
 	exclude        bool
 	clients        map[string]api.Account // Runtime-only map: email -> account (never serialized)
+	unsettled      map[string]struct{}
 }
 
 func lastEntryPerEmail(users []*common.User) []*common.User {
@@ -221,7 +222,10 @@ func (i *Inbound) syncUsers(users []*common.User) {
 func (i *Inbound) updateUser(account api.Account) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.storeLocked(account)
+}
 
+func (i *Inbound) storeLocked(account api.Account) {
 	if i.clients == nil {
 		i.clients = make(map[string]api.Account)
 	}
@@ -314,26 +318,93 @@ func (i *Inbound) updateUsers(accounts []api.Account, removeEmails []string) {
 	}
 }
 
-func (i *Inbound) hasAccount(account api.Account) bool {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
+type coreStep int
 
-	current, ok := i.clients[account.GetEmail()]
-	return ok && reflect.DeepEqual(current, account)
+const (
+	coreUnchanged coreStep = iota
+	coreAdd
+	coreReplace
+)
+
+func (i *Inbound) stageAccount(account api.Account) coreStep {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.stageAccountLocked(account)
 }
 
-func (i *Inbound) changedAccounts(accounts []api.Account) []api.Account {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
+func (i *Inbound) stageAccountLocked(account api.Account) coreStep {
+	email := account.GetEmail()
+	current, held := i.clients[email]
+	_, unsettled := i.unsettled[email]
+	i.storeLocked(account)
 
-	changed := make([]api.Account, 0, len(accounts))
-	for _, account := range accounts {
-		current, ok := i.clients[account.GetEmail()]
-		if !ok || !reflect.DeepEqual(current, account) {
-			changed = append(changed, account)
+	switch {
+	case unsettled:
+		return coreReplace
+	case !held:
+		return coreAdd
+	case reflect.DeepEqual(accountForAPI(i, current), accountForAPI(i, i.clients[email])):
+		return coreUnchanged
+	}
+	return coreReplace
+}
+
+func (i *Inbound) stageRemoval(email string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.stageRemovalLocked(email)
+}
+
+func (i *Inbound) stageRemovalLocked(email string) bool {
+	_, held := i.clients[email]
+	_, unsettled := i.unsettled[email]
+	delete(i.clients, email)
+	return held || unsettled
+}
+
+func (i *Inbound) stageUpdate(accounts []api.Account, removeEmails []string) ([]coreStep, []string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	leaving := make([]string, 0, len(removeEmails))
+	for _, email := range removeEmails {
+		if i.stageRemovalLocked(email) {
+			leaving = append(leaving, email)
 		}
 	}
-	return changed
+
+	steps := make([]coreStep, len(accounts))
+	for index, account := range accounts {
+		steps[index] = i.stageAccountLocked(account)
+	}
+	return steps, leaving
+}
+
+func (i *Inbound) dropAccount(email string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	delete(i.clients, email)
+	i.markUnsettledLocked(email)
+}
+
+func (i *Inbound) markUnsettled(email string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.markUnsettledLocked(email)
+}
+
+func (i *Inbound) markUnsettledLocked(email string) {
+	if i.unsettled == nil {
+		i.unsettled = make(map[string]struct{})
+	}
+	i.unsettled[email] = struct{}{}
+}
+
+func (i *Inbound) settle(email string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delete(i.unsettled, email)
 }
 
 func (i *Inbound) removeUser(email string) {
