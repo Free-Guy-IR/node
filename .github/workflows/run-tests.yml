@@ -193,7 +193,7 @@ jobs:
             status=0
             make test-integration-mtproto 2>&1 | tee "$log" || status=$?
             seconds=$(( $(date +%s) - start ))
-            if [ "$status" = 0 ] && grep -Eq '^--- PASS: TestLiveSmoke_MTProto' "$log"; then
+            if [ "$status" = 0 ] && grep -Eq '^--- PASS:[[:space:]]TestLiveSmoke_MTProto' "$log"; then
               result=pass
             elif [ "$status" = 0 ]; then
               result="no test ran"

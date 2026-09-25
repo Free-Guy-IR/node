@@ -21,12 +21,19 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           gh release edit --draft=true -- "${TAG}"
-          msg="${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again. Run Publish Release from the tag ${TAG} to test, build and publish it."
+          how="gh workflow run release.yml --ref ${TAG}"
+          msg="${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again. To publish it correctly, run the Publish Release workflow by workflow_dispatch from the tag ${TAG}: ${how}"
           echo "::error title=Release turned back into a draft::${msg}"
           {
             echo "## Release turned back into a draft"
             echo
-            echo "${msg}"
+            echo "${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again."
+            echo
+            echo "To publish it correctly, run the Publish Release workflow by workflow_dispatch from the tag ${TAG}:"
+            echo
+            echo '```'
+            echo "${how}"
+            echo '```'
             echo
             echo "See the Releasing section of README.md."
           } >> "$GITHUB_STEP_SUMMARY"

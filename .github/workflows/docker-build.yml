@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish instead of the ref name; only from main or a published release tag"
+        description: "Custom image tag, from main or a tag only; never latest, edge, main, a v<digit> name or an existing release or tag name"
         required: false
 
 permissions:
@@ -17,77 +17,62 @@ jobs:
       tags: ${{ steps.tags.outputs.tags }}
       branch: ${{ steps.tags.outputs.branch }}
     steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
       - name: Choose the image tags for this ref
         id: tags
         env:
           INPUT_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag_re='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
           name="${GITHUB_REF_NAME}"
-          if ! [[ ${name} =~ ${tag_re} ]]; then
-            echo "::error title=Ref name is not an image tag::'${name}' cannot be used as an image tag"
-            exit 1
-          fi
-          latest=false
           branch=""
-          why=""
+          tags=()
           case "${GITHUB_REF}" in
             refs/heads/main)
-              latest=true
               branch=main
-              why="dispatched from main"
-              ;;
-            refs/heads/*)
-              branch="${name}"
-              why="dispatched from branch ${name}, which is not main"
-              ;;
-            refs/tags/*)
-              status=$(curl -sS -o "$RUNNER_TEMP/release.json" -w '%{http_code}' \
-                -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${name}")
-              case "${status}" in
-                200)
-                  if [ "$(jq -r .prerelease "$RUNNER_TEMP/release.json")" = false ]; then
-                    latest=true
-                    why="dispatched from the published release ${name}"
-                  else
-                    why="${name} is a prerelease"
-                  fi
-                  ;;
-                404)
-                  why="${name} has no published release"
-                  ;;
-                *)
-                  echo "::error title=Release lookup failed::GitHub returned HTTP ${status} for the release of ${name}"
+              case "${INPUT_TAG}" in
+                edge|main)
+                  echo "::error title=Custom image tag refused::${INPUT_TAG} is a moving tag with its own owner; edge is added to every manual build of main, and main belongs to the branch build"
                   exit 1
                   ;;
               esac
+              if [ -n "${INPUT_TAG}" ]; then
+                tags+=("${INPUT_TAG}")
+              fi
+              tags+=(edge)
+              ;;
+            refs/heads/*)
+              branch="${name}"
+              if [ -n "${INPUT_TAG}" ] && [ "${INPUT_TAG}" != "${name}" ]; then
+                echo "::error title=Custom image tag refused::a custom tag is only allowed from main or from a tag; from branch ${name} the image is tagged ${name}"
+                exit 1
+              fi
+              tags+=("${name}")
+              ;;
+            refs/tags/*)
+              if [ -z "${INPUT_TAG}" ]; then
+                echo "::error title=Release tags come only from Publish Release::${name} is a tag, and release image tags are immutable; publish a release with gh workflow run release.yml --ref ${name}, or rebuild this tag under a custom tag that does not look like a release"
+                exit 1
+              fi
+              case "${INPUT_TAG}" in
+                edge|main)
+                  echo "::error title=Custom image tag refused::${INPUT_TAG} is a moving tag with its own owner"
+                  exit 1
+                  ;;
+              esac
+              tags+=("${INPUT_TAG}")
               ;;
             *)
               echo "::error title=Unsupported ref::${GITHUB_REF}"
               exit 1
               ;;
           esac
-          version="${name}"
-          if [ -n "${INPUT_TAG}" ] && [ "${INPUT_TAG}" != "${name}" ]; then
-            if [ "${latest}" != true ]; then
-              echo "::error title=Custom image tag refused::a custom tag is only allowed from main or a published release tag; ${why}, so the image can only be tagged ${name}"
-              exit 1
-            fi
-            if ! [[ ${INPUT_TAG} =~ ${tag_re} ]] || [ "${INPUT_TAG}" = latest ]; then
-              echo "::error title=Invalid image tag::'${INPUT_TAG}' is not an allowed image tag"
-              exit 1
-            fi
-            version="${INPUT_TAG}"
-          fi
-          tags="${version}"
-          if [ "${latest}" = true ]; then
-            tags="${tags} latest"
-          fi
-          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          bash scripts/image_tag_policy.sh "${tags[@]}"
+          echo "tags=${tags[*]}" >> "$GITHUB_OUTPUT"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
-          echo "Image tags: ${tags} (${why})." >> "$GITHUB_STEP_SUMMARY"
+          echo "Image tags: ${tags[*]} (dispatched from ${GITHUB_REF}); :latest is never moved by this workflow." >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     uses: ./.github/workflows/run-tests.yml
