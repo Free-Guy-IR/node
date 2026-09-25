@@ -53,6 +53,13 @@ func (c *Controller) AttachBackend(ctx context.Context, b *common.Backend) error
 		return fmt.Errorf("%w: %s", ErrBackendTypeNotShareable, backendType)
 	}
 
+	c.lockLifecycle()
+	defer c.unlockLifecycle()
+
+	if c.closed {
+		return ErrNodeClosed
+	}
+
 	if err := c.attachPrecheck(backendType); err != nil {
 		return err
 	}
@@ -92,6 +99,9 @@ func (c *Controller) attachBuilt(backendType common.BackendType, newBackend back
 }
 
 func (c *Controller) DetachBackend(backendType common.BackendType) error {
+	c.lockLifecycle()
+	defer c.unlockLifecycle()
+
 	c.mu.Lock()
 	var removed backend.Backend
 	remaining := make([]extraBackend, 0, len(c.extras))
@@ -175,13 +185,9 @@ func (c *Controller) shutdownExtras() {
 }
 
 func (c *Controller) SyncUserAll(ctx context.Context, user *common.User) error {
-	var errs []error
-	for _, b := range c.AllBackends() {
-		if err := b.SyncUser(ctx, user); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.fanOutUserSync(ctx, func(ctx context.Context, b backend.Backend) error {
+		return b.SyncUser(ctx, user)
+	})
 }
 
 type queueingUserSyncer interface {
@@ -189,35 +195,24 @@ type queueingUserSyncer interface {
 }
 
 func (c *Controller) QueueUserAll(ctx context.Context, user *common.User) error {
-	var errs []error
-	for _, b := range c.AllBackends() {
+	return c.fanOutUserSync(ctx, func(ctx context.Context, b backend.Backend) error {
 		if queuer, ok := b.(queueingUserSyncer); ok {
-			errs = append(errs, queuer.QueueUser(ctx, user))
-			continue
+			return queuer.QueueUser(ctx, user)
 		}
-		errs = append(errs, b.SyncUser(ctx, user))
-	}
-	return errors.Join(errs...)
+		return b.SyncUser(ctx, user)
+	})
 }
 
 func (c *Controller) SyncUsersAll(ctx context.Context, users []*common.User) error {
-	var errs []error
-	for _, b := range c.AllBackends() {
-		if err := b.SyncUsers(ctx, users); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.fanOutUserSync(ctx, func(ctx context.Context, b backend.Backend) error {
+		return b.SyncUsers(ctx, users)
+	})
 }
 
 func (c *Controller) UpdateUsersAll(ctx context.Context, users []*common.User) error {
-	var errs []error
-	for _, b := range c.AllBackends() {
-		if err := b.UpdateUsers(ctx, users); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return c.fanOutUserSync(ctx, func(ctx context.Context, b backend.Backend) error {
+		return b.UpdateUsers(ctx, users)
+	})
 }
 
 type backendResult[T any] struct {

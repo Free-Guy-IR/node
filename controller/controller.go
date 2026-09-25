@@ -30,6 +30,7 @@ var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "m
 
 type Service interface {
 	Disconnect()
+	Close()
 }
 
 type Controller struct {
@@ -45,6 +46,12 @@ type Controller struct {
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
 	controlMu   sync.Mutex
+
+	lifecycleMu    sync.RWMutex
+	closed         bool
+	userSyncs      userSyncRegistry
+	syncDrainGrace time.Duration
+	newBackend     func(context.Context, *common.Backend, int, int) (backend.Backend, error)
 
 	ownRxTotal   int64
 	ownTxTotal   int64
@@ -90,19 +97,32 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 }
 
 func (c *Controller) Disconnect() {
-	c.mu.RLock()
+	c.lockLifecycle()
+	defer c.unlockLifecycle()
+
+	c.disconnect()
+}
+
+func (c *Controller) disconnect() {
+	c.mu.Lock()
 	cancelFunc := c.cancelFunc
-	c.mu.RUnlock()
+	c.cancelFunc = nil
+	backend := c.backend
+	extras := c.extras
+	c.backend = nil
+	c.extras = nil
+	c.primaryType = common.BackendType_XRAY
+	c.mu.Unlock()
 
 	if cancelFunc != nil {
 		cancelFunc()
 	}
 
-	c.shutdownExtras()
-
-	c.mu.Lock()
-	backend := c.backend
-	c.mu.Unlock()
+	for _, extra := range extras {
+		if extra.backend != nil {
+			extra.backend.Shutdown()
+		}
+	}
 
 	// Shutdown backend outside of lock to avoid deadlock
 	// Shutdown() will wait for process termination to complete
@@ -113,8 +133,6 @@ func (c *Controller) Disconnect() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.backend = nil
-	c.primaryType = common.BackendType_XRAY
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
 	c.clientIP = ""
@@ -147,6 +165,10 @@ func (c *Controller) NewRequest() {
 }
 
 func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPort, metricPort int) (backend.Backend, error) {
+	if c.newBackend != nil {
+		return c.newBackend(ctx, b, apiPort, metricPort)
+	}
+
 	switch b.GetType() {
 	case common.BackendType_XRAY:
 		config, err := xray.NewConfig(b.GetConfig(), b.GetExcludeInbounds())
@@ -199,6 +221,17 @@ func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPor
 }
 
 func (c *Controller) StartBackend(ctx context.Context, b *common.Backend) error {
+	c.lockLifecycle()
+	defer c.unlockLifecycle()
+
+	return c.startBackend(ctx, b)
+}
+
+func (c *Controller) startBackend(ctx context.Context, b *common.Backend) error {
+	if c.closed {
+		return ErrNodeClosed
+	}
+
 	c.shutdownExtras()
 
 	c.mu.RLock()
@@ -232,16 +265,20 @@ func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Durati
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !c.keepAliveStale(keepAlive) {
-				continue
-			}
-			c.LockControl()
-			if ctx.Err() == nil && c.keepAliveStale(keepAlive) {
-				log.Println("disconnect automatically due to keep alive timeout")
-				c.Disconnect()
-			}
-			c.UnlockControl()
+			c.disconnectIfStale(ctx, keepAlive)
 		}
+	}
+}
+
+func (c *Controller) disconnectIfStale(ctx context.Context, keepAlive time.Duration) {
+	if !c.keepAliveStale(keepAlive) {
+		return
+	}
+	c.LockControl()
+	defer c.UnlockControl()
+	if ctx.Err() == nil && c.keepAliveStale(keepAlive) {
+		log.Println("disconnect automatically due to keep alive timeout")
+		c.Disconnect()
 	}
 }
 

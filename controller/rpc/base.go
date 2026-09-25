@@ -23,10 +23,9 @@ func (s *Service) Start(ctx context.Context, data *common.Backend) (*common.Base
 			return nil, status.Errorf(codes.PermissionDenied, "node is controlled by another client")
 		}
 		log.Println("New connection from ", clientIP, " core control access was taken away from previous client.")
-		s.Disconnect()
 	}
 
-	if err := s.StartBackend(ctx, data); err != nil {
+	if err := s.ReplaceBackend(ctx, data); err != nil {
 		return nil, err
 	}
 
@@ -40,7 +39,7 @@ func (s *Service) Stop(_ context.Context, _ *common.Empty) (*common.Empty, error
 	defer s.UnlockControl()
 
 	s.Disconnect()
-	return nil, nil
+	return &common.Empty{}, nil
 }
 
 func (s *Service) GetBaseInfo(_ context.Context, _ *common.Empty) (*common.BaseInfoResponse, error) {

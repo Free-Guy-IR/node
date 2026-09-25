@@ -65,7 +65,7 @@ func (s *Service) GetUserOnlineIpListStats(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Service) GetBackendStats(w http.ResponseWriter, r *http.Request) {
-	stats, err := s.Backend().GetSysStats(r.Context())
+	stats, err := s.PrimarySysStats(r.Context())
 	if err != nil {
 		st, _ := status.FromError(err)
 		httpCode := common.GrpcCodeToHTTP(st.Code())
