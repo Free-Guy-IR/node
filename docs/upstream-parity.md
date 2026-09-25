@@ -35,8 +35,8 @@ State as of 2026-09-24, release 0.6.21.
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
 | `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead (2026-09-24); the node stays on grpc 1.83.2. The Go vulnerability database still lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), although the fix is verified in v1.84.0 `http2_server.go`, so the bump would turn govulncheck red. Waived as `pending` until the database entry is corrected. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
-| `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24. release/v0.6.21 does not have it: the fork branch `fix/xray-sync-only-changed-users` was based on upstream `dev`. It is neither ported nor waived, so the check flags it until the release lead decides |
-| `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445`; first seen in the drift run of 2026-09-24, with upstream `dev` at `4a9d0cf8bd38`. Not assessed yet, neither ported nor waived, so the check flags it until the release lead decides |
+| `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24; ported in 0.6.21 by `40006fe`, which carries `Upstream: be2c445f7f486043d0efc4dfbe408c4a382869f8` |
+| `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445` on 2026-09-24; ported in 0.6.21 by `f9c4f05` (merged into release/v0.6.21 at `01eed71`), which carries `Upstream: 4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
@@ -133,7 +133,7 @@ The drift check reads every PasarGuard/node branch and tag, not only `main` and 
 | branch | head | status in the fork |
 |---|---|---|
 | `main` | `e9a9ba286413c404854b80c847b588b620426660` | merged (`v0.5.4`) |
-| `dev` | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | see the table above |
+| `dev` | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | see the table above |
 | `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` | fully in the fork's history, nothing to list |
 | `chunck` | `c194114eb1971d2e252fa1d117d655122c356d35` | `c194114` is a branch-only prototype; upstream squash-merged chunked user sync as `4f8568b` (#23), which the fork has. Superseded, waived |
 | `debug` | `8047fad98ec7e9955a405a97bf90a2411d8d6678` | `af0846e` and `8047fad` add diagnostic logging and were never merged upstream. Not applicable, waived |
@@ -326,7 +326,9 @@ Heads checked:
 - `52d5aab` (grpc 1.84.0, #91) is held out of 0.6.21 and waived as `pending`: the Go vulnerability database still
   lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), and the fix is verified in v1.84.0
   `http2_server.go`. It is ported when the database entry is corrected.
-- `be2c445` (#93) and `4a9d0cf` (#90) are the node commits still `UNPORTED` in the run of 2026-09-24.
+- `be2c445` (#93) and `4a9d0cf` (#90) are ported by `40006fe` and `f9c4f05`. The node section of the run of 2026-09-25 lists
+  33 upstream commits outside the target: 7 ported, 1 empty, 25 waived, 0 unported. It also lists 5 fork commits with
+  an upstream parent, all allowlisted, and 1 upstream merge with no changes of its own.
 
 0.6.21 takes five server-side Xray fixes early as patches. Each fix was written test-first: its test fails on the pin
 and passes with the fix.
@@ -510,7 +512,20 @@ branch does. Each commit is classified:
 | `PORTED` | a fork commit has the same `git patch-id --stable` (a verbatim cherry-pick), or a commit message in the fork's history has an `Upstream: <sha>` trailer or a `(cherry picked from commit <sha>)` line naming it (7 to 40 hex digits, prefix match), or a `patches/*.patch` header has such a line |
 | `EMPTY` | the upstream commit changes no file, so there is nothing to port |
 | `WAIVED` | `.github/upstream-waivers.txt` lists it with a reason |
+| `ALLOWED` | a fork commit with an upstream parent (see below) that the waiver file allowlists as `allowed-merge` |
 | `UNPORTED` | none of the above; the check exits 1 |
+
+Two more kinds of item close the ways upstream work can slip past the commit list:
+
+- **Fork commits with an upstream parent** (`node entry`). A fork-authored commit whose parent is an upstream commit
+  brings upstream history into the fork without porting it. A `git merge -s ours` of an upstream head looks exactly
+  like this, and it would hide every upstream commit it reaches. Every such commit must be listed in the waiver file as
+  `<fork sha> allowed-merge: <reason>`, after checking that it really carries the upstream changes; otherwise it is
+  `UNPORTED`. On 2026-09-25 there are four: the fork-point merge `9267b04` of `v0.5.4`, and three merges from 2024
+  that come before the fork point.
+- **Upstream merges with changes of their own** (`node merge`). The commit list skips merge commits. So every upstream
+  merge outside the target whose combined diff (`git show --cc`) is not empty must be ported or waived, like any other
+  commit. A clean merge has an empty combined diff and is only counted.
 
 The third-party sections are described above, and they use the same `PORTED`, `WAIVED` and `UNPORTED` statuses, plus
 `FIXED` for an advisory already fixed in the pin. Merge commits are skipped, because their content is the commits they
@@ -547,7 +562,15 @@ Add one line to `.github/upstream-waivers.txt`:
 
 - The id is the full upstream commit SHA. For a release, it is the SHA of the tag's commit, which the check prints.
   For an advisory, it is the GHSA id.
-- `category` is one of `rejected`, `superseded`, `pending` or `not-applicable`.
+- `category` is one of `rejected`, `superseded`, `pending`, `not-applicable` or `allowed-merge`. `allowed-merge` takes the
+  sha of a fork commit instead of an upstream one (see the node entry check above).
+- A `pending` waiver must carry `until:YYYY-MM-DD`, at most 30 days ahead, or an issue reference
+  `issue:<owner>/<repo>#<number>`, or both; otherwise the line is malformed and the check exits 2.
+  - After its `until:` date, the waiver no longer waives anything. Its item turns `UNPORTED`, and the run lists it under
+    `EXPIRED WAIVERS`.
+  - Extending a date is a decision, not a formality. A waiver that hides a live bug in shipped code gets a fix or an
+    owner, not a new date.
+  - `DRIFT_TODAY=YYYY-MM-DD` sets today's date for tests.
 - The reason is mandatory and must say why, for example
   `superseded: the fork fixed this in <fork sha>` or `not-applicable: upstream release tooling`. A `pending` reason
   names the release or project that will take it.
