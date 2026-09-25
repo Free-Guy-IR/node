@@ -36,7 +36,7 @@ func userEntryForType(user *common.User, typ string) (userEntry, bool) {
 	switch typ {
 	case "hysteria2":
 		p := proxies.GetHysteria2()
-		if p == nil {
+		if p.GetPassword() == "" {
 			return userEntry{}, false
 		}
 		return userEntry{Name: email, Password: p.GetPassword()}, true

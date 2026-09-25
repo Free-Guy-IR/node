@@ -234,7 +234,7 @@ func (c *Config) indexInbounds() error {
 				if !ok {
 					continue
 				}
-				if ue, ok := userEntryFromJSON(typ, um); ok {
+				if ue, ok := userEntryFromJSON(typ, um); ok && (typ != "hysteria2" || ue.Password != "") {
 					entry.users[ue.Name] = ue
 				}
 			}

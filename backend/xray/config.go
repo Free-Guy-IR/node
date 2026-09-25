@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/netip"
 	"reflect"
@@ -120,6 +121,12 @@ func (c *Config) buildInboundUpdates(users []*common.User) (map[string]*Inbound,
 		}
 	}
 
+	for _, update := range updates {
+		slices.SortFunc(update.accounts, func(a, b api.Account) int {
+			return strings.Compare(a.GetEmail(), b.GetEmail())
+		})
+	}
+
 	return inboundByTag, updates
 }
 
@@ -209,7 +216,7 @@ func (i *Inbound) syncUsers(users []*common.User) {
 
 	case Hysteria:
 		for _, user := range users {
-			if user.GetProxies().GetHysteria() == nil {
+			if !hasHysteriaAuth(user) {
 				continue
 			}
 			if slices.Contains(user.Inbounds, i.Tag) {
@@ -416,6 +423,15 @@ func (i *Inbound) removeUser(email string) {
 	}
 }
 
+func (i *Inbound) accountsByEmailLocked() []api.Account {
+	emails := slices.Sorted(maps.Keys(i.clients))
+	accounts := make([]api.Account, 0, len(emails))
+	for _, email := range emails {
+		accounts = append(accounts, i.clients[email])
+	}
+	return accounts
+}
+
 type Stats struct{}
 
 func (c *Config) ToBytes() ([]byte, error) {
@@ -439,10 +455,11 @@ func (c *Config) ToBytes() ([]byte, error) {
 			continue
 		}
 
+		accounts := i.accountsByEmailLocked()
 		switch i.Protocol {
 		case Vmess:
 			clients := make([]*api.VmessAccount, 0, len(i.clients))
-			for _, account := range i.clients {
+			for _, account := range accounts {
 				if vmessAccount, ok := account.(*api.VmessAccount); ok {
 					clients = append(clients, vmessAccount)
 				}
@@ -451,7 +468,7 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 		case Vless:
 			clients := make([]*api.VlessAccount, 0, len(i.clients))
-			for _, account := range i.clients {
+			for _, account := range accounts {
 				if vlessAccount, ok := account.(*api.VlessAccount); ok {
 					clients = append(clients, vlessAccount)
 				}
@@ -460,7 +477,7 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 		case Trojan:
 			clients := make([]*api.TrojanAccount, 0, len(i.clients))
-			for _, account := range i.clients {
+			for _, account := range accounts {
 				if trojanAccount, ok := account.(*api.TrojanAccount); ok {
 					clients = append(clients, trojanAccount)
 				}
@@ -471,7 +488,7 @@ func (c *Config) ToBytes() ([]byte, error) {
 			method, methodOk := i.Settings["method"].(string)
 			if methodOk && strings.HasPrefix(method, "2022-blake3") {
 				clients := make([]*api.ShadowsocksAccount, 0, len(i.clients))
-				for _, account := range i.clients {
+				for _, account := range accounts {
 					if ssAccount, ok := account.(*api.ShadowsocksAccount); ok {
 						clients = append(clients, ssAccount)
 					}
@@ -479,7 +496,7 @@ func (c *Config) ToBytes() ([]byte, error) {
 				i.Settings["clients"] = clients
 			} else {
 				clients := make([]*api.ShadowsocksTcpAccount, 0, len(i.clients))
-				for _, account := range i.clients {
+				for _, account := range accounts {
 					if ssTcpAccount, ok := account.(*api.ShadowsocksTcpAccount); ok {
 						clients = append(clients, ssTcpAccount)
 					}
@@ -489,7 +506,7 @@ func (c *Config) ToBytes() ([]byte, error) {
 
 		case Hysteria:
 			clients := make([]*api.HysteriaAccount, 0, len(i.clients))
-			for _, account := range i.clients {
+			for _, account := range accounts {
 				if hyAccount, ok := account.(*api.HysteriaAccount); ok {
 					clients = append(clients, hyAccount)
 				}

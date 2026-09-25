@@ -36,11 +36,15 @@ func setupUserAccount(user *common.User) (api.ProxySettings, error) {
 		settings.Shadowsocks2022 = api.NewShadowsocksAccount(user)
 	}
 
-	if user.GetProxies().GetHysteria() != nil {
+	if hasHysteriaAuth(user) {
 		settings.Hysteria = api.NewHysteriaAccount(user)
 	}
 
 	return settings, nil
+}
+
+func hasHysteriaAuth(user *common.User) bool {
+	return user.GetProxies().GetHysteria().GetAuth() != ""
 }
 
 func inboundFlow(inbound *Inbound) string {
