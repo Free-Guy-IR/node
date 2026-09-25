@@ -1,0 +1,5 @@
+/.github/workflows/ @Free-Guy-IR
+/.github/CODEOWNERS @Free-Guy-IR
+/.github/upstream-waivers.txt @Free-Guy-IR
+/scripts/workflow_policy.sh @Free-Guy-IR
+/scripts/upstream_drift.sh @Free-Guy-IR
