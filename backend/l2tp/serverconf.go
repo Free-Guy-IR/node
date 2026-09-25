@@ -207,7 +207,7 @@ func (o *L2TP) writeIPScripts() error {
 	}, "\n")
 
 	for path, content := range map[string]string{o.ipUpScriptPath(): up, o.ipDownScriptPath(): down} {
-		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		if err := writeFileAtomic(path, []byte(content), 0o755); err != nil {
 			return err
 		}
 	}
