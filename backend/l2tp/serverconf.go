@@ -70,7 +70,10 @@ func (o *L2TP) writeConfig() error {
 const scriptHelpers = `load() {
   r_user=; r_tag=; r_pid=; r_started=; r_ifname=; r_ifindex=; r_proc=
   [ -f "$1" ] || return 1
-  while IFS='=' read -r k v; do
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *=*) ;; *) continue ;; esac
+    k="${line%%=*}"
+    v="${line#*=}"
     case "$k" in
       user) r_user="$v" ;;
       tag) r_tag="$v" ;;
@@ -91,6 +94,10 @@ isnum() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
 }`
 
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func (o *L2TP) writeIPScripts() error {
 	up := strings.Join([]string{
 		"#!/bin/sh",
@@ -99,10 +106,10 @@ func (o *L2TP) writeIPScripts() error {
 		`[ -n "$PEERNAME" ] || exit 0`,
 		`[ -n "$IF" ] || exit 0`,
 		"set -f",
-		"d=" + sessionStateDir,
-		"own=" + pppdRecordDir,
-		"sys=" + sysClassNet,
-		"proc=" + procRoot,
+		"d=" + shellQuote(sessionStateDir),
+		"own=" + shellQuote(pppdRecordDir),
+		"sys=" + shellQuote(sysClassNet),
+		"proc=" + shellQuote(procRoot),
 		scriptHelpers,
 		`mkdir -p "$d" "$own"; umask 077`,
 		`p="${PPPD_PID:-0}"`,
@@ -143,10 +150,10 @@ func (o *L2TP) writeIPScripts() error {
 		`IF="${IFNAME:-$PPP_IFACE}"`,
 		`[ -n "$IF" ] || exit 0`,
 		"set -f",
-		"d=" + sessionStateDir,
-		"own=" + pppdRecordDir,
-		"sys=" + sysClassNet,
-		"fin=" + sessionFinalDir,
+		"d=" + shellQuote(sessionStateDir),
+		"own=" + shellQuote(pppdRecordDir),
+		"sys=" + shellQuote(sysClassNet),
+		"fin=" + shellQuote(sessionFinalDir),
 		scriptHelpers,
 		`p="${PPPD_PID:-0}"`,
 		`f="$d/$IF"`,
