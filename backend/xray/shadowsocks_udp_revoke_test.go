@@ -82,9 +82,9 @@ func udpFlowInbound(c udpFlowCase, port int) map[string]any {
 func startUDPFlowClient(t *testing.T, c udpFlowCase, serverPort, echoPort int, secret string) int {
 	t.Helper()
 
-	password := secret
+	key := secret
 	if c.method == rotationSS2022 {
-		password = rotationServerKey + ":" + common.EnsureBase64Password(secret, rotationSS2022)
+		key = rotationServerKey + ":" + common.EnsureBase64Password(secret, rotationSS2022)
 	}
 	clientPort := freeTCPAndUDPPort(t)
 	startRevokeClient(t, map[string]any{
@@ -100,7 +100,7 @@ func startUDPFlowClient(t *testing.T, c udpFlowCase, serverPort, echoPort int, s
 			"tag":      "out",
 			"protocol": Shadowsocks,
 			"settings": map[string]any{"servers": []any{map[string]any{
-				"address": "127.0.0.1", "port": serverPort, "method": c.method, "password": password,
+				"address": "127.0.0.1", "port": serverPort, "method": c.method, "password": key,
 			}}},
 		}},
 	})
