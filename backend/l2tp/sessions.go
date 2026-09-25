@@ -28,6 +28,8 @@ var (
 	openFinalRecord = func(path string) (io.ReadCloser, error) {
 		return os.Open(path)
 	}
+	listDir         = os.ReadDir
+	readSessionFile = os.ReadFile
 )
 
 type l2tpSession struct {
@@ -61,7 +63,7 @@ func ownsRecord(recordTag, tag string) bool {
 }
 
 func readSessions(tag string) []l2tpSession {
-	entries, err := os.ReadDir(sessionStateDir)
+	entries, err := listDir(sessionStateDir)
 	if err != nil {
 		return nil
 	}
@@ -71,7 +73,7 @@ func readSessions(tag string) []l2tpSession {
 			continue
 		}
 		path := filepath.Join(sessionStateDir, e.Name())
-		raw, err := os.ReadFile(path)
+		raw, err := readSessionFile(path)
 		if err != nil {
 			continue
 		}
@@ -151,7 +153,7 @@ func readFinalRecords(tag string) []finalRecord {
 
 func scanFinalRecords(tag string) finalScan {
 	var scan finalScan
-	entries, err := os.ReadDir(sessionFinalDir)
+	entries, err := listDir(sessionFinalDir)
 	if err != nil {
 		return scan
 	}
