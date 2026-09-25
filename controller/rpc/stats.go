@@ -57,12 +57,7 @@ func (s *Service) GetUserOnlineIpListStats(ctx context.Context, request *common.
 }
 
 func (s *Service) GetBackendStats(ctx context.Context, _ *common.Empty) (*common.BackendStatsResponse, error) {
-	backend, err := s.backend()
-	if err != nil {
-		return nil, err
-	}
-
-	return backend.GetSysStats(ctx)
+	return s.PrimarySysStats(ctx)
 }
 
 func (s *Service) GetOutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {

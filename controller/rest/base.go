@@ -34,10 +34,9 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Println("New connection from ", ip, " core control access was taken away from previous client.")
-		s.Disconnect()
 	}
 
-	if err := s.StartBackend(r.Context(), data); err != nil {
+	if err := s.ReplaceBackend(r.Context(), data); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}

@@ -43,7 +43,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer service.Disconnect()
+	defer service.Close()
 
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)

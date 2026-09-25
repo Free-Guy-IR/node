@@ -15,6 +15,13 @@ import (
 	"github.com/pasarguard/node/controller"
 )
 
+func userSyncFailureStatus(err error) int {
+	if errors.Is(err, controller.ErrBackendNotInitialized) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusInternalServerError
+}
+
 func (s *Service) SyncUser(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -38,7 +45,7 @@ func (s *Service) SyncUser(w http.ResponseWriter, r *http.Request) {
 
 	if err = s.SyncUserAll(r.Context(), user); err != nil {
 		log.Printf("Error syncing user: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), userSyncFailureStatus(err))
 		return
 	}
 
@@ -66,7 +73,7 @@ func (s *Service) SyncUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err = s.SyncUsersAll(r.Context(), users.GetUsers()); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), userSyncFailureStatus(err))
 		return
 	}
 
@@ -130,7 +137,7 @@ func (s *Service) SyncUsersChunked(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.UpdateUsersAll(r.Context(), users); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), userSyncFailureStatus(err))
 		return
 	}
 

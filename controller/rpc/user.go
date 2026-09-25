@@ -33,6 +33,9 @@ func (s *Service) SyncUser(stream grpc.ClientStreamingServer[common.User, common
 
 		if err = s.QueueUserAll(stream.Context(), user); err != nil {
 			log.Printf("Error syncing user: %v", err)
+			if errors.Is(err, controller.ErrBackendNotInitialized) {
+				return err
+			}
 			return status.Errorf(codes.Internal, "failed to update user: %v", err)
 		}
 	}
@@ -85,6 +88,9 @@ func (s *Service) SyncUsersChunked(stream grpc.ClientStreamingServer[common.User
 	}
 
 	if err := s.UpdateUsersAll(stream.Context(), users); err != nil {
+		if errors.Is(err, controller.ErrBackendNotInitialized) {
+			return err
+		}
 		return status.Errorf(codes.Internal, "failed to update users: %v", err)
 	}
 
