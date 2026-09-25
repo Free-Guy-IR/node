@@ -5,9 +5,18 @@ import (
 	"time"
 )
 
-type allowEveryone struct{}
+var beforeAllowlistCheck = func(net.IP) {}
 
-func (allowEveryone) Contains(net.IP) bool { return true }
+type allowEveryone struct {
+	panics *panicGuard
+}
+
+func (a allowEveryone) Contains(ip net.IP) (admitted bool) {
+	defer a.panics.absorb()
+	admitted = true
+	beforeAllowlistCheck(ip)
+	return admitted
+}
 
 func (allowEveryone) Run(time.Duration) {}
 

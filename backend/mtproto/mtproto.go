@@ -45,6 +45,7 @@ type proxyInstance struct {
 	serveDone   chan struct{}
 	accumulator *eventAccumulator
 	streams     *streamSet
+	record      func(string)
 }
 
 func (pi *proxyInstance) serve(listener net.Listener) {
@@ -57,12 +58,47 @@ func (pi *proxyInstance) serve(listener net.Listener) {
 
 	go func() {
 		defer close(done)
+		defer pi.absorbServePanic(listener)
 		if pi.mp != nil {
 			_ = pi.mp.Serve(listener)
 			return
 		}
 		_ = pi.proxy.Serve(listener)
 	}()
+}
+
+func (pi *proxyInstance) absorbServePanic(listener net.Listener) {
+	value := recover()
+	if value == nil {
+		return
+	}
+	_ = listener.Close()
+	reportPanic(fmt.Sprintf("the serve loop of instance %q, which closed its listener and stopped accepting", pi.tag), value, pi.record)
+}
+
+func (b *Backend) stopProxy(tag string, proxy *mtglib.Proxy) bool {
+	outcome := make(chan bool, 1)
+	go func() {
+		defer b.absorbProxyShutdownPanic(tag, outcome)
+		proxy.Shutdown()
+		outcome <- true
+	}()
+	select {
+	case stopped := <-outcome:
+		return stopped
+	case <-time.After(serveExitTimeout):
+		alarm(fmt.Sprintf("mtproto instance %q: the proxy shutdown did not return within %s, the node shutdown goes on without it and the next backend bills what it still relays", tag, serveExitTimeout), b.recordLog)
+		return false
+	}
+}
+
+func (b *Backend) absorbProxyShutdownPanic(tag string, outcome chan<- bool) {
+	value := recover()
+	if value == nil {
+		return
+	}
+	reportPanic(fmt.Sprintf("the proxy shutdown of instance %q", tag), value, b.recordLog)
+	outcome <- false
 }
 
 func (pi *proxyInstance) awaitServeExit() bool {
@@ -191,6 +227,7 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 		mp:          mp,
 		accumulator: accumulator,
 		streams:     newStreamSet(),
+		record:      b.recordLog,
 	}
 
 	pi.serve(listener)
@@ -262,13 +299,16 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			continue
 		}
 
+		eventStream := newMtprotoEventStream(accumulator, b.authenticatedEmail)
+		eventStream.panics = newPanicGuard(fmt.Sprintf("the event stream of instance %q", inst.Tag), b.recordLog)
+
 		opts := mtglib.ProxyOpts{
 			Logger:             instLogger,
 			Network:            ntw,
 			AntiReplayCache:    antireplay.NewStableBloomFilter(antireplay.DefaultStableBloomFilterMaxSize, antireplay.DefaultStableBloomFilterErrorRate),
 			IPBlocklist:        ipblocklist.NewNoop(),
-			IPAllowlist:        allowEveryone{},
-			EventStream:        newMtprotoEventStream(accumulator, b.authenticatedEmail),
+			IPAllowlist:        allowEveryone{panics: newPanicGuard(fmt.Sprintf("the allowlist of instance %q", inst.Tag), b.recordLog)},
+			EventStream:        eventStream,
 			Secrets:            b.secretsForInstance(inst.FakeTLSDomain),
 			DomainFrontingHost: inst.FakeTLSDomain,
 			PlainMode:          inst.Plain(),
@@ -288,7 +328,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: inst.Port})
 		if err != nil {
-			proxy.Shutdown()
+			b.stopProxy(inst.Tag, proxy)
 			b.Shutdown()
 			return nil, fmt.Errorf("mtproto: failed to listen on instance %q port %d: %w", inst.Tag, inst.Port, err)
 		}
@@ -298,6 +338,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			domain:      inst.FakeTLSDomain,
 			proxy:       proxy,
 			accumulator: accumulator,
+			record:      b.recordLog,
 		}
 		b.instances[inst.Tag] = pi
 
@@ -413,8 +454,8 @@ func (b *Backend) Shutdown() {
 		if !inst.awaitServeExit() {
 			b.recordLog(fmt.Sprintf("mtproto instance %q: serve did not stop within %s, shutting down anyway", inst.tag, serveExitTimeout))
 		}
-		if inst.proxy != nil {
-			inst.proxy.Shutdown()
+		if inst.proxy != nil && !b.stopProxy(inst.tag, inst.proxy) {
+			running = append(running, inst)
 		}
 		if inst.mp != nil {
 			inst.mp.Shutdown()
