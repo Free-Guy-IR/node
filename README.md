@@ -108,11 +108,26 @@ unless the draft is a pre-release), and publishes the draft. If a gate fails, th
 re-run the workflow after a transient failure, otherwise fix the cause on a new commit and release that under the next
 version.
 
-A release published by hand, or by any tool other than Publish Release, is turned back into a draft by the
-**Release Guard** workflow, which fails with a note saying so. Run Publish Release for it instead.
+## Release Guard
 
-**Build and Push Docker Image (Manual)** rebuilds an image by hand. It adds `:latest` only when run from `main` or from
-a tag with a published, non-prerelease release. From any other ref it publishes only the ref-named tag.
+A release published by hand, or by any tool other than Publish Release, is turned back into a draft by the
+**Release Guard** workflow, and that run fails. To publish it correctly, run the **Publish Release** workflow by
+workflow_dispatch from the release tag:
+
+```bash
+gh workflow run release.yml --ref vX.Y.Z
+```
+
+## Image tags
+
+- `:<release tag>` and `:latest` are moved only by Publish Release. `:latest` points at the most recently published
+  non-prerelease release. Release image tags are immutable.
+- `:main`, `:dev` and the other branch tags are moved by the branch build on every push, and only while the branch
+  still points at the built commit.
+- **Build and Push Docker Image (Manual)** rebuilds an image by hand and never moves `:latest`. From `main` it moves
+  `:edge`, and it can add a custom tag. From another branch it publishes only the branch-named tag. From a tag it
+  needs a custom tag. A custom tag may not be `latest`, `edge` or `main`, may not start with `v` and a digit, and may
+  not be the name of an existing release or tag.
 
 # Contributors
 

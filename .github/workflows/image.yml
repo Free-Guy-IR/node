@@ -32,10 +32,14 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
       - name: Check the requested tags
         env:
           TAGS: ${{ inputs.tags }}
           BRANCH: ${{ inputs.branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
           tags_re="^(${tag}( ${tag})*)?\$"
@@ -48,9 +52,10 @@ jobs:
             echo "::error title=Invalid branch::'${BRANCH}' is not a branch name"
             exit 1
           fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v7
+          if [ -n "${TAGS}" ]; then
+            read -r -a tags <<< "${TAGS}"
+            bash scripts/image_tag_policy.sh "${tags[@]}"
+          fi
 
       - name: Log in to the Container registry
         uses: docker/login-action@v4.6.0
