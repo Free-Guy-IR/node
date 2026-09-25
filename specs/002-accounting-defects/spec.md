@@ -186,6 +186,19 @@ server-to-client amount and check the labels and that the per-user sum is unchan
   after its last poll are lost as today (no counter left to read).
 - L2TP: the container is recreated (new image): the run directory is new, so there are no sessions,
   final records or counted state; nothing to double count.
+- L2TP: an IPCP renegotiation runs ip-down and ip-up on the same pppd while the interface and its
+  counters survive: ip-up keeps the session identity (same pppd process fingerprint, interface name and
+  index), so the renegotiated session counts on from its consumed watermark and is billed once.
+- L2TP: pppd exits before its ip-down finishes and the next pppd takes the interface name: the late
+  ip-down bills its own session from its per-pppd record with pppd's own totals, and never bills,
+  rewrites or removes the next session's file.
+- L2TP: a final record that cannot be opened or read is retried every poll and never removed unbilled;
+  one that can never be used (no user, no interface, malformed values), or stays unreadable for the whole
+  grace, is set aside as `.<name>.unreadable` with a log line.
+- L2TP: a session whose pppd cannot be read in `/proc` (for example `EMFILE`) stays listed and counted;
+  it is reaped only when its pppd is provably gone.
+- L2TP: a pid reused by a new pppd (container restart, reboot, even within one second) gets a new
+  identity and is counted from zero.
 - WireGuard: a peer that never completed a handshake but has non-zero counters is accounted; its
   online status stays offline.
 - WireGuard: a user sync whose kernel call fails does not restart any counter; the flush taken before
@@ -253,8 +266,10 @@ server-to-client amount and check the labels and that the per-user sum is unchan
 
 - **Counted L2TP session state**: per inbound tag; per session (interface name, pppd pid, start time):
   the rx/tx values already counted. Lives as long as the run directory (the container).
+- **L2TP per-pppd record**: written by ip-up per pppd pid, next to the session file: the session
+  identity, interface index and pppd process fingerprint; dropped after its pppd is gone for the grace.
 - **L2TP final record**: written by ip-down when a session ends: user, tag, interface name, session
-  identity, final rx/tx.
+  identity, process fingerprint, final rx/tx.
 - **Accounting hand-over**: per backend kind and key (L2TP inbound tag, WireGuard interface name): the
   per-user tracker and node-level counters a shutting-down instance leaves for its successor in the same
   process; taken at most once.
@@ -283,9 +298,13 @@ server-to-client amount and check the labels and that the per-user sum is unchan
 - The Linux kernel restarts a WireGuard peer's byte counters when the peer list is replaced
   (`ReplacePeers`), and deleting the interface drops all counters.
 - The ppp interface statistics are monotonic for the life of one pppd session; a new session on a reused
-  interface name has a different pppd pid or start time.
+  interface name has a different pppd pid or start time (ip-up keeps start times strictly increasing
+  per pid).
 - The ip-down script writes the final record before it removes the session file, and a new session
-  cannot take the interface name before the old pppd released it.
+  cannot take the interface name before the old pppd released it; pppd may release it before its
+  ip-down finishes, which ip-down handles through its per-pppd record.
+- One pppd serves one ppp interface for its whole life (xl2tpd starts a pppd per call, without `persist`
+  or `demand`).
 - The panel reads per-user stats with reset every 30 s; a Start is followed by reads of the new backend.
 - Bytes lost when the node process dies without a graceful shutdown (in-memory counts not yet read by
   the panel) remain lost, as for every other backend; the hand-over covers the in-process Start path.
