@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pasarguard/node/common"
 )
@@ -18,6 +19,7 @@ import (
 const (
 	interleavingSeeds = 24
 	interleavingSteps = 70
+	racingPolls       = 4
 )
 
 type interleaving struct {
@@ -112,20 +114,29 @@ func (x *interleaving) take() {
 	}
 }
 
+func (x *interleaving) pauses() []time.Duration {
+	out := make([]time.Duration, 1+x.r.Intn(racingPolls))
+	for i := range out {
+		out[i] = time.Duration(x.r.Intn(8000)) * time.Microsecond
+	}
+	return out
+}
+
 func (x *interleaving) racing(scripts ...func() error) {
 	x.t.Helper()
 	o := x.o
 	stop := make(chan struct{})
 	var poller sync.WaitGroup
 	if x.r.Intn(3) != 0 {
+		pauses := x.pauses()
 		poller.Add(1)
 		go func() {
 			defer poller.Done()
-			for {
+			for _, d := range pauses {
 				select {
 				case <-stop:
 					return
-				default:
+				case <-time.After(d):
 					o.poll()
 				}
 			}
@@ -134,14 +145,15 @@ func (x *interleaving) racing(scripts ...func() error) {
 	var nodeReads [2]int64
 	var nodeErr error
 	if x.r.Intn(2) == 0 {
+		pauses := x.pauses()
 		poller.Add(1)
 		go func() {
 			defer poller.Done()
-			for i := 0; ; i++ {
+			for i, d := range pauses {
 				select {
 				case <-stop:
 					return
-				default:
+				case <-time.After(d):
 					v, err := nodeRead(o, nodeStatTypes[i%2])
 					if err != nil {
 						nodeErr = err
