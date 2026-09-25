@@ -169,3 +169,36 @@ func TestLegacyRenegotiationEndingBeforeItsNextPollIsBilledOnce(t *testing.T) {
 	a.poll()
 	expectUsers(t, "both finals of one pppd", takeUsers(t, a), map[string]int64{"7": 450})
 }
+
+func TestPidReusedAcrossTwoRestartsInOneSecondNeverTakesAnEndedIdentity(t *testing.T) {
+	e := newAcctEnv(t)
+	h := newFakeHost(t, e)
+	a := e.instance("7", "8", "9")
+	run := func(user string, onSecondName bool) l2tpSession {
+		t.Helper()
+		var holder *fakePppd
+		if onSecondName {
+			holder = h.spawn(4000, "9")
+		}
+		p := h.spawn(4100, user)
+		h.grow(p, 300, 200)
+		h.ipUp(p)
+		s, _ := h.session(p.ifname)
+		a.poll()
+		h.ipDown(p)
+		h.exit(p)
+		if holder != nil {
+			h.exit(holder)
+		}
+		a.poll()
+		expectUsers(t, "pppd of "+user, takeUsers(t, a), map[string]int64{user: 500})
+		a = e.restart(a, false, "7", "8", "9")
+		return s
+	}
+	first := run("7", true)
+	run("8", false)
+	third := run("7", true)
+	if first.identity() == third.identity() {
+		t.Fatalf("a pppd reusing pid %d on %s took the ended identity %+v", first.pid, first.ifname, first.identity())
+	}
+}
