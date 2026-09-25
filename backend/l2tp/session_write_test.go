@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -133,4 +134,47 @@ func TestRewritingTheScriptsLeavesACopyBeingRunIntact(t *testing.T) {
 			t.Fatalf("the copy being run changed: %q, %v", raw, err)
 		}
 	}
+}
+
+func TestScriptsKeepEveryCharacterOfAKeyValue(t *testing.T) {
+	for i, name := range []string{"bob=", "bob==", "=bob", "a=b=c", `back\slash`, "q'uo\"te", "$HOME", "-n"} {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			e := newAcctEnv(t)
+			h := newFakeHost(t, e)
+			a := e.instance(name, "bob")
+			p := h.spawn(4300, name)
+			h.grow(p, 300, 200)
+			h.ipUp(p)
+			if s, ok := h.session(p.ifname); !ok || s.user != name {
+				t.Fatalf("ip-up recorded user %q (listed %v), want %q", s.user, ok, name)
+			}
+			a.poll()
+			h.grow(p, 400, 100)
+			h.ipDown(p)
+			h.exit(p)
+			a.poll()
+			expectUsers(t, "the whole session", takeUsers(t, a), map[string]int64{name: 1000})
+		})
+	}
+}
+
+func TestScriptsQuoteTheirDirectories(t *testing.T) {
+	e := newAcctEnv(t)
+	root := filepath.Join(e.root, "a b$HOME'q")
+	prevState, prevFinal, prevRecords := sessionStateDir, sessionFinalDir, pppdRecordDir
+	t.Cleanup(func() { sessionStateDir, sessionFinalDir, pppdRecordDir = prevState, prevFinal, prevRecords })
+	sessionStateDir = filepath.Join(root, "sessions")
+	sessionFinalDir = filepath.Join(root, "final")
+	pppdRecordDir = filepath.Join(root, "pppd")
+	h := newFakeHost(t, e)
+	a := e.instance("7")
+	p := h.spawn(4300, "7")
+	h.grow(p, 300, 200)
+	h.ipUp(p)
+	a.poll()
+	h.grow(p, 400, 100)
+	h.ipDown(p)
+	h.exit(p)
+	a.poll()
+	expectUsers(t, "a session under directories that need quoting", takeUsers(t, a), map[string]int64{"7": 1000})
 }
