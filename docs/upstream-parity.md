@@ -28,7 +28,7 @@ State as of 2026-09-24, release 0.6.21.
 |---|---|---|
 | `9bb6b35df2cc514385c68687bc6f771795d4b68e` | deps: gopsutil 4.26.7 to 4.26.8 (#85) | ported in 0.6.21 (`f53ffa2`) |
 | `076a874e937d772ddd9228a01911df4338afecb7` | deps: grpc 1.83.1 to 1.83.2 (#84) | ported in 0.6.21 (`f53ffa2`) |
-| `a69d7ed6811af281ffc01e11478638d922130f0d` | keep a running core across duplicate start and keep-alive jitter | watchdog part ported in 0.6.21 (`40248f2`); the `StartOrAttach` part is rejected (see below) |
+| `a69d7ed6811af281ffc01e11478638d922130f0d` | keep a running core across duplicate start and keep-alive jitter | watchdog part ported in 0.6.21 (`40248f2`); early detach in `Disconnect` and the `Stop` reply ported in 0.6.21 (`af180e2`); the `StartOrAttach` part is rejected (see below) |
 | `f751dcc82569d0543838124744ddf021890ab09d` | deps: grpc 1.83.1 to 1.83.2 (#89) | nothing to port: an empty commit whose tree equals its parent; the grpc bump itself is #84 |
 | `0d3bc70f546e47ebe735b7764263f15fa023f458` | deps: x/sys 0.47.0 to 0.48.0 (#88) | ported in 0.6.21 (`f53ffa2`) |
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
@@ -38,16 +38,30 @@ State as of 2026-09-24, release 0.6.21.
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24. release/v0.6.21 does not have it: the fork branch `fix/xray-sync-only-changed-users` was based on upstream `dev`. It is neither ported nor waived, so the check flags it until the release lead decides |
 | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445`; first seen in the drift run of 2026-09-24, with upstream `dev` at `4a9d0cf8bd38`. Not assessed yet, neither ported nor waived, so the check flags it until the release lead decides |
 
-The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps) and `40248f2` (the watchdog).
+The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
+`af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
 The toolchain moved to Go 1.26.6 in `345febd` (fixes GO-2026-6090), with a govulncheck CI job from `47ef6ee`.
 
 Notes on the ported commits:
 
-- `a69d7ed` bundles four changes. The fork takes the one that fixes a proven race: the keep-alive watchdog re-checks
-  staleness while it holds the control lock, so a late watchdog can no longer tear down the core that a concurrent
-  panel `Start` has just created. Its `StartOrAttach` is refused. The fork also took its 5 s `keepAliveGrace`. Its `Stop` reply of `&Empty{}` instead of `nil`
-  and its early detach in `Disconnect` are not taken: every caller of `Disconnect` now holds the control lock.
+- `a69d7ed` bundles four changes. The fork takes three of them and refuses `StartOrAttach`.
+  - `40248f2` takes the change that fixes a proven race. The keep-alive watchdog re-checks staleness while it holds the
+    control lock, so a late watchdog can no longer tear down the core that a concurrent panel `Start` has just created.
+    It also takes the 5 s `keepAliveGrace`.
+  - `af180e2` takes the early detach in `Disconnect` and the `Stop` reply of `&Empty{}` instead of `nil`.
+  - An earlier revision of this page refused the early detach because "every caller of `Disconnect` now holds the
+    control lock". That was false. User-sync RPCs never take the control lock, and `cmd/node`'s deferred
+    `Disconnect` held no lock. A user sync that arrived while `Disconnect` was shutting cores down therefore reached
+    only the dying primary, was acknowledged, and was missing from the core that `Start` then built (finding C2 of the
+    0.6.21 adversarial review).
+  - The fork does not rely on the early detach alone. `af180e2` also adds a controller lifecycle lock. Every user-sync
+    message or batch holds it as a reader. `Start`, `Stop`, the watchdog, `AddBackend`, `RemoveBackend` and the
+    exit-time `Close` hold it as a writer, across the whole teardown, build and install. So a sync either completes on
+    the old core before the change starts, or waits and is applied to the new core. With no core running, a sync is
+    refused with `Unavailable`; it is never acknowledged.
+  - Under that lock the early detach is not what makes user syncs safe. The fork takes it because it matches
+    upstream, and because stats, `GetBaseInfo` and the other readers stop seeing a core that is going away.
 - `d44ca8e` only changes the helper's signature. Upstream's own `controller/controller_test.go` on `dev` still calls
   the old three-argument form and does not compile, so upstream's test file must not be copied verbatim.
 - `#84` also moves the indirect `golang.org/x/crypto`, `golang.org/x/net` and `golang.org/x/text` modules.
@@ -81,7 +95,7 @@ The fork does not port this, for these reasons:
    heartbeat `Start` ignored.
 
 What the fork keeps from the same upstream change is the part that is independent of the user list: the watchdog
-serialisation (`a69d7ed` watchdog part and `d44ca8e`).
+serialisation (`a69d7ed` watchdog part and `d44ca8e`), the early detach in `Disconnect`, and the `Stop` reply.
 
 Revisit this only if the panel stops relying on `Start` for convergence, for example after the epoch protocol below
 lands in the panel and the bridge with a guaranteed full snapshot on every reconnect.
