@@ -62,12 +62,34 @@ func ownsRecord(recordTag, tag string) bool {
 	return recordTag == "" || recordTag == tag
 }
 
+type unreadableSession struct {
+	ifname string
+	err    error
+}
+
+type sessionScan struct {
+	sessions   []l2tpSession
+	listErr    error
+	unreadable []unreadableSession
+}
+
+func (s sessionScan) complete() bool {
+	return s.listErr == nil && len(s.unreadable) == 0
+}
+
 func readSessions(tag string) []l2tpSession {
+	return scanSessions(tag).sessions
+}
+
+func scanSessions(tag string) sessionScan {
+	var scan sessionScan
 	entries, err := listDir(sessionStateDir)
 	if err != nil {
-		return nil
+		if !errors.Is(err, fs.ErrNotExist) {
+			scan.listErr = err
+		}
+		return scan
 	}
-	var out []l2tpSession
 	for _, e := range entries {
 		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
@@ -75,6 +97,9 @@ func readSessions(tag string) []l2tpSession {
 		path := filepath.Join(sessionStateDir, e.Name())
 		raw, err := readSessionFile(path)
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				scan.unreadable = append(scan.unreadable, unreadableSession{ifname: e.Name(), err: err})
+			}
 			continue
 		}
 		s, complete := parseSession(raw, e.Name())
@@ -85,9 +110,9 @@ func readSessions(tag string) []l2tpSession {
 			removeIfUnchanged(path, raw)
 			continue
 		}
-		out = append(out, s)
+		scan.sessions = append(scan.sessions, s)
 	}
-	return out
+	return scan
 }
 
 func parseSession(raw []byte, ifname string) (l2tpSession, bool) {
@@ -145,6 +170,7 @@ type finalScan struct {
 	records    []finalRecord
 	unreadable []unreadableFinal
 	unusable   []string
+	listErr    error
 }
 
 func readFinalRecords(tag string) []finalRecord {
@@ -155,6 +181,9 @@ func scanFinalRecords(tag string) finalScan {
 	var scan finalScan
 	entries, err := listDir(sessionFinalDir)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			scan.listErr = err
+		}
 		return scan
 	}
 	scan.records = make([]finalRecord, 0, len(entries))

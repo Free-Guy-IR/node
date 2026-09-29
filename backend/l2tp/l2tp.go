@@ -77,6 +77,9 @@ type L2TP struct {
 	cancelPoll         context.CancelFunc
 	hostRoutingCleanup func()
 	finalRemoveFailing bool
+	sessionListFailing bool
+	sessionReadFailing bool
+	finalListFailing   bool
 	finalReadFailing   bool
 	setAsideFailing    bool
 	finalUnreadable    map[string]int

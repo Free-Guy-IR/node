@@ -2,6 +2,7 @@ package l2tp
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -59,5 +60,32 @@ func (o *L2TP) setAsideLocked(path, reason string) bool {
 		return false
 	}
 	o.emitLogf("Error", "l2tp: final record %s %s, kept as %s and not billed", path, reason, aside)
+	return true
+}
+
+func (o *L2TP) holdUnlistedLocked(sessions sessionScan, finals finalScan, keep map[sessionIdentity]struct{}) {
+	if sessions.listErr != nil || finals.listErr != nil {
+		o.counted.holdAll(keep)
+	}
+	for _, u := range sessions.unreadable {
+		o.counted.holdInterface(u.ifname, keep)
+	}
+	o.sessionListFailing = o.logStreak(o.sessionListFailing, sessions.listErr, "l2tp: cannot list the sessions, every counted session is held until they can be listed: %v")
+	o.finalListFailing = o.logStreak(o.finalListFailing, finals.listErr, "l2tp: cannot list the final records, every counted session is held until they can be listed: %v")
+	var readErr error
+	if len(sessions.unreadable) > 0 {
+		u := sessions.unreadable[0]
+		readErr = fmt.Errorf("%s: %w", u.ifname, u.err)
+	}
+	o.sessionReadFailing = o.logStreak(o.sessionReadFailing, readErr, "l2tp: cannot read a session file, its interface's counted sessions are held until it can be read: %v")
+}
+
+func (o *L2TP) logStreak(failing bool, err error, format string) bool {
+	if err == nil {
+		return false
+	}
+	if !failing {
+		o.emitLogf("Error", format, err)
+	}
 	return true
 }

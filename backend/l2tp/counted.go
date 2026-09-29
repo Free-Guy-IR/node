@@ -37,6 +37,9 @@ type countedState struct {
 	counted  map[string]bool
 	dirty    bool
 	failing  bool
+
+	pendingSessions bool
+	pendingFinals   bool
 }
 
 func newCountedState() *countedState {
@@ -164,6 +167,12 @@ func (c *countedState) hold(rec finalRecord, keep map[sessionIdentity]struct{}) 
 		if id.ifname == rec.ifname && id.pid == rec.identity.pid {
 			keep[id] = struct{}{}
 		}
+	}
+}
+
+func (c *countedState) holdAll(keep map[sessionIdentity]struct{}) {
+	for id := range c.entries {
+		keep[id] = struct{}{}
 	}
 }
 
@@ -304,20 +313,53 @@ func (c *countedState) save(tag string) error {
 
 func presentAsCounted(tag string) *countedState {
 	c := newCountedState()
-	for _, s := range readSessions(tag) {
-		if rx, tx, ok := sessionBytes(s); ok {
-			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
-		}
-	}
-	scan := scanFinalRecords(tag)
-	for _, rec := range scan.records {
-		c.counted[filepath.Base(rec.path)] = true
-	}
-	for _, u := range scan.unreadable {
-		c.counted[filepath.Base(u.path)] = true
-	}
+	c.takePresent(scanSessions(tag), scanFinalRecords(tag))
 	c.dirty = true
 	return c
+}
+
+func (c *countedState) takePresent(sessions sessionScan, finals finalScan) {
+	c.takeSessions(sessions)
+	c.takeFinals(finals)
+	c.pendingSessions = !sessions.complete()
+	c.pendingFinals = finals.listErr != nil
+}
+
+func (c *countedState) takeSessions(sessions sessionScan) {
+	for _, s := range sessions.sessions {
+		id := s.identity()
+		if _, known := c.entries[id]; known {
+			continue
+		}
+		if rx, tx, ok := sessionBytes(s); ok {
+			c.raise(id, countedBytes{rx: rx, tx: tx})
+		}
+	}
+}
+
+func (c *countedState) takeFinals(finals finalScan) {
+	for _, rec := range finals.records {
+		if _, known := c.entries[rec.identity]; known && rec.hasIdentity {
+			continue
+		}
+		c.counted[filepath.Base(rec.path)] = true
+	}
+	for _, u := range finals.unreadable {
+		c.counted[filepath.Base(u.path)] = true
+	}
+}
+
+func (c *countedState) takeLatePresent(sessions sessionScan, finals finalScan) {
+	if c.pendingSessions && sessions.complete() {
+		c.takeSessions(sessions)
+		c.pendingSessions = false
+		c.dirty = true
+	}
+	if c.pendingFinals && finals.listErr == nil {
+		c.takeFinals(finals)
+		c.pendingFinals = false
+		c.dirty = true
+	}
 }
 
 func (o *L2TP) loadCountedLocked() {
@@ -331,7 +373,7 @@ func (o *L2TP) loadCountedLocked() {
 }
 
 func (o *L2TP) persistCountedLocked() {
-	if !o.counted.dirty {
+	if !o.counted.dirty || o.counted.pendingSessions || o.counted.pendingFinals {
 		return
 	}
 	if err := o.counted.save(o.config.InboundTag); err != nil {
