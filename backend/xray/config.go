@@ -453,112 +453,99 @@ func shadowsocks2022Placeholder(inbound *Inbound) *api.ShadowsocksAccount {
 	}
 }
 
-func (c *Config) ToBytes() ([]byte, error) {
-	// Acquire read locks for all inbounds
+func typedAccounts[T api.Account](accounts []api.Account) []T {
+	typed := make([]T, 0, len(accounts))
+	for _, account := range accounts {
+		if match, ok := account.(T); ok {
+			typed = append(typed, cloneAccount(match).(T))
+		}
+	}
+	return typed
+}
+
+func (i *Inbound) wireClientsLocked() (any, bool) {
+	if len(i.clients) == 0 {
+		if placeholder := shadowsocks2022Placeholder(i); placeholder != nil {
+			return []*api.ShadowsocksAccount{placeholder}, true
+		}
+		return []any{}, true
+	}
+
+	accounts := i.accountsByEmailLocked()
+	switch i.Protocol {
+	case Vmess:
+		return typedAccounts[*api.VmessAccount](accounts), true
+	case Vless:
+		return typedAccounts[*api.VlessAccount](accounts), true
+	case Trojan:
+		return typedAccounts[*api.TrojanAccount](accounts), true
+	case Shadowsocks:
+		if method, _ := i.Settings["method"].(string); strings.HasPrefix(method, "2022-blake3") {
+			return typedAccounts[*api.ShadowsocksAccount](accounts), true
+		}
+		return typedAccounts[*api.ShadowsocksTcpAccount](accounts), true
+	case Hysteria:
+		return typedAccounts[*api.HysteriaAccount](accounts), true
+	}
+	return nil, false
+}
+
+func (i *Inbound) snapshotLocked() *Inbound {
+	snapshot := &Inbound{
+		Tag:            i.Tag,
+		Listen:         i.Listen,
+		Port:           i.Port,
+		Protocol:       i.Protocol,
+		Settings:       i.Settings,
+		StreamSettings: i.StreamSettings,
+		Sniffing:       i.Sniffing,
+		Allocation:     i.Allocation,
+	}
+	if i.exclude {
+		return snapshot
+	}
+
+	settings := maps.Clone(i.Settings)
+	if settings == nil {
+		settings = make(map[string]any)
+	}
+	if clients, ok := i.wireClientsLocked(); ok {
+		settings["clients"] = clients
+	}
+	snapshot.Settings = settings
+	return snapshot
+}
+
+func wireLogConfig(logConfig *conf.LogConfig) *conf.LogConfig {
+	wire := conf.LogConfig{LogLevel: "info"}
+	if logConfig != nil {
+		wire = *logConfig
+	}
+	wire.AccessLog = ""
+	wire.ErrorLog = ""
+	return &wire
+}
+
+func (c *Config) snapshot() *Config {
+	snapshot := *c
+	snapshot.LogConfig = wireLogConfig(c.LogConfig)
+	snapshot.InboundConfigs = make([]*Inbound, 0, len(c.InboundConfigs))
+
 	for _, i := range c.InboundConfigs {
 		i.mu.RLock()
 	}
-
-	// Build slices from maps for serialization
 	for _, i := range c.InboundConfigs {
-		if i.exclude {
-			continue
-		}
-
-		if i.Settings == nil {
-			i.Settings = make(map[string]any)
-		}
-
-		if len(i.clients) == 0 {
-			if placeholder := shadowsocks2022Placeholder(i); placeholder != nil {
-				i.Settings["clients"] = []*api.ShadowsocksAccount{placeholder}
-			} else {
-				i.Settings["clients"] = []any{}
-			}
-			continue
-		}
-
-		accounts := i.accountsByEmailLocked()
-		switch i.Protocol {
-		case Vmess:
-			clients := make([]*api.VmessAccount, 0, len(i.clients))
-			for _, account := range accounts {
-				if vmessAccount, ok := account.(*api.VmessAccount); ok {
-					clients = append(clients, vmessAccount)
-				}
-			}
-			i.Settings["clients"] = clients
-
-		case Vless:
-			clients := make([]*api.VlessAccount, 0, len(i.clients))
-			for _, account := range accounts {
-				if vlessAccount, ok := account.(*api.VlessAccount); ok {
-					clients = append(clients, vlessAccount)
-				}
-			}
-			i.Settings["clients"] = clients
-
-		case Trojan:
-			clients := make([]*api.TrojanAccount, 0, len(i.clients))
-			for _, account := range accounts {
-				if trojanAccount, ok := account.(*api.TrojanAccount); ok {
-					clients = append(clients, trojanAccount)
-				}
-			}
-			i.Settings["clients"] = clients
-
-		case Shadowsocks:
-			method, methodOk := i.Settings["method"].(string)
-			if methodOk && strings.HasPrefix(method, "2022-blake3") {
-				clients := make([]*api.ShadowsocksAccount, 0, len(i.clients))
-				for _, account := range accounts {
-					if ssAccount, ok := account.(*api.ShadowsocksAccount); ok {
-						clients = append(clients, ssAccount)
-					}
-				}
-				i.Settings["clients"] = clients
-			} else {
-				clients := make([]*api.ShadowsocksTcpAccount, 0, len(i.clients))
-				for _, account := range accounts {
-					if ssTcpAccount, ok := account.(*api.ShadowsocksTcpAccount); ok {
-						clients = append(clients, ssTcpAccount)
-					}
-				}
-				i.Settings["clients"] = clients
-			}
-
-		case Hysteria:
-			clients := make([]*api.HysteriaAccount, 0, len(i.clients))
-			for _, account := range accounts {
-				if hyAccount, ok := account.(*api.HysteriaAccount); ok {
-					clients = append(clients, hyAccount)
-				}
-			}
-			i.Settings["clients"] = clients
-		}
+		snapshot.InboundConfigs = append(snapshot.InboundConfigs, i.snapshotLocked())
 	}
-
-	// Save Variables for next use
-	aLog := c.LogConfig.AccessLog
-	eLog := c.LogConfig.ErrorLog
-	c.LogConfig.AccessLog = ""
-	c.LogConfig.ErrorLog = ""
-
-	b, err := json.Marshal(c)
-
-	// Restore variables to prevent conflict on next run
-	c.LogConfig.AccessLog = aLog
-	c.LogConfig.ErrorLog = eLog
-
-	// Release all locks
 	for _, i := range c.InboundConfigs {
 		i.mu.RUnlock()
 	}
 
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return &snapshot
+}
+
+func (c *Config) ToBytes() ([]byte, error) {
+	return json.Marshal(c.snapshot())
 }
 
 func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, error) {
@@ -1058,11 +1045,8 @@ func (c *Config) checkPolicy() {
 
 func (c *Config) GetLogFiles() (accessFile, errorFile string) {
 	if c.LogConfig == nil {
-		c.LogConfig = &conf.LogConfig{
-			LogLevel: "info",
-		}
+		return "", ""
 	}
-
 	return c.LogConfig.AccessLog, c.LogConfig.ErrorLog
 }
 
