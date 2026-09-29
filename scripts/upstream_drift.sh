@@ -131,9 +131,95 @@ split_tokens "$work/commit-tokens" ""
 
 dockerfile_text=$(git show "$target_sha:Dockerfile" 2>/dev/null || true)
 makefile_text=$(git show "$target_sha:Makefile" 2>/dev/null || true)
+
+makefile_applies_xray_patches() {
+  printf '%s\n' "$makefile_text" | awk '
+    /^[[:space:]]*#/ { next }
+    index($0, "patches/xray-*.patch") && $0 ~ /(^|[[:space:]])apply([[:space:]]|$)/ &&
+      $0 !~ /--check|--stat|--numstat|--summary|--reverse|(^|[[:space:]])-R([[:space:]]|$)|[|][|][[:space:]]*(true|:)/ { found = 1 }
+    END { exit !found }'
+}
+
+dockerfile_applies_patch() {
+  printf '%s\n' "$dockerfile_text" | awk -v name="$1" '
+    function is_apply(c,   words, k, j, path) {
+      sub(/^[ \t]+/, "", c)
+      sub(/[ \t]+$/, "", c)
+      k = split(c, words, /[ \t]+/)
+      if (k < 3 || words[1] != "git" || words[2] != "apply") return 0
+      path = ""
+      for (j = 3; j <= k; j++) {
+        if (words[j] == "--verbose" || words[j] == "-v") continue
+        if (substr(words[j], 1, 1) == "-" || path != "") return 0
+        path = words[j]
+      }
+      return path == "/patches/" name
+    }
+    function handle(s,   w, n, i, kw, args, nargs, from_flag, dest, body, rest, c, op, prev) {
+      sub(/^[ \t]+/, "", s)
+      n = split(s, w, /[ \t]+/)
+      kw = toupper(w[1])
+      if (kw == "FROM") {
+        stage = ""
+        for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
+        return
+      }
+      if (stage != "xray-builder") return
+      if (kw == "COPY" || kw == "ADD") {
+        nargs = 0
+        from_flag = 0
+        for (i = 2; i <= n; i++) {
+          if (substr(w[i], 1, 2) == "--") {
+            if (substr(w[i], 1, 6) == "--from") from_flag = 1
+            continue
+          }
+          args[++nargs] = w[i]
+        }
+        dest = args[nargs]
+        if (dest !~ /^\/patches(\/|$)/) return
+        if (kw == "COPY" && !from_flag && nargs == 2 && args[1] == "patches/" name && dest == "/patches/" name) copied = 1
+        else if (dest == "/patches/" name || dest ~ /^\/patches\/?$/) tainted = 1
+        return
+      }
+      if (kw != "RUN") return
+      rest = substr(s, 4)
+      prev = "start"
+      while (rest != "") {
+        if (match(rest, /&&|[|][|]|;|[|]|&/)) {
+          c = substr(rest, 1, RSTART - 1)
+          op = substr(rest, RSTART, RLENGTH)
+          rest = substr(rest, RSTART + RLENGTH)
+        } else {
+          c = rest
+          op = "end"
+          rest = ""
+        }
+        if ((prev == "start" || prev == "&&") && (op == "end" || op == "&&") && is_apply(c)) applied = 1
+        prev = op
+      }
+    }
+    /^#[ \t]*escape[ \t]*=/ && !seen_instruction { odd_escape = 1 }
+    /^[ \t]*#/ { next }
+    /^[ \t]*$/ { next }
+    {
+      seen_instruction = 1
+      line = $0
+      continued = sub(/\\[ \t]*$/, "", line)
+      inst = (inst == "") ? line : inst " " line
+      if (!continued) {
+        handle(inst)
+        inst = ""
+      }
+    }
+    END {
+      if (inst != "") handle(inst)
+      exit !(applied && copied && !tainted && !odd_escape)
+    }'
+}
+
 : >"$work/applied-xray-patches"
 : >"$work/xray-patch-headers"
-if printf '%s\n' "$makefile_text" | grep -F 'patches/xray-*.patch' >/dev/null; then
+if makefile_applies_xray_patches; then
   git ls-tree -r --name-only "$target_sha" -- patches/ >"$work/patch-files"
   while IFS= read -r patch_path; do
     case "$patch_path" in
@@ -141,7 +227,7 @@ if printf '%s\n' "$makefile_text" | grep -F 'patches/xray-*.patch' >/dev/null; t
       *) continue ;;
     esac
     patch_name=${patch_path#patches/}
-    printf '%s\n' "$dockerfile_text" | grep -F "/patches/$patch_name" | grep -E '(^|[[:space:]])git apply' >/dev/null || continue
+    dockerfile_applies_patch "$patch_name" || continue
     printf '%s\n' "$patch_path" >>"$work/applied-xray-patches"
     patch_text=$(git show "$target_sha:$patch_path") || die "cannot read $patch_path at $target"
     printf '%s\n' "$patch_text" | awk '/^diff --git / { body = 1 } !body { print }' >>"$work/xray-patch-headers"
