@@ -127,3 +127,25 @@ func TestUnreadableCountedStateWhileSessionsCannotBeListedCountsThemWhenTheyCanB
 		})
 	}
 }
+
+func TestUnreadableCountedStateWhileFinalRecordsCannotBeListedStillBillsLiveGrowth(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 4000, 1000)
+	e.final("ppp1", "8", 200, 1100, 300, 100)
+	e.write(e.countedPath(), "not a counted state\n")
+	blocked := true
+	blockListing(t, func() string { return sessionFinalDir }, &blocked)
+
+	a := e.instance("7", "8")
+	a.poll()
+	expectUsers(t, "what was present when the counted state was unreadable", takeUsers(t, a), map[string]int64{})
+	e.counters("ppp0", 4100, 1050)
+	a.poll()
+	expectUsers(t, "growth of a session seen while the final records cannot be listed", takeUsers(t, a), map[string]int64{"7": 150})
+
+	e.session("ppp2", "8", 300, 1200, 70, 30)
+	a.poll()
+	blocked = false
+	a.poll()
+	expectUsers(t, "a session that started after the start and the final present at the start", takeUsers(t, a), map[string]int64{"8": 100})
+}
