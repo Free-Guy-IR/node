@@ -149,3 +149,17 @@ func TestUnreadableCountedStateWhileFinalRecordsCannotBeListedStillBillsLiveGrow
 	a.poll()
 	expectUsers(t, "a session that started after the start and the final present at the start", takeUsers(t, a), map[string]int64{"8": 100})
 }
+
+func TestUnreadableCountedStateIsReplacedBeforeTheFirstPoll(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 4000, 1000)
+	e.write(e.countedPath(), "not a counted state\n")
+	a := e.instance("7")
+	if logs := drainLogs(a); len(logs) != 1 {
+		t.Fatalf("an unreadable counted state must log exactly one line, got %v", logs)
+	}
+	e.counters("ppp0", 4100, 1050)
+	b := e.instance("7")
+	b.poll()
+	expectUsers(t, "growth after the first start, across a second start before any poll", takeUsers(t, b), map[string]int64{"7": 150})
+}
