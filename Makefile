@@ -165,7 +165,8 @@ test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
-	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking' ./app/dispatcher/ ./app/router/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking|TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked' ./app/dispatcher/ ./app/router/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/

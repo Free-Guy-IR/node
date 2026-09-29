@@ -133,6 +133,83 @@ index df770a3..d1ccf78 100644
  // Start implements common.Runnable.
  func (r *Router) Start() error {
  	return nil
+diff --git a/app/router/router_large_rule_stall_test.go b/app/router/router_large_rule_stall_test.go
+new file mode 100644
+index 0000000..4a2315a
+--- /dev/null
++++ b/app/router/router_large_rule_stall_test.go
+@@ -0,0 +1,71 @@
++package router_test
++
++import (
++	"context"
++	"fmt"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	. "github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
++)
++
++func TestAddingALargeDomainRuleDoesNotStallRoutePicking(t *testing.T) {
++	const domains = 400000
++	r := new(Router)
++	common.Must(r.Init(context.Background(), &Config{
++		Rule: []*RoutingRule{{RuleTag: "plain", TargetTag: &RoutingRule_Tag{Tag: "direct"}, Networks: []net.Network{net.Network_TCP}}},
++	}, nil, &mockOutboundManager{}, nil))
++	defer r.Close()
++
++	large := make([]*Domain, 0, domains)
++	for i := range domains {
++		large = append(large, &Domain{Type: Domain_Domain, Value: fmt.Sprintf("blocked-%d.example", i)})
++	}
++	config := serial.ToTypedMessage(&Config{Rule: []*RoutingRule{{RuleTag: "large", TargetTag: &RoutingRule_Tag{Tag: "blocked"}, Domain: large}}})
++
++	ctx := routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
++		Target: net.TCPDestination(net.DomainAddress("example.com"), 443),
++	}}))
++	var worst atomic.Int64
++	stop := make(chan struct{})
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for {
++			select {
++			case <-stop:
++				return
++			default:
++			}
++			start := time.Now()
++			if _, err := r.PickRoute(ctx); err != nil {
++				t.Error(err)
++				return
++			}
++			if took := int64(time.Since(start)); took > worst.Load() {
++				worst.Store(took)
++			}
++		}
++	}()
++
++	time.Sleep(50 * time.Millisecond)
++	addStart := time.Now()
++	if err := r.AddRule(config, true); err != nil {
++		t.Fatal(err)
++	}
++	addTook := time.Since(addStart)
++	time.Sleep(50 * time.Millisecond)
++	close(stop)
++	<-done
++
++	t.Logf("AddRule of %d domains took %s; the slowest concurrent PickRoute took %s", domains, addTook.Round(time.Millisecond), time.Duration(worst.Load()).Round(time.Millisecond))
++	if time.Duration(worst.Load()) > 200*time.Millisecond {
++		t.Fatalf("a route pick for an unrelated destination waited %s while a %d-domain rule was being built", time.Duration(worst.Load()).Round(time.Millisecond), domains)
++	}
++}
 diff --git a/app/router/router_race_test.go b/app/router/router_race_test.go
 new file mode 100644
 index 0000000..04834e9
@@ -211,4 +288,242 @@ index 0000000..04834e9
 +	}
 +	close(stop)
 +	readers.Wait()
++}
+diff --git a/app/router/router_webhook_stall_test.go b/app/router/router_webhook_stall_test.go
+new file mode 100644
+index 0000000..335fb9a
+--- /dev/null
++++ b/app/router/router_webhook_stall_test.go
+@@ -0,0 +1,74 @@
++package router_test
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	. "github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
++)
++
++func TestRemovingAWebhookRuleDoesNotStallRoutePicking(t *testing.T) {
++	const hold = 2 * time.Second
++	received := make(chan struct{}, 16)
++	release := make(chan struct{})
++	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		received <- struct{}{}
++		select {
++		case <-release:
++		case <-time.After(hold):
++		}
++	}))
++	defer slow.Close()
++	defer close(release)
++
++	r := new(Router)
++	common.Must(r.Init(context.Background(), &Config{
++		Rule: []*RoutingRule{
++			{RuleTag: "hooked", TargetTag: &RoutingRule_Tag{Tag: "hooked"}, Networks: []net.Network{net.Network_UDP}, Webhook: &WebhookConfig{Url: slow.URL}},
++			{RuleTag: "plain", TargetTag: &RoutingRule_Tag{Tag: "direct"}, Networks: []net.Network{net.Network_TCP}},
++		},
++	}, nil, &mockOutboundManager{}, nil))
++	defer r.Close()
++
++	routeFor := func(dest net.Destination) (string, error) {
++		ctx := routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: dest}}))
++		route, err := r.PickRoute(ctx)
++		if err != nil {
++			return "", err
++		}
++		return route.GetOutboundTag(), nil
++	}
++
++	if tag, err := routeFor(net.UDPDestination(net.DomainAddress("example.com"), 53)); err != nil || tag != "hooked" {
++		t.Fatalf("webhook rule picked %q, %v", tag, err)
++	}
++	select {
++	case <-received:
++	case <-time.After(5 * time.Second):
++		t.Fatal("the webhook POST never reached the endpoint")
++	}
++
++	removed := make(chan error, 1)
++	go func() { removed <- r.RemoveRule("hooked") }()
++	time.Sleep(100 * time.Millisecond)
++
++	start := time.Now()
++	tag, err := routeFor(net.TCPDestination(net.DomainAddress("example.com"), 443))
++	took := time.Since(start)
++	if err != nil || tag != "direct" {
++		t.Fatalf("unrelated route picked %q, %v", tag, err)
++	}
++	if took > 500*time.Millisecond {
++		t.Fatalf("picking an unrelated route took %s while RemoveRule waited for a slow webhook POST", took.Round(time.Millisecond))
++	}
++	if err := <-removed; err != nil {
++		t.Fatal(err)
++	}
++}
+diff --git a/app/router/router_writers_race_test.go b/app/router/router_writers_race_test.go
+new file mode 100644
+index 0000000..49e2f12
+--- /dev/null
++++ b/app/router/router_writers_race_test.go
+@@ -0,0 +1,152 @@
++package router_test
++
++import (
++	"context"
++	"fmt"
++	"sync"
++	"testing"
++
++	. "github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
++)
++
++func pickTagFor(r *Router, domain string) (string, error) {
++	ctx := routing_session.AsRoutingContext(session.ContextWithOutbounds(context.Background(), []*session.Outbound{{
++		Target: net.TCPDestination(net.DomainAddress(domain), 443),
++	}}))
++	route, err := r.PickRoute(ctx)
++	if err != nil {
++		return "", err
++	}
++	return route.GetOutboundTag(), nil
++}
++
++func domainRule(tag string) *serial.TypedMessage {
++	return serial.ToTypedMessage(&Config{
++		Rule: []*RoutingRule{{
++			RuleTag:   tag,
++			TargetTag: &RoutingRule_Tag{Tag: tag},
++			Domain:    []*Domain{{Type: Domain_Full, Value: tag + ".example"}},
++		}},
++		BalancingRule: []*BalancingRule{{Tag: "balancer-" + tag, OutboundSelector: []string{tag}}},
++	})
++}
++
++func TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked(t *testing.T) {
++	r := new(Router)
++	common.Must(r.Init(context.Background(), &Config{}, nil, &mockOutboundManager{}, nil))
++	defer r.Close()
++
++	stop := make(chan struct{})
++	var readers sync.WaitGroup
++	for range 4 {
++		readers.Add(1)
++		go func() {
++			defer readers.Done()
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				if tag, err := pickTagFor(r, "unmatched.example"); err != common.ErrNoClue {
++					t.Errorf("an unmatched destination picked %q, %v", tag, err)
++					return
++				}
++				_ = r.ListRule()
++				_, _ = r.GetOverrideTarget("balancer-w0-0")
++			}
++		}()
++	}
++
++	const writers = 8
++	const perWriter = 60
++	var writing sync.WaitGroup
++	for w := range writers {
++		writing.Add(1)
++		go func() {
++			defer writing.Done()
++			for i := range perWriter {
++				tag := fmt.Sprintf("w%d-%d", w, i)
++				if err := r.AddRule(domainRule(tag), true); err != nil {
++					t.Errorf("AddRule(%s): %v", tag, err)
++					return
++				}
++				if got, err := pickTagFor(r, tag+".example"); err != nil || got != tag {
++					t.Errorf("after AddRule(%s) returned, its destination picked %q, %v", tag, got, err)
++					return
++				}
++				if i%2 == 0 {
++					continue
++				}
++				if err := r.RemoveRule(tag); err != nil {
++					t.Errorf("RemoveRule(%s): %v", tag, err)
++					return
++				}
++				if got, err := pickTagFor(r, tag+".example"); err != common.ErrNoClue {
++					t.Errorf("after RemoveRule(%s) returned, its destination still picked %q, %v", tag, got, err)
++					return
++				}
++			}
++		}()
++	}
++
++	contested := make(chan error, writers)
++	for range writers {
++		writing.Add(1)
++		go func() {
++			defer writing.Done()
++			contested <- r.AddRule(serial.ToTypedMessage(&Config{
++				Rule: []*RoutingRule{{RuleTag: "contested", TargetTag: &RoutingRule_Tag{Tag: "contested"}, Domain: []*Domain{{Type: Domain_Full, Value: "contested.example"}}}},
++			}), true)
++		}()
++	}
++
++	writing.Wait()
++	close(stop)
++	readers.Wait()
++	close(contested)
++
++	accepted := 0
++	for err := range contested {
++		if err == nil {
++			accepted++
++		}
++	}
++	if accepted != 1 {
++		t.Fatalf("%d concurrent AddRule calls with the same ruleTag succeeded, want exactly 1", accepted)
++	}
++
++	want := map[string]bool{"contested": true}
++	for w := range writers {
++		for i := 0; i < perWriter; i += 2 {
++			want[fmt.Sprintf("w%d-%d", w, i)] = true
++		}
++	}
++	got := map[string]int{}
++	for _, route := range r.ListRule() {
++		got[route.GetRuleTag()]++
++	}
++	for tag := range want {
++		if got[tag] != 1 {
++			t.Errorf("rule %s is listed %d times, want once", tag, got[tag])
++		}
++	}
++	for tag, count := range got {
++		if !want[tag] {
++			t.Errorf("rule %s is listed %d times after it was removed", tag, count)
++		}
++	}
++	for w := range writers {
++		for i := range perWriter {
++			tag := fmt.Sprintf("w%d-%d", w, i)
++			if _, err := r.GetOverrideTarget("balancer-" + tag); err != nil {
++				t.Errorf("balancer of %s was lost: %v", tag, err)
++			}
++		}
++	}
 +}
