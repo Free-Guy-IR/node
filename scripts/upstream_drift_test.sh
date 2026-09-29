@@ -363,6 +363,16 @@ xray_fixture xray-patch-makefile-commented "$xray_copy
 RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile_commented" X1
 check xray-patch-makefile-commented 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-makefile-check-only "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch" 'build_xray:
+	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --check "$$patch" || exit 1; done' X1
+check xray-patch-makefile-check-only 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-makefile-failure-ignored "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch" 'build_xray:
+	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || true; done' X1
+check xray-patch-makefile-failure-ignored 1 DRIFT_COMPONENTS="node xray"
+
 xray_fixture xray-patch-names-another-component "$xray_copy
 RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" B1
 check xray-patch-names-another-component 1 DRIFT_COMPONENTS="node sing-box"
