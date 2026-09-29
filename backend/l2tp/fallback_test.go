@@ -98,7 +98,57 @@ func TestFallbackStateIsKeptAcrossARestartWhileASessionFileCannotBeRead(t *testi
 	expectUsers(t, "growth across a restart while the file still cannot be read", takeUsers(t, b), map[string]int64{"8": 150})
 
 	readSessionFile = prev
+	b.poll()
+	expectUsers(t, "the session that could not be read is taken as counted when it first can be", takeUsers(t, b), map[string]int64{})
 	e.counters("ppp0", 4100, 1050)
 	b.poll()
-	expectUsers(t, "the session that could not be read, once it can", takeUsers(t, b), map[string]int64{"7": 150})
+	expectUsers(t, "its growth after that", takeUsers(t, b), map[string]int64{"7": 150})
+}
+
+func TestFallbackTimeIsWrittenUntilAGraceOfCleanPolls(t *testing.T) {
+	e := newAcctEnv(t)
+	pinWallClock(t, fallbackLoad)
+	e.session("ppp0", "7", 100, fallbackLoad-3600, 4000, 1000)
+	e.write(e.countedPath(), "not a counted state\n")
+	blocked := true
+	blockListing(t, func() string { return sessionFinalDir }, &blocked)
+
+	a := e.instance("7")
+	want := "since 1800000000"
+	hasSince := func() bool {
+		for _, l := range readCountedLines(t, e.countedPath()) {
+			if l == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasSince() {
+		t.Fatalf("the fallback must be written at once with %q, got %q", want, readCountedLines(t, e.countedPath()))
+	}
+	blocked = false
+	for i := 0; i < countedGraceRounds; i++ {
+		a.poll()
+	}
+	if !hasSince() {
+		t.Fatal("the fallback time must be kept through the grace of clean polls")
+	}
+	e.counters("ppp0", 4100, 1050)
+	a.poll()
+	if hasSince() {
+		t.Fatalf("the fallback time must be dropped after the grace, got %q", readCountedLines(t, e.countedPath()))
+	}
+	expectUsers(t, "growth of the session present at the fallback", takeUsers(t, a), map[string]int64{"7": 150})
+}
+
+func TestMalformedFallbackTimeMakesTheCountedStateUnreadable(t *testing.T) {
+	for _, line := range []string{"since x", "since 0", "since -5", "since 1700000000\nsince 1700000001"} {
+		if _, err := decodeCountedState([]byte("v2\n" + line + "\n")); err == nil {
+			t.Fatalf("a counted state with %q must be unreadable", line)
+		}
+	}
+	c, err := decodeCountedState([]byte("v2\nppp0 100 1000 1 2\nsince 1700000000\n"))
+	if err != nil || c.since != 1700000000 {
+		t.Fatalf("decode = %+v, %v", c, err)
+	}
 }
