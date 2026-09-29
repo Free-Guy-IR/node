@@ -30,6 +30,7 @@ var (
 	}
 	listDir         = os.ReadDir
 	readSessionFile = os.ReadFile
+	readCounterFile = os.ReadFile
 )
 
 type l2tpSession struct {
@@ -321,7 +322,7 @@ func ifaceBytes(ifname string) (rx int64, tx int64, ok bool) {
 }
 
 func readCounter(path string) (int64, bool) {
-	b, err := os.ReadFile(path)
+	b, err := readCounterFile(path)
 	if err != nil {
 		return 0, false
 	}
