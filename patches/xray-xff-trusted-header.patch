@@ -49,10 +49,10 @@ index 448bd1a..cedacb0 100644
  // RemoveHopByHopHeaders removes hop by hop headers in http header list.
 diff --git a/common/protocol/http/trusted_forwarder.go b/common/protocol/http/trusted_forwarder.go
 new file mode 100644
-index 0000000..c82b5a8
+index 0000000..7545ba2
 --- /dev/null
 +++ b/common/protocol/http/trusted_forwarder.go
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,107 @@
 +package http
 +
 +import (
@@ -83,6 +83,10 @@ index 0000000..c82b5a8
 +		prefix, err := netip.ParsePrefix(field)
 +		if err != nil {
 +			errors.LogError(context.Background(), `XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured: `, err)
++			return nil
++		}
++		if prefix.Addr().Is4In6() {
++			errors.LogError(context.Background(), `XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured: `, field, ` is an IPv4-mapped IPv6 prefix, which never matches because peers are compared as IPv4; write it as an IPv4 CIDR`)
 +			return nil
 +		}
 +		prefixes = append(prefixes, prefix.Masked())

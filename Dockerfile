@@ -154,6 +154,7 @@ RUN git init -q . \
  && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
  && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \
  && grep -q "if !peerIsTrustedForwarder(remoteAddr) {" common/protocol/http/trusted_forwarder.go \
+ && grep -qF "if prefix.Addr().Is4In6() {" common/protocol/http/trusted_forwarder.go \
  && grep -q "return TrustedClientAddress(header.Values, trusted, remoteAddr)" common/protocol/http/headers.go \
  && grep -q "return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)" transport/internet/grpc/encoding/remoteaddr.go \
  && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go
