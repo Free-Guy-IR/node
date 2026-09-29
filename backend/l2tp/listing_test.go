@@ -130,6 +130,7 @@ func TestUnreadableCountedStateWhileSessionsCannotBeListedCountsThemWhenTheyCanB
 
 func TestUnreadableCountedStateWhileFinalRecordsCannotBeListedStillBillsLiveGrowth(t *testing.T) {
 	e := newAcctEnv(t)
+	pinWallClock(t, fallbackLoad)
 	e.session("ppp0", "7", 100, 1000, 4000, 1000)
 	e.final("ppp1", "8", 200, 1100, 300, 100)
 	e.write(e.countedPath(), "not a counted state\n")
@@ -143,7 +144,7 @@ func TestUnreadableCountedStateWhileFinalRecordsCannotBeListedStillBillsLiveGrow
 	a.poll()
 	expectUsers(t, "growth of a session seen while the final records cannot be listed", takeUsers(t, a), map[string]int64{"7": 150})
 
-	e.session("ppp2", "8", 300, 1200, 70, 30)
+	e.session("ppp2", "8", 300, fallbackLoad+60, 70, 30)
 	a.poll()
 	blocked = false
 	a.poll()
