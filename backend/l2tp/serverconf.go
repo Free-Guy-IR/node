@@ -68,7 +68,7 @@ func (o *L2TP) writeConfig() error {
 }
 
 const scriptHelpers = `load() {
-  r_user=; r_tag=; r_pid=; r_started=; r_ifname=; r_ifindex=; r_proc=
+  r_user=; r_tag=; r_pid=; r_started=; r_ifname=; r_ifindex=; r_proc=; r_mono=
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *=*) ;; *) continue ;; esac
@@ -82,6 +82,7 @@ const scriptHelpers = `load() {
       ifname) r_ifname="$v" ;;
       ifindex) r_ifindex="$v" ;;
       proc) r_proc="$v" ;;
+      mono) r_mono="$v" ;;
     esac
   done 2>/dev/null < "$1"
   [ -n "$r_user$r_pid$r_started" ]
@@ -116,9 +117,13 @@ func (o *L2TP) writeIPScripts() error {
 		`readone "$sys/$IF/ifindex"`,
 		`ifindex="$r"`,
 		"fp=",
+		"mono=",
+		`readone "$proc/sys/kernel/random/boot_id"`,
+		`boot="$r"`,
+		`readone "$proc/uptime"`,
+		`up="${r%% *}"`,
+		`case "$up" in *.[0-9][0-9]) isnum "${up%.*}${up#*.}" && [ -n "$boot" ] && mono="$boot:${up%.*}${up#*.}" ;; esac`,
 		`if [ "$p" != 0 ]; then`,
-		`  readone "$proc/sys/kernel/random/boot_id"`,
-		`  boot="$r"`,
 		`  readone "$proc/$p/stat"`,
 		`  set -- ${r##*") "}`,
 		`  if [ -n "$boot" ] && [ $# -ge 20 ]; then`,
@@ -131,13 +136,14 @@ func (o *L2TP) writeIPScripts() error {
 		`  if [ -n "$fp" ] && [ "$r_proc" = "$fp" ] && [ "$r_ifname" = "$IF" ] &&`,
 		`    { [ -z "$ifindex" ] || [ -z "$r_ifindex" ] || [ "$r_ifindex" = "$ifindex" ]; }; then`,
 		`    started="$r_started"`,
+		`    [ -z "$r_mono" ] || mono="$r_mono"`,
 		`  elif ! isnum "$started" || [ "$r_started" -ge "$started" ]; then`,
 		`    started=$((r_started + 1))`,
 		"  fi",
 		"fi",
 		"record() {",
 		`  printf '%s\n' "user=$PEERNAME" "tunnel_ip=$REMOTE" "client=$REMOTENUMBER" "tag=` + o.config.InboundTag + `" \`,
-		`    "pid=$p" "started=$started" "ifname=$IF" "ifindex=$ifindex" "proc=$fp"`,
+		`    "pid=$p" "started=$started" "ifname=$IF" "ifindex=$ifindex" "proc=$fp" "mono=$mono"`,
 		"}",
 		`[ "$p" = 0 ] || { record > "$own/.$p.$$" && mv -f "$own/.$p.$$" "$own/$p"; }`,
 		`tmp="$d/.$IF.$$"`,
@@ -163,7 +169,7 @@ func (o *L2TP) writeIPScripts() error {
 		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ] && load "$own/$p" && [ "$r_ifname" = "$IF" ] && [ "$r_user" = "$PEERNAME" ]; then`,
 		`  src="$own/$p"`,
 		`elif [ "$p" != 0 ] && [ -n "$PEERNAME" ]; then`,
-		`  r_user="$PEERNAME"; r_tag="` + o.config.InboundTag + `"; r_pid="$p"; r_started=; r_ifindex=; r_proc=`,
+		`  r_user="$PEERNAME"; r_tag="` + o.config.InboundTag + `"; r_pid="$p"; r_started=; r_ifindex=; r_proc=; r_mono=`,
 		"  src=env",
 		"fi",
 		`[ -n "$src" ] || exit 0`,
@@ -195,6 +201,7 @@ func (o *L2TP) writeIPScripts() error {
 		`  [ -z "$r_pid" ] || printf '%s\n' "pid=$r_pid"`,
 		`  [ -z "$r_started" ] || printf '%s\n' "started=$r_started"`,
 		`  [ -z "$r_proc" ] || printf '%s\n' "proc=$r_proc"`,
+		`  [ -z "$r_mono" ] || printf '%s\n' "mono=$r_mono"`,
 		`  printf '%s\n' "rx=$rx" "tx=$tx"`,
 		`} > "$tmp" && mv -f "$tmp" "$fin/$IF.$$.$(date +%s)"`,
 		`if [ "$src" = "$f" ]; then`,

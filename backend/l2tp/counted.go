@@ -43,7 +43,9 @@ type countedState struct {
 	failing  bool
 
 	since      int64
+	sinceMono  monoStamp
 	sinceClean int
+	bootNow    string
 }
 
 func newCountedState() *countedState {
@@ -243,7 +245,11 @@ func (c *countedState) encode() []byte {
 		b.WriteString(countedFinalPrefix + name + "\n")
 	}
 	if c.since > 0 {
-		fmt.Fprintf(&b, "%s%d\n", countedSincePrefix, c.since)
+		fmt.Fprintf(&b, "%s%d", countedSincePrefix, c.since)
+		if c.sinceMono.ok {
+			b.WriteString(" " + c.sinceMono.String())
+		}
+		b.WriteByte('\n')
 	}
 	return []byte(b.String())
 }
@@ -266,11 +272,14 @@ func decodeCountedState(data []byte) (*countedState, error) {
 			continue
 		}
 		if at, ok := strings.CutPrefix(line, countedSincePrefix); ok {
-			since, err := strconv.ParseInt(at, 10, 64)
-			if err != nil || since <= 0 || c.since != 0 {
+			wall, mono, withMono := strings.Cut(at, " ")
+			since, err := strconv.ParseInt(wall, 10, 64)
+			stamp := parseMono(mono)
+			if err != nil || since <= 0 || c.since != 0 || (withMono && !stamp.ok) {
 				return nil, fmt.Errorf("line %d: malformed fallback time %q", i+2, at)
 			}
 			c.since = since
+			c.sinceMono = stamp
 			continue
 		}
 		entry, consumed := strings.CutPrefix(line, countedConsumedPrefix)
@@ -332,26 +341,44 @@ func (c *countedState) save(tag string) error {
 	return writeFileAtomic(countedStatePath(tag), c.encode(), 0o600)
 }
 
-func presentAsCounted(tag string, now int64) *countedState {
+func presentAsCounted(tag string, now int64, mono monoStamp) *countedState {
 	c := newCountedState()
 	sessions, finals := scanSessions(tag), scanFinalRecords(tag)
+	resolved := true
 	for _, s := range sessions.sessions {
 		if rx, tx, ok := sessionBytes(s); ok {
 			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		} else {
+			resolved = false
 		}
 	}
 	for _, rec := range finals.records {
 		c.counted[filepath.Base(rec.path)] = true
 	}
-	if !sessions.complete() || finals.listErr != nil || len(finals.unreadable) > 0 {
+	if !resolved || !sessions.complete() || finals.listErr != nil || len(finals.unreadable) > 0 {
 		c.since = now
+		c.sinceMono = mono
 	}
 	c.dirty = true
 	return c
 }
 
+func (c *countedState) startedBefore(started int64, mono monoStamp) bool {
+	if c.sinceMono.ok && mono.ok {
+		switch mono.boot {
+		case c.sinceMono.boot:
+			return mono.centis < c.sinceMono.centis
+		case c.bootNow:
+			return false
+		default:
+			return true
+		}
+	}
+	return started < c.since
+}
+
 func (c *countedState) startedBeforeFallback(rec finalRecord) bool {
-	return c.since > 0 && (!rec.hasIdentity || rec.identity.started < c.since)
+	return c.since > 0 && (!rec.hasIdentity || c.startedBefore(rec.identity.started, rec.mono))
 }
 
 func (c *countedState) takeStartedBeforeFallback(sessions []l2tpSession) bool {
@@ -361,7 +388,7 @@ func (c *countedState) takeStartedBeforeFallback(sessions []l2tpSession) bool {
 	resolved := true
 	for _, s := range sessions {
 		id := s.identity()
-		if _, known := c.entries[id]; known || id.started >= c.since {
+		if _, known := c.entries[id]; known || !c.startedBefore(s.started, s.mono) {
 			continue
 		}
 		if rx, tx, ok := sessionBytes(s); ok {
@@ -394,11 +421,12 @@ func (o *L2TP) loadCountedLocked() {
 	counted, err := loadCountedState(tag)
 	if err != nil {
 		o.emitLogf("Error", "l2tp: counted state of %s is unreadable, counting only growth from now on: %v", tag, err)
-		counted = presentAsCounted(tag, wallClock().Unix())
+		counted = presentAsCounted(tag, wallClock().Unix(), currentMono())
 		if counted.save(tag) == nil {
 			counted.dirty = false
 		}
 	}
+	counted.bootNow = currentBootID()
 	o.counted = counted
 }
 

@@ -42,6 +42,7 @@ type l2tpSession struct {
 	started  int64
 	ifindex  string
 	proc     string
+	mono     monoStamp
 }
 
 func (s l2tpSession) identity() sessionIdentity {
@@ -141,6 +142,8 @@ func parseSession(raw []byte, ifname string) (l2tpSession, bool) {
 			s.ifindex = v
 		case "proc":
 			s.proc = v
+		case "mono":
+			s.mono = parseMono(v)
 		}
 	}
 	return s, hasStarted
@@ -159,6 +162,7 @@ type finalRecord struct {
 	hasIdentity bool
 	hasPid      bool
 	proc        string
+	mono        monoStamp
 }
 
 type unreadableFinal struct {
@@ -280,6 +284,8 @@ func parseFinalRecord(path string) (finalRecord, bool, error) {
 			rec.identity.started, hasStarted = number(v, true), true
 		case "proc":
 			rec.proc = v
+		case "mono":
+			rec.mono = parseMono(v)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -292,15 +298,14 @@ func parseFinalRecord(path string) (finalRecord, bool, error) {
 }
 
 func sessionBytes(s l2tpSession) (rx int64, tx int64, ok bool) {
-	if s.ifindex == "" {
-		rx, tx = ifaceBytes(s.ifname)
-		return rx, tx, true
-	}
-	if !sameInterface(s.ifname, s.ifindex) {
+	if s.ifindex != "" && !sameInterface(s.ifname, s.ifindex) {
 		return 0, 0, false
 	}
-	rx, tx = ifaceBytes(s.ifname)
-	return rx, tx, sameInterface(s.ifname, s.ifindex)
+	rx, tx, ok = ifaceBytes(s.ifname)
+	if !ok || (s.ifindex != "" && !sameInterface(s.ifname, s.ifindex)) {
+		return 0, 0, false
+	}
+	return rx, tx, true
 }
 
 func sameInterface(ifname, ifindex string) bool {
@@ -308,16 +313,18 @@ func sameInterface(ifname, ifindex string) bool {
 	return err == nil && strings.TrimSpace(string(b)) == ifindex
 }
 
-func ifaceBytes(ifname string) (rx int64, tx int64) {
+func ifaceBytes(ifname string) (rx int64, tx int64, ok bool) {
 	base := filepath.Join(sysClassNet, ifname, "statistics")
-	return readCounter(filepath.Join(base, "rx_bytes")), readCounter(filepath.Join(base, "tx_bytes"))
+	rx, rxOK := readCounter(filepath.Join(base, "rx_bytes"))
+	tx, txOK := readCounter(filepath.Join(base, "tx_bytes"))
+	return rx, tx, rxOK && txOK
 }
 
-func readCounter(path string) int64 {
+func readCounter(path string) (int64, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	n, _ := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-	return n
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	return n, err == nil && n >= 0
 }
