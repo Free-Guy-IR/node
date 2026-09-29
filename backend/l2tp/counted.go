@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,8 +45,8 @@ type countedState struct {
 
 	since      int64
 	sinceMono  monoStamp
+	sinceBoots []string
 	sinceClean int
-	bootNow    string
 }
 
 func newCountedState() *countedState {
@@ -248,6 +249,9 @@ func (c *countedState) encode() []byte {
 		fmt.Fprintf(&b, "%s%d", countedSincePrefix, c.since)
 		if c.sinceMono.ok {
 			b.WriteString(" " + c.sinceMono.String())
+			for _, boot := range c.sinceBoots {
+				b.WriteString(" " + boot)
+			}
 		}
 		b.WriteByte('\n')
 	}
@@ -272,14 +276,24 @@ func decodeCountedState(data []byte) (*countedState, error) {
 			continue
 		}
 		if at, ok := strings.CutPrefix(line, countedSincePrefix); ok {
-			wall, mono, withMono := strings.Cut(at, " ")
-			since, err := strconv.ParseInt(wall, 10, 64)
-			stamp := parseMono(mono)
-			if err != nil || since <= 0 || c.since != 0 || (withMono && !stamp.ok) {
+			fields := strings.Split(at, " ")
+			since, err := strconv.ParseInt(fields[0], 10, 64)
+			if err != nil || since <= 0 || c.since != 0 {
 				return nil, fmt.Errorf("line %d: malformed fallback time %q", i+2, at)
 			}
 			c.since = since
-			c.sinceMono = stamp
+			if len(fields) > 1 {
+				c.sinceMono = parseMono(fields[1])
+				if !c.sinceMono.ok {
+					return nil, fmt.Errorf("line %d: malformed fallback boot time %q", i+2, at)
+				}
+			}
+			for _, boot := range fields[min(len(fields), 2):] {
+				if boot == "" || strings.Contains(boot, ":") {
+					return nil, fmt.Errorf("line %d: malformed later boot %q", i+2, at)
+				}
+				c.sinceBoots = append(c.sinceBoots, boot)
+			}
 			continue
 		}
 		entry, consumed := strings.CutPrefix(line, countedConsumedPrefix)
@@ -365,14 +379,10 @@ func presentAsCounted(tag string, now int64, mono monoStamp) *countedState {
 
 func (c *countedState) startedBefore(started int64, mono monoStamp) bool {
 	if c.sinceMono.ok && mono.ok {
-		switch mono.boot {
-		case c.sinceMono.boot:
+		if mono.boot == c.sinceMono.boot {
 			return mono.centis < c.sinceMono.centis
-		case c.bootNow:
-			return false
-		default:
-			return true
 		}
+		return !slices.Contains(c.sinceBoots, mono.boot)
 	}
 	return started < c.since
 }
@@ -411,6 +421,8 @@ func (c *countedState) settleFallback(clean bool) {
 	c.sinceClean++
 	if c.sinceClean > countedGraceRounds {
 		c.since = 0
+		c.sinceMono = monoStamp{}
+		c.sinceBoots = nil
 		c.sinceClean = 0
 		c.dirty = true
 	}
@@ -426,8 +438,16 @@ func (o *L2TP) loadCountedLocked() {
 			counted.dirty = false
 		}
 	}
-	counted.bootNow = currentBootID()
+	counted.noteBoot(currentBootID())
 	o.counted = counted
+}
+
+func (c *countedState) noteBoot(boot string) {
+	if c.since == 0 || !c.sinceMono.ok || boot == "" || boot == c.sinceMono.boot || slices.Contains(c.sinceBoots, boot) {
+		return
+	}
+	c.sinceBoots = append(c.sinceBoots, boot)
+	c.dirty = true
 }
 
 func (o *L2TP) persistCountedLocked() {
