@@ -291,8 +291,11 @@ Why the rules look like this:
 
 - **Commit messages.** An `Upstream: <sha>` line (7 to 40 hex digits, prefix match) or a
   `(cherry picked from commit <sha>)` line in any commit message of the checked history.
-- **Patch files.** An `Upstream: <sha or GHSA id>` line in the header of a `patches/*.patch` file, meaning the lines
-  before the first `diff --git`. Lines inside the diff are ignored.
+- **Patch files.** An `Upstream: <sha or GHSA id>` line in the header of a patch file, meaning the lines before the
+  first `diff --git`. Lines inside the diff are ignored. A header counts only for a file that the build really applies:
+  the Makefile must apply `patches/xray-*.patch`, and the Dockerfile at the checked commit must run `git apply` on that
+  file. It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
+  sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
   - `e5a9fb752e0dcc127dd1740316c853571c16052f` and `8f15190c230fe6975c9b18e31316c6bc494f3863`, the QUIC sniffer;
   - `711aea4e34b0a00073d2fea6577f28a5d7c9b5eb`, trusted X-Forwarded-For;
@@ -903,9 +906,23 @@ Two more kinds of item close the ways upstream work can slip past the commit lis
   `<fork sha> allowed-merge: <reason>`, after checking that it really carries the upstream changes; otherwise it is
   `UNPORTED`. On 2026-09-25 there are four: the fork-point merge `9267b04` of `v0.5.4`, and three merges from 2024
   that come before the fork point.
+- **Merges that rewrite the automatic result** (`node rewritten merge`).
+  - Scope: every merge in the target history that no upstream tag contains, and whose recorded result differs from
+    what git merges on its own (`git show --remerge-diff`). This means a conflict resolution, or a merge that drops one
+    side, as `git merge -s ours` does.
+  - Each one must be allowlisted as `allowed-merge` after review.
+  - It is checked even when an upstream ref also contains the merge. The entry check above cannot see such a merge,
+    for example after a fork branch with an ours-merge in it has been contributed upstream.
+  - On 2026-09-29 there are three: the fork point `9267b04`, and two conflict resolutions from before the fork point,
+    `bd8ceea` and `61932a4`.
 - **Upstream merges with changes of their own** (`node merge`). The commit list skips merge commits. So every upstream
-  merge outside the target whose combined diff (`git show --cc`) is not empty must be ported or waived, like any other
-  commit. A clean merge has an empty combined diff and is only counted.
+  merge outside the target must be ported or waived, like any other commit, when its combined diff (`git show --cc`)
+  or its remerge diff (`git show --remerge-diff`) is not empty. A merge that drops one side's change has an empty
+  combined diff but a non-empty remerge diff.
+  - Both diffs are read in full; an earlier `| grep -q .` let git die of SIGPIPE on a large diff, so the merge was
+    skipped.
+  - A clean merge is only counted.
+  - The check needs git 2.36 or newer and refuses to run on an older one.
 
 The third-party sections are described above, and they use the same `PORTED`, `WAIVED` and `UNPORTED` statuses, plus
 `FIXED` for an advisory already fixed in the pin. Merge commits are skipped, because their content is the commits they
@@ -944,8 +961,11 @@ Add one line to `.github/upstream-waivers.txt`:
   For an advisory, it is the GHSA id.
 - `category` is one of `rejected`, `superseded`, `pending`, `not-applicable` or `allowed-merge`. `allowed-merge` takes the
   sha of a fork commit instead of an upstream one (see the node entry check above).
-- A `pending` waiver must carry `until:YYYY-MM-DD`, at most 30 days ahead, or an issue reference
-  `issue:<owner>/<repo>#<number>`, or both; otherwise the line is malformed and the check exits 2.
+- A `pending` waiver must carry exactly one `until:YYYY-MM-DD`: zero-padded, no space after the colon, a real calendar
+  date, and at most 30 days after today. A missing, second, spaced, unpadded or impossible date makes the line
+  malformed, and the check exits 2.
+  - An issue reference `issue:<owner>/<repo>#<number>` is optional. It must be well formed, and it never replaces the
+    date, so no waiver is permanent.
   - After its `until:` date, the waiver no longer waives anything. Its item turns `UNPORTED`, and the run lists it under
     `EXPIRED WAIVERS`.
   - Extending a date is a decision, not a formality. A waiver that hides a live bug in shipped code gets a fix or an
@@ -975,6 +995,13 @@ bash scripts/upstream_drift.sh
 - `DRIFT_CACHE=<dir>` keeps the third-party repositories and the advisory answers in `<dir>`, instead of a temporary
   directory. `UPSTREAM_FETCH=0` then skips every fetch and API call, and it reuses the node refs and that cache.
 - `DRIFT_TARGET=<ref>` checks another branch or commit instead of `HEAD`.
+- `DRIFT_MAX_API_PAGES` (default 50) bounds the advisory paging.
+  - The check follows the `rel="next"` Link header of each response, the cursor pagination both advisory endpoints
+    use. An earlier `&page=N` was ignored by the API, and it looped forever at 100 or more advisories.
+  - A next link outside the API URL, or a listing longer than the bound, stops the run with an error.
+- `bash scripts/upstream_drift_test.sh` runs the check against 24 synthetic repositories: ours-merges, evil and
+  side-dropping merges, waiver dates, patch scoping, a large patch, and advisory paging through a stubbed curl. It needs
+  no network, and each case runs under `CASE_TIME_LIMIT` seconds (default 60).
 - `UPSTREAM_URL`, `UPSTREAM_SLUG` and `UPSTREAM_WAIVERS` override the defaults.
 - A shallow clone is refused, because commits behind the shallow boundary are invisible, which makes the result wrong
   in both directions. `DRIFT_ALLOW_SHALLOW=1` runs anyway with a warning, for a quick local look only. Some local
