@@ -205,3 +205,44 @@ func TestFallbackWindowAcrossTwoRebootsBillsWhatStartedInTheMiddleBoot(t *testin
 	c.poll()
 	expectUsers(t, "the final of a session of a boot between the fallback and now", takeUsers(t, c), map[string]int64{"8": 100})
 }
+
+func TestSessionOfALaterBootIsNewEvenWhenTheBootIDCannotBeReadAtTheLoad(t *testing.T) {
+	e := newAcctEnv(t)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("8")
+	a.poll()
+	*blocked = false
+
+	later := "6b5c4d3e-2f10-4b2c-8d9e-8f7a6b5c4d3e"
+	e.bootAt(later, 1500)
+	bootHidden := true
+	blockProcReads(t, func(name string) bool { return bootHidden && name == "sys/kernel/random/boot_id" })
+	b := e.instance("8")
+	e.sessionWithMono("ppp1", "8", 200, fallbackLoad+60, later+":3000", 70, 30)
+	b.poll()
+	expectUsers(t, "a session of a later boot while the boot id cannot be read", takeUsers(t, b), map[string]int64{"8": 100})
+}
+
+func TestFinalOfALaterBootWaitsUntilTheBootIDCanBeRead(t *testing.T) {
+	e := newAcctEnv(t)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("8")
+	a.poll()
+	*blocked = false
+
+	later := "6b5c4d3e-2f10-4b2c-8d9e-8f7a6b5c4d3e"
+	e.bootAt(later, 1500)
+	bootHidden := true
+	blockProcReads(t, func(name string) bool { return bootHidden && name == "sys/kernel/random/boot_id" })
+	b := e.instance("8")
+	e.finalWithMono("ppp1", "8", 200, fallbackLoad+60, later+":3000", 70, 30)
+	b.poll()
+	b.poll()
+	expectUsers(t, "while the boot id cannot be read", takeUsers(t, b), map[string]int64{})
+	if names := finalRecordPaths(t); len(names) != 1 {
+		t.Fatalf("a final of an undecided boot must wait, found %v", names)
+	}
+	bootHidden = false
+	b.poll()
+	expectUsers(t, "once the boot id can be read", takeUsers(t, b), map[string]int64{"8": 100})
+}
