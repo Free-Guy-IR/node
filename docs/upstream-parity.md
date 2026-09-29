@@ -435,7 +435,7 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 ### FORK DEVIATION: routing API data race fixed at the pin (patches/xray-router-race.patch)
 
 - **Upstream:** `598bde74122f5f0207c7c6a56ccb74fbbbe33fca` (#6678) fixes the race with a refactor of `app/router` that
-  does not apply to the pinned v26.3.27. The fork carries a minimal fix instead. The patch deliberately has no
+  does not apply to the pinned v26.3.27. The fork carries its own fix in the same shape. The patch deliberately has no
   `Upstream:` line, and the commit stays waived as `pending` for the parts of the refactor that are not carried.
 - **The race at the pin:**
   - `pickRouteInternal` ranged over `r.rules` without a lock, while `ReloadRules` (`AddRule`) appended to it and
@@ -444,19 +444,42 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
     balancers map while `ReloadRules` wrote it. A concurrent map read and write is a fatal runtime error.
   - The node calls `AddRoutingRule` and `RemoveRoutingRule` through `RoutingService` (`backend/xray/routing.go:60-73`)
     while traffic is routed.
+- **The first 0.6.21 fix stalled routing (F-r2B-2, fixed):** it made every route pick and balancer lookup take a read
+  lock, while `ReloadRules` built conditions and balancers and `RemoveRule` and `ReloadRules` closed webhooks under the
+  write lock. Every routing decision on the node then waited for the whole `AddRoutingRule`: with a 400000-domain rule
+  the slowest concurrent pick took 315 ms on a darwin test machine (the review measured 4.7 s against 112 ms on the pin),
+  and removing a webhook rule whose endpoint was slow held every pick for up to the webhook client's 5 s timeout
+  (1.9 s in the test).
 - **The fork fix**, in `app/router` only:
-  - `r.mu` becomes a `sync.RWMutex`;
-  - `pickRouteInternal` takes one snapshot of `r.rules` under the read lock and uses it for both passes;
-  - `ReloadRules` clips `r.rules` first, so an append always copies instead of writing into memory that a published
-    snapshot may share;
-  - balancer lookups go through one helper that takes the read lock.
-- **Not carried from upstream:** the `atomic.Pointer` rule and balancer sets, a `ReloadRules` that changes nothing on
-  error (at the pin a failed append reload still keeps the balancers it added), the inline webhook sweep, and the
-  removal of `OverrideBalancer`.
-- **Test:** `TestRuleAndBalancerUpdatesRaceWithRoutePicking` runs `AddRule` (a rule plus a balancer), `SetOverrideTarget`
-  and `RemoveRule` 300 times against four readers of `PickRoute`, `GetOverrideTarget` and `ListRule`, under `-race`.
-  It reports a data race on the pin, and none with the fix over 20 runs. The full `app/router` suite passes with and
-  without `-race`.
+  - the rules and balancers are one immutable table published through an `atomic.Pointer`. `PickRoute` takes one
+    snapshot and uses it for both passes; `ListRule`, `RuleExists` and the balancer lookups read the current table.
+    None of them takes a lock;
+  - `r.mu` stays a `sync.Mutex` and is taken only by `ReloadRules`, `RemoveRule` and `Close`, so concurrent writers
+    cannot lose each other's rules or balancers. A writer builds a new table from the current one, including the domain
+    matchers and balancers, and publishes it with one store. No published slice or map is ever written again;
+  - the webhooks of replaced (`ReloadRules` without append) or removed rules are closed after the mutex is released;
+  - a failed `ReloadRules` publishes nothing and closes the webhooks it created. At the pin a failed append kept the
+    balancers it had added, and a failed replace left an empty rule set;
+  - `Init` builds its table the same way and keeps the pin's semantics: no duplicate `ruleTag` check at startup.
+- **Not carried from upstream:** the inline webhook sweep and the removal of `OverrideBalancer`. Upstream closes the
+  old webhooks while it still holds the mutex; the fork closes them after releasing it.
+- **Kept from the pin:** a notifier that a route pick loaded just before its rule was removed may still be fired after
+  it is closed. That window exists at the pin and upstream as well.
+- **Tests**, all in `make test_xray_patches`:
+  - `TestRuleAndBalancerUpdatesRaceWithRoutePicking` runs `AddRule` (a rule plus a balancer), `SetOverrideTarget` and
+    `RemoveRule` 300 times against four readers of `PickRoute`, `GetOverrideTarget` and `ListRule`, under `-race`.
+  - `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked` runs eight writers that add 60 rules and balancers each
+    and remove every other rule, plus eight concurrent adds of one contested `ruleTag`, against four readers, under
+    `-race`. After each `AddRule` or `RemoveRule` returns, the writer's own pick must see the change. At the end exactly
+    one contested add has succeeded and no rule or balancer is lost or duplicated. With the writer mutex removed it
+    fails with lost balancers and eight accepted contested adds.
+  - `TestAddingALargeDomainRuleDoesNotStallRoutePicking` (from the r2-B review) adds a 400000-domain rule while picks
+    run: the slowest pick took 315 ms with the read-lock fix and at most 9 ms over six runs with this one (limit
+    200 ms).
+  - `TestRemovingAWebhookRuleDoesNotStallRoutePicking` (from the r2-B review) removes a rule whose webhook POST is
+    held by the endpoint: an unrelated pick took 1.9 s with the read-lock fix and passes with this one (limit 500 ms).
+    It fails again when the webhooks are closed before the mutex is released and picks take the mutex.
+  - The full `app/router` suite passes with and without `-race`.
 - **Removal condition:** drop the patch when the pin moves to a release that contains `598bde7` (v26.9.x).
 
 ### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)

@@ -1,9 +1,11 @@
-Router: fix the routing API data race at the pin
+Router: fix the routing API data race at the pin without stalling route picks
 
-FORK DEVIATION: a minimal fix, not upstream code. Upstream fixes the same race with a larger
-refactor that does not apply to the pin. pickRouteInternal reads a snapshot of the rules taken
-under a read lock, ReloadRules clips the rule slice so appends never write into a published
-snapshot, and balancer lookups take the same lock.
+FORK DEVIATION: not upstream code. Upstream fixes the same race with a larger refactor that
+does not apply to the pin; this follows its shape. The rules and balancers are published
+together as one immutable table behind an atomic pointer, so PickRoute, ListRule and balancer
+lookups take no lock. ReloadRules and RemoveRule are serialized by the router mutex, build a
+new table from the current one, publish it with one atomic store and close the webhooks of
+replaced or removed rules after the mutex is released. A failed ReloadRules publishes nothing.
 
 diff --git a/app/router/balancing.go b/app/router/balancing.go
 index 5f8cb1c..ea6cc51 100644
@@ -58,59 +60,290 @@ index 96c0aea..cb960b3 100644
  	}
  	b.override.Put(target)
 diff --git a/app/router/router.go b/app/router/router.go
-index df770a3..d1ccf78 100644
+index df770a3..8020e75 100644
 --- a/app/router/router.go
 +++ b/app/router/router.go
-@@ -2,6 +2,7 @@ package router
+@@ -2,7 +2,9 @@ package router
  
  import (
  	"context"
-+	"slices"
++	"maps"
  	"sync"
++	"sync/atomic"
  
  	"github.com/xtls/xray-core/common"
-@@ -24,7 +25,7 @@ type Router struct {
+ 	"github.com/xtls/xray-core/common/errors"
+@@ -17,8 +19,7 @@ import (
+ // Router is an implementation of routing.Router.
+ type Router struct {
+ 	domainStrategy Config_DomainStrategy
+-	rules          []*Rule
+-	balancers      map[string]*Balancer
++	table          atomic.Pointer[routeTable]
+ 	dns            dns.Client
+ 
  	ctx        context.Context
- 	ohm        outbound.Manager
- 	dispatcher routing.Dispatcher
--	mu         sync.Mutex
-+	mu         sync.RWMutex
+@@ -27,6 +28,11 @@ type Router struct {
+ 	mu         sync.Mutex
  }
  
++type routeTable struct {
++	rules     []*Rule
++	balancers map[string]*Balancer
++}
++
  // Route is an implementation of routing.Route.
-@@ -134,6 +135,7 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
- 		r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
- 		r.rules = make([]*Rule, 0, len(config.Rule))
- 	}
-+	r.rules = slices.Clip(r.rules)
+ type Route struct {
+ 	routing.Context
+@@ -43,21 +49,21 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
+ 	r.ohm = ohm
+ 	r.dispatcher = dispatcher
+ 
+-	r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
++	balancers := make(map[string]*Balancer, len(config.BalancingRule))
  	for _, rule := range config.BalancingRule {
- 		_, found := r.balancers[rule.Tag]
- 		if found {
-@@ -232,8 +234,8 @@ func (r *Router) RemoveRule(tag string) error {
+ 		balancer, err := rule.Build(ohm, dispatcher)
+ 		if err != nil {
+ 			return err
+ 		}
+ 		balancer.InjectContext(ctx)
+-		r.balancers[rule.Tag] = balancer
++		balancers[rule.Tag] = balancer
+ 	}
+ 
+-	r.rules = make([]*Rule, 0, len(config.Rule))
++	rules := make([]*Rule, 0, len(config.Rule))
+ 	for _, rule := range config.Rule {
+ 		cond, err := rule.BuildCondition()
+ 		if err != nil {
+-			r.closeWebhooks()
++			closeRuleWebhooks(rules)
+ 			return err
+ 		}
+ 		rr := &Rule{
+@@ -68,26 +74,27 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
+ 		if wh := rule.GetWebhook(); wh != nil {
+ 			notifier, err := NewWebhookNotifier(wh)
+ 			if err != nil {
+-				r.closeWebhooks()
++				closeRuleWebhooks(rules)
+ 				return err
+ 			}
+ 			rr.Webhook = notifier
+ 		}
+ 		btag := rule.GetBalancingTag()
+ 		if len(btag) > 0 {
+-			brule, found := r.balancers[btag]
++			brule, found := balancers[btag]
+ 			if !found {
+ 				if rr.Webhook != nil {
+ 					rr.Webhook.Close()
+ 				}
+-				r.closeWebhooks()
++				closeRuleWebhooks(rules)
+ 				return errors.New("balancer ", btag, " not found")
+ 			}
+ 			rr.Balancer = brule
+ 		}
+-		r.rules = append(r.rules, rr)
++		rules = append(rules, rr)
+ 	}
+ 
++	r.table.Store(&routeTable{rules: rules, balancers: balancers})
+ 	return nil
+ }
+ 
+@@ -123,84 +130,94 @@ func (r *Router) AddRule(config *serial.TypedMessage, shouldAppend bool) error {
+ 
+ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
+ 	r.mu.Lock()
+-	defer r.mu.Unlock()
++	previous := r.snapshot()
++	base := &routeTable{}
++	if shouldAppend {
++		base = previous
++	}
++	next, err := r.extend(base, config)
++	if err == nil {
++		r.table.Store(next)
++	}
++	r.mu.Unlock()
+ 
++	if err != nil {
++		return err
++	}
+ 	if !shouldAppend {
+-		for _, rule := range r.rules {
+-			if rule.Webhook != nil {
+-				rule.Webhook.Close()
+-			}
+-		}
+-		r.balancers = make(map[string]*Balancer, len(config.BalancingRule))
+-		r.rules = make([]*Rule, 0, len(config.Rule))
++		closeRuleWebhooks(previous.rules)
+ 	}
++	return nil
++}
++
++func (r *Router) extend(base *routeTable, config *Config) (*routeTable, error) {
++	balancers := make(map[string]*Balancer, len(base.balancers)+len(config.BalancingRule))
++	maps.Copy(balancers, base.balancers)
+ 	for _, rule := range config.BalancingRule {
+-		_, found := r.balancers[rule.Tag]
+-		if found {
+-			return errors.New("duplicate balancer tag")
++		if _, found := balancers[rule.Tag]; found {
++			return nil, errors.New("duplicate balancer tag")
+ 		}
+ 		balancer, err := rule.Build(r.ohm, r.dispatcher)
+ 		if err != nil {
+-			return err
++			return nil, err
+ 		}
+ 		balancer.InjectContext(r.ctx)
+-		r.balancers[rule.Tag] = balancer
++		balancers[rule.Tag] = balancer
+ 	}
+ 
+-	startIdx := len(r.rules)
+-	closeNewWebhooks := func() {
+-		for i := startIdx; i < len(r.rules); i++ {
+-			if r.rules[i].Webhook != nil {
+-				r.rules[i].Webhook.Close()
+-			}
+-		}
+-		r.rules = r.rules[:startIdx]
++	rules := make([]*Rule, len(base.rules), len(base.rules)+len(config.Rule))
++	copy(rules, base.rules)
++	ruleTags := make(map[string]struct{}, len(rules)+len(config.Rule))
++	for _, rule := range rules {
++		ruleTags[rule.RuleTag] = struct{}{}
++	}
++	fail := func(err error) (*routeTable, error) {
++		closeRuleWebhooks(rules[len(base.rules):])
++		return nil, err
+ 	}
+ 
+ 	for _, rule := range config.Rule {
+-		if r.RuleExists(rule.GetRuleTag()) {
+-			closeNewWebhooks()
+-			return errors.New("duplicate ruleTag ", rule.GetRuleTag())
++		ruleTag := rule.GetRuleTag()
++		if _, found := ruleTags[ruleTag]; found && ruleTag != "" {
++			return fail(errors.New("duplicate ruleTag ", ruleTag))
+ 		}
+ 		cond, err := rule.BuildCondition()
+ 		if err != nil {
+-			closeNewWebhooks()
+-			return err
++			return fail(err)
+ 		}
+ 		rr := &Rule{
+ 			Condition: cond,
+ 			Tag:       rule.GetTag(),
+-			RuleTag:   rule.GetRuleTag(),
++			RuleTag:   ruleTag,
+ 		}
+ 		if wh := rule.GetWebhook(); wh != nil {
+ 			notifier, err := NewWebhookNotifier(wh)
+ 			if err != nil {
+-				closeNewWebhooks()
+-				return err
++				return fail(err)
+ 			}
+ 			rr.Webhook = notifier
+ 		}
+ 		btag := rule.GetBalancingTag()
+ 		if len(btag) > 0 {
+-			brule, found := r.balancers[btag]
++			brule, found := balancers[btag]
+ 			if !found {
+ 				if rr.Webhook != nil {
+ 					rr.Webhook.Close()
+ 				}
+-				closeNewWebhooks()
+-				return errors.New("balancer ", btag, " not found")
++				return fail(errors.New("balancer ", btag, " not found"))
+ 			}
+ 			rr.Balancer = brule
+ 		}
+-		r.rules = append(r.rules, rr)
++		ruleTags[ruleTag] = struct{}{}
++		rules = append(rules, rr)
+ 	}
+ 
+-	return nil
++	return &routeTable{rules: rules, balancers: balancers}, nil
+ }
+ 
+ func (r *Router) RuleExists(tag string) bool {
+ 	if tag != "" {
+-		for _, rule := range r.rules {
++		for _, rule := range r.snapshot().rules {
+ 			if rule.RuleTag == tag {
+ 				return true
+ 			}
+@@ -211,31 +228,32 @@ func (r *Router) RuleExists(tag string) bool {
+ 
+ // RemoveRule implements routing.Router.
+ func (r *Router) RemoveRule(tag string) error {
+-	r.mu.Lock()
+-	defer r.mu.Unlock()
++	if tag == "" {
++		return errors.New("empty tag name!")
++	}
+ 
+-	newRules := []*Rule{}
+-	if tag != "" {
+-		for _, rule := range r.rules {
+-			if rule.RuleTag != tag {
+-				newRules = append(newRules, rule)
+-			} else if rule.Webhook != nil {
+-				rule.Webhook.Close()
+-			}
++	r.mu.Lock()
++	previous := r.snapshot()
++	rules := make([]*Rule, 0, len(previous.rules))
++	var removed []*Rule
++	for _, rule := range previous.rules {
++		if rule.RuleTag != tag {
++			rules = append(rules, rule)
++		} else {
++			removed = append(removed, rule)
+ 		}
+-		r.rules = newRules
+-		return nil
+ 	}
+-	return errors.New("empty tag name!")
++	r.table.Store(&routeTable{rules: rules, balancers: previous.balancers})
++	r.mu.Unlock()
+ 
++	closeRuleWebhooks(removed)
++	return nil
+ }
  
  // ListRule implements routing.Router
  func (r *Router) ListRule() []routing.Route {
 -	r.mu.Lock()
 -	defer r.mu.Unlock()
-+	r.mu.RLock()
-+	defer r.mu.RUnlock()
  	ruleList := make([]routing.Route, 0)
- 	for _, rule := range r.rules {
+-	for _, rule := range r.rules {
++	for _, rule := range r.snapshot().rules {
  		ruleList = append(ruleList, &Route{
-@@ -254,7 +256,11 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+ 			outboundTag: rule.Tag,
+ 			ruleTag:     rule.RuleTag,
+@@ -254,7 +272,9 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
  		ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
  	}
  
 -	for _, rule := range r.rules {
-+	r.mu.RLock()
-+	rules := r.rules
-+	r.mu.RUnlock()
++	rules := r.snapshot().rules
 +
 +	for _, rule := range rules {
  		if rule.Apply(ctx) {
  			return rule, ctx, nil
  		}
-@@ -267,7 +273,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+@@ -267,7 +287,7 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
  	ctx = routing_dns.ContextWithDNSClient(ctx, r.dns)
  
  	// Try applying rules again if we have IPs.
@@ -119,20 +352,38 @@ index df770a3..d1ccf78 100644
  		if rule.Apply(ctx) {
  			return rule, ctx, nil
  		}
-@@ -276,6 +282,13 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
+@@ -276,6 +296,18 @@ func (r *Router) pickRouteInternal(ctx routing.Context) (*Rule, routing.Context,
  	return nil, ctx, common.ErrNoClue
  }
  
++func (r *Router) snapshot() *routeTable {
++	if table := r.table.Load(); table != nil {
++		return table
++	}
++	return &routeTable{}
++}
++
 +func (r *Router) balancer(tag string) (*Balancer, bool) {
-+	r.mu.RLock()
-+	defer r.mu.RUnlock()
-+	b, ok := r.balancers[tag]
++	b, ok := r.snapshot().balancers[tag]
 +	return b, ok
 +}
 +
  // Start implements common.Runnable.
  func (r *Router) Start() error {
  	return nil
+@@ -283,7 +315,11 @@ func (r *Router) Start() error {
+ 
+ // closeWebhooks closes all webhook notifiers in the current rule set.
+ func (r *Router) closeWebhooks() {
+-	for _, rule := range r.rules {
++	closeRuleWebhooks(r.snapshot().rules)
++}
++
++func closeRuleWebhooks(rules []*Rule) {
++	for _, rule := range rules {
+ 		if rule.Webhook != nil {
+ 			rule.Webhook.Close()
+ 		}
 diff --git a/app/router/router_large_rule_stall_test.go b/app/router/router_large_rule_stall_test.go
 new file mode 100644
 index 0000000..4a2315a
@@ -371,7 +622,7 @@ index 0000000..335fb9a
 +}
 diff --git a/app/router/router_writers_race_test.go b/app/router/router_writers_race_test.go
 new file mode 100644
-index 0000000..49e2f12
+index 0000000..a199308
 --- /dev/null
 +++ b/app/router/router_writers_race_test.go
 @@ -0,0 +1,152 @@
@@ -495,7 +746,7 @@ index 0000000..49e2f12
 +		}
 +	}
 +	if accepted != 1 {
-+		t.Fatalf("%d concurrent AddRule calls with the same ruleTag succeeded, want exactly 1", accepted)
++		t.Errorf("%d concurrent AddRule calls with the same ruleTag succeeded, want exactly 1", accepted)
 +	}
 +
 +	want := map[string]bool{"contested": true}

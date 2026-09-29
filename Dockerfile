@@ -105,10 +105,13 @@ RUN git init -q . \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
  && git apply --verbose /patches/xray-router-race.patch \
- && grep -qF "rules := r.rules" app/router/router.go \
- && grep -qF "r.rules = slices.Clip(r.rules)" app/router/router.go \
+ && grep -qF "table          atomic.Pointer[routeTable]" app/router/router.go \
+ && grep -qF "rules := r.snapshot().rules" app/router/router.go \
+ && grep -qF "next, err := r.extend(base, config)" app/router/router.go \
+ && grep -qF "closeRuleWebhooks(removed)" app/router/router.go \
  && grep -qF "func (r *Router) balancer(tag string) (*Balancer, bool) {" app/router/router.go \
- && ! grep -qF "r.balancers[tag]; ok" app/router/balancing.go \
+ && ! grep -qE "(^|[^[:alnum:]_])r[.](rules|balancers)([^[:alnum:]_]|$)" app/router/router.go app/router/balancing.go app/router/balancing_override.go \
+ && grep -qF "b, ok := r.balancer(balancer)" app/router/balancing_override.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
