@@ -377,6 +377,31 @@ xray_fixture xray-patch-names-another-component "$xray_copy
 RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" B1
 check xray-patch-names-another-component 1 DRIFT_COMPONENTS="node sing-box"
 
+xray_fixture xray-patch-shell-comment "$xray_copy
+RUN true # && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-shell-comment 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-in-a-copy-heredoc "$xray_copy
+COPY <<NOTES /notes.txt
+RUN git apply --verbose /patches/xray-fix.patch
+NOTES" "$xray_makefile" X1
+check xray-patch-in-a-copy-heredoc 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-under-a-no-op-shell "$xray_copy
+SHELL [\"/bin/true\"]
+RUN git apply --verbose /patches/xray-fix.patch
+SHELL [\"/bin/sh\", \"-c\"]" "$xray_makefile" X1
+check xray-patch-under-a-no-op-shell 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-reverted-later "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch
+RUN git apply -R /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-reverted-later 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-replaced-before-apply "$xray_copy
+RUN curl -fsSL -o /patches/xray-fix.patch https://example.com/other.patch && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-replaced-before-apply 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
