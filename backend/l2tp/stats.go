@@ -54,7 +54,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	sessions := listed.sessions
 	scan := scanFinalRecords(tag)
 	finals := scan.records
-	o.counted.takeLatePresent(listed, scan)
+	resolved := o.counted.takeStartedBeforeFallback(sessions)
 
 	perUser := make(map[string][]l2tpSession)
 	for _, s := range sessions {
@@ -109,6 +109,7 @@ func (o *L2TP) collectLocked() []stats.Sample {
 		growthTx[s.user] += max(tx-base.tx, 0)
 		o.counted.set(id, countedBytes{rx: max(rx, base.rx), tx: max(tx, base.tx)})
 	}
+	o.counted.settleFallback(resolved && !removeFailed && listed.complete() && scan.listErr == nil && len(scan.unreadable) == 0)
 	o.counted.retain(keep)
 	o.persistCountedLocked()
 	o.sweepPppdRecordsLocked()

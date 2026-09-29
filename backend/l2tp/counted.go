@@ -20,6 +20,7 @@ const (
 
 	countedConsumedPrefix = "consumed "
 	countedFinalPrefix    = "final "
+	countedSincePrefix    = "since "
 )
 
 type sessionIdentity struct {
@@ -41,8 +42,8 @@ type countedState struct {
 	dirty    bool
 	failing  bool
 
-	pendingSessions bool
-	pendingFinals   bool
+	since      int64
+	sinceClean int
 }
 
 func newCountedState() *countedState {
@@ -106,10 +107,16 @@ func (c *countedState) consume(rec finalRecord) countedBytes {
 	}
 	id, ok := c.match(rec)
 	if !ok {
+		final := countedBytes{rx: rec.rx, tx: rec.tx}
+		if c.startedBeforeFallback(rec) {
+			if rec.hasIdentity {
+				c.markConsumed(rec.identity, final)
+			}
+			return final
+		}
 		if !rec.hasIdentity {
 			return countedBytes{}
 		}
-		final := countedBytes{rx: rec.rx, tx: rec.tx}
 		var base countedBytes
 		if rec.proc == "" {
 			base = c.inherit(rec.identity, final)
@@ -235,6 +242,9 @@ func (c *countedState) encode() []byte {
 	for _, name := range names {
 		b.WriteString(countedFinalPrefix + name + "\n")
 	}
+	if c.since > 0 {
+		fmt.Fprintf(&b, "%s%d\n", countedSincePrefix, c.since)
+	}
 	return []byte(b.String())
 }
 
@@ -253,6 +263,14 @@ func decodeCountedState(data []byte) (*countedState, error) {
 				return nil, fmt.Errorf("line %d: malformed final record name %q", i+2, name)
 			}
 			c.counted[name] = true
+			continue
+		}
+		if at, ok := strings.CutPrefix(line, countedSincePrefix); ok {
+			since, err := strconv.ParseInt(at, 10, 64)
+			if err != nil || since <= 0 || c.since != 0 {
+				return nil, fmt.Errorf("line %d: malformed fallback time %q", i+2, at)
+			}
+			c.since = since
 			continue
 		}
 		entry, consumed := strings.CutPrefix(line, countedConsumedPrefix)
@@ -314,53 +332,59 @@ func (c *countedState) save(tag string) error {
 	return writeFileAtomic(countedStatePath(tag), c.encode(), 0o600)
 }
 
-func presentAsCounted(tag string, _ int64) *countedState {
+func presentAsCounted(tag string, now int64) *countedState {
 	c := newCountedState()
-	c.takePresent(scanSessions(tag), scanFinalRecords(tag))
+	sessions, finals := scanSessions(tag), scanFinalRecords(tag)
+	for _, s := range sessions.sessions {
+		if rx, tx, ok := sessionBytes(s); ok {
+			c.raise(s.identity(), countedBytes{rx: rx, tx: tx})
+		}
+	}
+	for _, rec := range finals.records {
+		c.counted[filepath.Base(rec.path)] = true
+	}
+	if !sessions.complete() || finals.listErr != nil || len(finals.unreadable) > 0 {
+		c.since = now
+	}
 	c.dirty = true
 	return c
 }
 
-func (c *countedState) takePresent(sessions sessionScan, finals finalScan) {
-	c.takeSessions(sessions)
-	c.takeFinals(finals)
-	c.pendingSessions = !sessions.complete()
-	c.pendingFinals = finals.listErr != nil
+func (c *countedState) startedBeforeFallback(rec finalRecord) bool {
+	return c.since > 0 && (!rec.hasIdentity || rec.identity.started < c.since)
 }
 
-func (c *countedState) takeSessions(sessions sessionScan) {
-	for _, s := range sessions.sessions {
+func (c *countedState) takeStartedBeforeFallback(sessions []l2tpSession) bool {
+	if c.since == 0 {
+		return true
+	}
+	resolved := true
+	for _, s := range sessions {
 		id := s.identity()
-		if _, known := c.entries[id]; known {
+		if _, known := c.entries[id]; known || id.started >= c.since {
 			continue
 		}
 		if rx, tx, ok := sessionBytes(s); ok {
 			c.raise(id, countedBytes{rx: rx, tx: tx})
+		} else {
+			resolved = false
 		}
 	}
+	return resolved
 }
 
-func (c *countedState) takeFinals(finals finalScan) {
-	for _, rec := range finals.records {
-		if _, known := c.entries[rec.identity]; known && rec.hasIdentity {
-			continue
-		}
-		c.counted[filepath.Base(rec.path)] = true
+func (c *countedState) settleFallback(clean bool) {
+	if c.since == 0 {
+		return
 	}
-	for _, u := range finals.unreadable {
-		c.counted[filepath.Base(u.path)] = true
+	if !clean {
+		c.sinceClean = 0
+		return
 	}
-}
-
-func (c *countedState) takeLatePresent(sessions sessionScan, finals finalScan) {
-	if c.pendingSessions && sessions.complete() {
-		c.takeSessions(sessions)
-		c.pendingSessions = false
-		c.dirty = true
-	}
-	if c.pendingFinals && finals.listErr == nil {
-		c.takeFinals(finals)
-		c.pendingFinals = false
+	c.sinceClean++
+	if c.sinceClean > countedGraceRounds {
+		c.since = 0
+		c.sinceClean = 0
 		c.dirty = true
 	}
 }
@@ -371,7 +395,7 @@ func (o *L2TP) loadCountedLocked() {
 	if err != nil {
 		o.emitLogf("Error", "l2tp: counted state of %s is unreadable, counting only growth from now on: %v", tag, err)
 		counted = presentAsCounted(tag, wallClock().Unix())
-		if !counted.pendingSessions && !counted.pendingFinals && counted.save(tag) == nil {
+		if counted.save(tag) == nil {
 			counted.dirty = false
 		}
 	}
@@ -379,7 +403,7 @@ func (o *L2TP) loadCountedLocked() {
 }
 
 func (o *L2TP) persistCountedLocked() {
-	if !o.counted.dirty || o.counted.pendingSessions || o.counted.pendingFinals {
+	if !o.counted.dirty {
 		return
 	}
 	if err := o.counted.save(o.config.InboundTag); err != nil {
