@@ -158,10 +158,10 @@ index 0000000..c82b5a8
 +}
 diff --git a/common/protocol/http/trusted_forwarder_test.go b/common/protocol/http/trusted_forwarder_test.go
 new file mode 100644
-index 0000000..7ea1d46
+index 0000000..89c2678
 --- /dev/null
 +++ b/common/protocol/http/trusted_forwarder_test.go
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,119 @@
 +package http_test
 +
 +import (
@@ -246,6 +246,8 @@ index 0000000..7ea1d46
 +		{cidrs: "127.0.0.1/32, not-a-cidr", source: "127.0.0.1:12345", invalidLogs: "1"},
 +		{cidrs: "127.0.0.1", source: "127.0.0.1:12345", invalidLogs: "1"},
 +		{cidrs: "127.0.0.1/32", source: "[fd00::7]:0", invalidLogs: "0"},
++		{cidrs: "::ffff:127.0.0.1/128", source: "127.0.0.1:12345", invalidLogs: "1"},
++		{cidrs: "127.0.0.1/32, ::ffff:127.0.0.0/104", source: "127.0.0.1:12345", invalidLogs: "1"},
 +	}
 +	sources := regexp.MustCompile(`source=(\S+)`)
 +	logs := regexp.MustCompile(`invalid_cidr_logs=(\d+)`)
@@ -313,10 +315,10 @@ index 4f2c821..0b87b67 100644
  			t.Fatalf("unexpected remote address: %v", addr)
 diff --git a/testing/trustedheader/trustedheader.go b/testing/trustedheader/trustedheader.go
 new file mode 100644
-index 0000000..e57a0b1
+index 0000000..c5be527
 --- /dev/null
 +++ b/testing/trustedheader/trustedheader.go
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,191 @@
 +package trustedheader
 +
 +import (
@@ -426,6 +428,19 @@ index 0000000..e57a0b1
 +	{
 +		Name:    "invalid CIDR entry fails closed",
 +		CIDRs:   cidrs("127.0.0.1/32, not-a-cidr"),
++		Trusted: cfConnectingIP,
++		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
++	},
++	{
++		Name:    "IPv4-mapped CIDR entry fails closed",
++		CIDRs:   cidrs("127.0.0.1/32, ::ffff:127.0.0.0/104"),
++		Trusted: cfConnectingIP,
++		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
++	},
++	{
++		Name:    "IPv4-mapped CIDR entry fails closed for an IPv6 peer",
++		CIDRs:   cidrs("::1/128, ::ffff:127.0.0.1/128"),
++		IPv6:    true,
 +		Trusted: cfConnectingIP,
 +		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
 +	},
