@@ -80,6 +80,46 @@ pending() {
   printf '%s pending: %s\n' "$(sha_of "$s/upw" U1)" "$2" >>"$s/waivers"
 }
 
+stub_curl() {
+  mkdir -p "$tmp/stub"
+  cat >"$tmp/stub/curl" <<'STUB'
+#!/usr/bin/env bash
+out="" hdr="" url=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --output) out=$2; shift 2 ;;
+    --dump-header) hdr=$2; shift 2 ;;
+    --config | --retry | --write-out) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+cat >/dev/null
+printf '%s\n' "$url" >>"$STUB_LOG"
+calls=$(wc -l <"$STUB_LOG" | tr -d ' ')
+full='['
+for i in $(seq 1 100); do
+  [ "$i" = 1 ] || full="$full,"
+  full="$full{\"ghsa_id\":\"GHSA-stub-$i\",\"withdrawn_at\":\"2020-01-01T00:00:00Z\"}"
+done
+full="$full]"
+next=""
+case $STUB_MODE:$url in
+  endless:*) body=$full; next="https://api.github.com/advisories?after=cursor$calls&per_page=100" ;;
+  two-pages:*after=*) body='[{"ghsa_id":"GHSA-stub-last","withdrawn_at":"2020-01-01T00:00:00Z"}]' ;;
+  two-pages:*) body=$full; next="${url%%\?*}?after=cursor1&per_page=100" ;;
+esac
+printf '%s\n' "$body" >"$out"
+if [ -n "$hdr" ]; then
+  printf 'HTTP/2 200\r\ncontent-type: application/json\r\n' >"$hdr"
+  [ -z "$next" ] || printf 'link: <%s>; rel="next"\r\n' "$next" >>"$hdr"
+  printf '\r\n' >>"$hdr"
+fi
+printf '200'
+STUB
+  chmod +x "$tmp/stub/curl"
+}
+
 pass=0
 failed=0
 check() {
@@ -90,10 +130,23 @@ check() {
   git -C "$s/fork" fetch -q --prune --no-tags "$s/up.git" \
     "+refs/heads/*:refs/upstream-drift/node/heads/*" "+refs/tags/*:refs/upstream-drift/node/tags/*"
   set +e
-  (cd "$s/fork" && env UPSTREAM_FETCH=0 DRIFT_CACHE="$s/cache" DRIFT_COMPONENTS=node \
+  (cd "$s/fork" && exec env UPSTREAM_FETCH=0 DRIFT_CACHE="$s/cache" DRIFT_COMPONENTS=node \
     UPSTREAM_WAIVERS="$s/waivers" UPSTREAM_URL="$s/up.git" DRIFT_TODAY=2026-09-25 "$@" \
-    bash "$drift") >"$s/out" 2>&1
-  got=$?
+    bash "$drift") >"$s/out" 2>&1 &
+  child=$!
+  waited=0
+  while kill -0 "$child" 2>/dev/null && [ "$waited" -lt "${CASE_TIME_LIMIT:-60}" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$child" 2>/dev/null; then
+    kill "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    got=timeout
+  else
+    wait "$child"
+    got=$?
+  fi
   set -e
   case "$want:$got" in
     "$got:$got" | nonzero:1 | nonzero:2)
@@ -160,17 +213,65 @@ check pending-bad-date nonzero
 pending pending-bad-issue 'taken with the next release issue:none'
 check pending-bad-issue nonzero
 
+xray_patch() {
+  f=$tmp/$1/fork
+  mkdir -p "$f/patches"
+  {
+    printf 'Subject: %s\n\nUpstream: %s\n---\n' "$2" "$3"
+    printf 'diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,%d @@\n' "$(($4 + 3))"
+    awk -v n="$4" 'BEGIN { for (i = 0; i < n; i++) printf "+var line%08d = 0\n", i }'
+    printf ' package main\n \n-func a() int { return 0 }\n+func a() int { return 1 }\n'
+  } >"$f/patches/$2"
+  if [ "$5" = applied ]; then
+    printf 'FROM scratch AS xray-builder\nCOPY patches/%s /patches/%s\nRUN git apply --verbose /patches/%s\n' "$2" "$2" "$2" >>"$f/Dockerfile"
+  fi
+  git -C "$f" add -A
+  commit "$f" -m "carry $2"
+}
+
 base big-patch
-mkdir -p "$tmp/big-patch/fork/patches"
-{
-  printf 'Subject: big patch\n\nUpstream: %s\n---\n' "$(sha_of "$tmp/big-patch/upw" U1)"
-  printf 'diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,20003 @@\n'
-  awk 'BEGIN { for (i = 0; i < 20000; i++) printf "+var line%08d = 0\n", i }'
-  printf ' package main\n \n-func a() int { return 0 }\n+func a() int { return 1 }\n'
-} >"$tmp/big-patch/fork/patches/big.patch"
-git -C "$tmp/big-patch/fork" add -A
-commit "$tmp/big-patch/fork" -m "carry U1 as a big patch"
+git -C "$tmp/big-patch/fork" fetch -q "$tmp/big-patch/upw" "$(sha_of "$tmp/big-patch/upw" U1)"
+git -C "$tmp/big-patch/fork" cherry-pick -x "$(sha_of "$tmp/big-patch/upw" U1)" >/dev/null
+xray_patch big-patch xray-big.patch "$(printf 'a%.0s' $(seq 1 40))" 20000 applied
 check big-patch 0
+
+base patch-not-applied
+xray_patch patch-not-applied xray-unused.patch "$(sha_of "$tmp/patch-not-applied/upw" U1)" 3 not-applied
+check patch-not-applied 1
+
+base patch-other-component
+xray_patch patch-other-component xray-fix.patch "$(sha_of "$tmp/patch-other-component/upw" U1)" 3 applied
+check patch-other-component 1
+
+base ours-merge-upstream-reachable
+git -C "$tmp/ours-merge-upstream-reachable/fork" fetch -q "$tmp/ours-merge-upstream-reachable/upw" main
+git -C "$tmp/ours-merge-upstream-reachable/fork" merge -q -s ours --no-edit FETCH_HEAD
+git -C "$tmp/ours-merge-upstream-reachable/upw" fetch -q "$tmp/ours-merge-upstream-reachable/fork" main:refs/heads/fork-contribution
+check ours-merge-upstream-reachable 1
+
+pending pending-issue-only 'taken with the next release issue:x/y#1'
+check pending-issue-only 2
+
+pending pending-issue-and-until 'taken with the next release issue:x/y#1 until:2026-10-05'
+check pending-issue-and-until 0
+
+stub_curl
+base advisories-endless
+: >"$tmp/advisories-endless/stub.log"
+git -C "$tmp/advisories-endless/fork" fetch -q "$tmp/advisories-endless/upw" "$(sha_of "$tmp/advisories-endless/upw" U1)"
+git -C "$tmp/advisories-endless/fork" cherry-pick -x "$(sha_of "$tmp/advisories-endless/upw" U1)" >/dev/null
+check advisories-endless 2 UPSTREAM_FETCH=1 PATH="$tmp/stub:$PATH" STUB_MODE=endless STUB_LOG="$tmp/advisories-endless/stub.log"
+
+base advisories-two-pages
+: >"$tmp/advisories-two-pages/stub.log"
+git -C "$tmp/advisories-two-pages/fork" fetch -q "$tmp/advisories-two-pages/upw" "$(sha_of "$tmp/advisories-two-pages/upw" U1)"
+git -C "$tmp/advisories-two-pages/fork" cherry-pick -x "$(sha_of "$tmp/advisories-two-pages/upw" U1)" >/dev/null
+check advisories-two-pages 0 UPSTREAM_FETCH=1 PATH="$tmp/stub:$PATH" STUB_MODE=two-pages STUB_LOG="$tmp/advisories-two-pages/stub.log"
+if [ "$(grep -c 'after=cursor1' "$tmp/advisories-two-pages/stub.log")" != 2 ]; then
+  printf 'FAIL     %-28s the second page was not requested through the Link header of each endpoint\n' advisories-two-pages
+  sed 's/^/         | /' "$tmp/advisories-two-pages/stub.log" | tail -6
+  failed=$((failed + 1))
+fi
 
 printf 'upstream-drift-test: %d passed, %d failed\n' "$pass" "$failed"
 [ "$failed" = 0 ]
