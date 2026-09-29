@@ -9,7 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+var wallClock = time.Now
 
 const (
 	countedStateVersion = "v2"
@@ -311,7 +314,7 @@ func (c *countedState) save(tag string) error {
 	return writeFileAtomic(countedStatePath(tag), c.encode(), 0o600)
 }
 
-func presentAsCounted(tag string) *countedState {
+func presentAsCounted(tag string, _ int64) *countedState {
 	c := newCountedState()
 	c.takePresent(scanSessions(tag), scanFinalRecords(tag))
 	c.dirty = true
@@ -367,7 +370,7 @@ func (o *L2TP) loadCountedLocked() {
 	counted, err := loadCountedState(tag)
 	if err != nil {
 		o.emitLogf("Error", "l2tp: counted state of %s is unreadable, counting only growth from now on: %v", tag, err)
-		counted = presentAsCounted(tag)
+		counted = presentAsCounted(tag, wallClock().Unix())
 		if !counted.pendingSessions && !counted.pendingFinals && counted.save(tag) == nil {
 			counted.dirty = false
 		}
