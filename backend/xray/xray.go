@@ -2,6 +2,7 @@ package xray
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 	"sync"
@@ -24,7 +25,10 @@ type Xray struct {
 	mu          sync.RWMutex
 	syncMu      sync.Mutex
 	syncEntered func(context.Context)
+	shutDown    bool
 }
+
+var errShutDown = errors.New("xray has been shut down")
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
 	executableAbsolutePath, err := filepath.Abs(cfg.XrayExecutablePath)
@@ -120,12 +124,17 @@ func (x *Xray) Started() bool {
 }
 
 func (x *Xray) Restart() error {
-	return x.restartCoreWithConfig(x.config)
+	unlock := x.lockSync(context.Background())
+	defer unlock()
+	return x.restartCoreWithConfig(x.activeConfig())
 }
 
 func (x *Xray) restartCoreWithConfig(config *Config) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	if x.shutDown {
+		return errShutDown
+	}
 	if err := x.core.Restart(config, x.cfg.Debug); err != nil {
 		return err
 	}
@@ -147,6 +156,7 @@ func (x *Xray) activeConfig() *Config {
 func (x *Xray) Shutdown() {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	x.shutDown = true
 
 	// Cancel context first to stop health checks and other goroutines
 	x.cancelFunc()
