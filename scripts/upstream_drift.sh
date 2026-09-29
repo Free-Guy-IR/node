@@ -9,6 +9,7 @@ fetch=${UPSTREAM_FETCH:-1}
 components=${DRIFT_COMPONENTS:-node xray sing-box sing-quic mtg}
 all_components='node xray sing-box sing-quic mtg'
 api_url=${GITHUB_API_URL:-https://api.github.com}
+max_api_pages=${DRIFT_MAX_API_PAGES:-50}
 categories='rejected|superseded|pending|not-applicable|allowed-merge'
 ghsa_re='GHSA(-[23456789cfghjmpqrvwx]{4}){3}'
 node_ns=refs/upstream-drift/node
@@ -41,6 +42,8 @@ if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
   printf 'upstream-drift: WARNING shallow clone, commits behind the shallow boundary are not seen; the result is not authoritative\n' >&2
 fi
 target_sha=$(git rev-parse --verify --quiet "$target^{commit}") || die "unknown target $target"
+git show --remerge-diff --format= "$target_sha" >/dev/null 2>&1 ||
+  die "git $(git --version | awk '{ print $3 }') has no --remerge-diff; git 2.36 or newer is required"
 [ -f "$waiver_file" ] || die "waiver file $waiver_file is missing"
 command -v curl >/dev/null || die "curl is required"
 command -v jq >/dev/null || die "jq is required"
@@ -50,8 +53,22 @@ trap 'rm -rf "$work"' EXIT
 store=${DRIFT_CACHE:-$work/store}
 mkdir -p "$store"
 
+day_number() {
+  printf '%s\n' "$1" | awk -F- 'NF == 3 && $1 ~ /^[0-9][0-9][0-9][0-9]$/ && $2 ~ /^[0-9][0-9]$/ && $3 ~ /^[0-9][0-9]$/ {
+      y = $1 + 0; m = $2 + 0; d = $3 + 0
+      split("31 28 31 30 31 30 31 31 30 31 30 31", len, " ")
+      if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) len[2] = 29
+      if (m < 1 || m > 12 || d < 1 || d > len[m]) exit 1
+      if (m < 3) { y--; m += 12 }
+      print 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) + d
+      ok = 1
+    }
+    END { exit !ok }'
+}
+
 today=${DRIFT_TODAY:-$(date -u +%Y-%m-%d)}
-printf '%s\n' "$today" | grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}' || die "DRIFT_TODAY must be YYYY-MM-DD, got: $today"
+today_day=$(day_number "$today") || die "DRIFT_TODAY must be a calendar date YYYY-MM-DD, got: $today"
+max_waiver_days=30
 
 : >"$work/waivers"
 : >"$work/pending"
@@ -63,11 +80,26 @@ while IFS= read -r line || [ -n "$line" ]; do
     die "$waiver_file:$line_no: expected '<40-hex sha or GHSA id> <rejected|superseded|pending|not-applicable|allowed-merge>: <reason>', got: $line"
   case "$line" in
     *" pending: "*)
-      until_date=$(printf '%s\n' "$line" | sed -n 's/.*[[:space:]]until:\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/p')
-      if [ -z "$until_date" ] && ! printf '%s\n' "$line" | grep -Eq '[[:space:]]issue:[^[:space:]]+'; then
-        die "$waiver_file:$line_no: a pending waiver needs 'until:YYYY-MM-DD' (at most 30 days ahead) or 'issue:<owner>/<repo>#<number>', got: $line"
+      tokens=$(printf '%s\n' "${line#* pending: }" | tr -s '[:space:]' '\n')
+      until_tokens=$(printf '%s\n' "$tokens" | { grep -i 'until:' || true; })
+      issue_tokens=$(printf '%s\n' "$tokens" | { grep -i '^issue:' || true; })
+      [ -n "$until_tokens" ] ||
+        die "$waiver_file:$line_no: a pending waiver needs exactly one 'until:YYYY-MM-DD', at most $max_waiver_days days after $today (an issue: reference is optional and does not replace it), got: $line"
+      [ "$(printf '%s\n' "$until_tokens" | wc -l | tr -d ' ')" = 1 ] ||
+        die "$waiver_file:$line_no: a pending waiver takes exactly one until: date, got: $line"
+      printf '%s\n' "$until_tokens" | grep -Eqx 'until:[0-9]{4}-[0-9]{2}-[0-9]{2}' ||
+        die "$waiver_file:$line_no: until: must be written until:YYYY-MM-DD with no space, got: $until_tokens"
+      until_date=${until_tokens#until:}
+      until_day=$(day_number "$until_date") ||
+        die "$waiver_file:$line_no: until:$until_date is not a calendar date"
+      [ "$until_day" -le $((today_day + max_waiver_days)) ] ||
+        die "$waiver_file:$line_no: until:$until_date is more than $max_waiver_days days after $today"
+      if [ -n "$issue_tokens" ]; then
+        bad_issue=$(printf '%s\n' "$issue_tokens" | { grep -Evx 'issue:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true; })
+        [ -z "$bad_issue" ] ||
+          die "$waiver_file:$line_no: an issue reference must be written issue:<owner>/<repo>#<number>, got: $bad_issue"
       fi
-      if [ -n "$until_date" ] && [ "$until_date" \< "$today" ]; then
+      if [ "$until_day" -lt "$today_day" ]; then
         printf '%s %s %s\n' "${line%% *}" "$until_date" "${line#* }" >>"$work/expired"
         continue
       fi
@@ -83,20 +115,44 @@ waiver_for() {
   awk -v id="$1" '$1 == id { $1 = ""; sub(/^ /, ""); print; exit }' "$work/waivers"
 }
 
-{
-  git log --format=%B "$target_sha"
-  { git ls-tree -r --name-only "$target_sha" -- patches/ | grep -E '\.patch$' || true; } |
-    while IFS= read -r patch_path; do
-      git show "$target_sha:$patch_path" | awk '/^diff --git / { exit } { print }'
-    done
-} | sed -n -e 's/^[[:space:]]*[Uu]pstream:[[:space:]]*\(.*\)$/\1/p' \
-  -e 's/.*(cherry picked from commit \([0-9a-fA-F]*\)).*/\1/p' |
-  tr -s '[:space:],;()[]/' '\n' | tr '[:upper:]' '[:lower:]' | sort -u >"$work/trailer-tokens"
-{ grep -Ex '[0-9a-f]{7,40}' "$work/trailer-tokens" || true; } >"$work/trailers"
-{ grep -Ex 'ghsa(-[0-9a-z]{4}){3}' "$work/trailer-tokens" || true; } | sed 's/^ghsa/GHSA/' >"$work/trailer-ghsa"
+trailer_tokens() {
+  sed -n -e 's/^[[:space:]]*[Uu]pstream:[[:space:]]*\(.*\)$/\1/p' \
+    -e 's/.*(cherry picked from commit \([0-9a-fA-F]*\)).*/\1/p' |
+    tr -s '[:space:],;()[]/' '\n' | tr '[:upper:]' '[:lower:]' | sort -u
+}
 
+split_tokens() {
+  { grep -Ex '[0-9a-f]{7,40}' "$1" || true; } >"$work/trailers$2"
+  { grep -Ex 'ghsa(-[0-9a-z]{4}){3}' "$1" || true; } | sed 's/^ghsa/GHSA/' >"$work/trailer-ghsa$2"
+}
+
+git log --format=%B "$target_sha" | trailer_tokens >"$work/commit-tokens"
+split_tokens "$work/commit-tokens" ""
+
+dockerfile_text=$(git show "$target_sha:Dockerfile" 2>/dev/null || true)
+makefile_text=$(git show "$target_sha:Makefile" 2>/dev/null || true)
+: >"$work/applied-xray-patches"
+: >"$work/xray-patch-headers"
+if printf '%s\n' "$makefile_text" | grep -F 'patches/xray-*.patch' >/dev/null; then
+  git ls-tree -r --name-only "$target_sha" -- patches/ >"$work/patch-files"
+  while IFS= read -r patch_path; do
+    case "$patch_path" in
+      patches/xray-*.patch) ;;
+      *) continue ;;
+    esac
+    patch_name=${patch_path#patches/}
+    printf '%s\n' "$dockerfile_text" | grep -F "/patches/$patch_name" | grep -E '(^|[[:space:]])git apply' >/dev/null || continue
+    printf '%s\n' "$patch_path" >>"$work/applied-xray-patches"
+    patch_text=$(git show "$target_sha:$patch_path") || die "cannot read $patch_path at $target"
+    printf '%s\n' "$patch_text" | awk '/^diff --git / { body = 1 } !body { print }' >>"$work/xray-patch-headers"
+  done <"$work/patch-files"
+fi
+trailer_tokens <"$work/xray-patch-headers" | sort -u - "$work/commit-tokens" >"$work/xray-tokens"
+split_tokens "$work/xray-tokens" "-xray"
+
+trailer_scope=""
 trailer_ref() {
-  awk -v sha="$1" 'index(sha, $0) == 1 { print; exit }' "$work/trailers"
+  awk -v sha="$1" 'index(sha, $0) == 1 { print; exit }' "$work/trailers$trailer_scope"
 }
 
 patch_ids() {
@@ -111,22 +167,32 @@ api_curl() {
     printf 'header = "Accept: application/vnd.github+json"\n'
     printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
     [ -z "${GITHUB_TOKEN:-}" ] || printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN"
-  } | curl --silent --show-error --location --retry 3 --config - --output "$2" --write-out '%{http_code}' "$1"
+  } | curl --silent --show-error --location --retry 3 --config - --dump-header "$3" --output "$2" --write-out '%{http_code}' "$1"
 }
 
 api_fetch() {
   printf '[]\n' >"$1"
-  page=1
-  while :; do
-    status=$(api_curl "$api_url$2&per_page=100&page=$page" "$work/page.json") ||
+  url="$api_url$2&per_page=100"
+  pages=0
+  while [ -n "$url" ]; do
+    pages=$((pages + 1))
+    [ "$pages" -le "$max_api_pages" ] ||
+      die "GitHub API request $2 still has a next page after $max_api_pages pages; stopping instead of looping"
+    : >"$work/page.headers"
+    status=$(api_curl "$url" "$work/page.json" "$work/page.headers") ||
       die "GitHub API request $2 failed"
     [ "$status" = 200 ] ||
       die "GitHub API request $2 returned HTTP $status (rate limited? set GITHUB_TOKEN)"
     jq -s '.[0] + .[1]' "$1" "$work/page.json" >"$work/merged.json" ||
       die "GitHub API request $2 did not return a list"
     mv "$work/merged.json" "$1"
-    [ "$(jq length "$work/page.json")" -ge 100 ] || break
-    page=$((page + 1))
+    url=$(tr -d '\r' <"$work/page.headers" |
+      awk '/^HTTP\// { link = "" } tolower($1) == "link:" { link = $0 } END { print link }' |
+      sed -n 's/.*<\([^>]*\)>; *rel="next".*/\1/p')
+    case "$url" in
+      "" | "$api_url"/*) ;;
+      *) die "GitHub API request $2 returned a next link outside $api_url: $url" ;;
+    esac
   done
 }
 
@@ -167,7 +233,7 @@ check_advisories() {
     fixed_by=$(git --git-dir="$adv_gitdir" log -1 --format=%H --regexp-ignore-case --fixed-strings \
       --grep="$ghsa" $adv_excl --)
     ported_by=""
-    if ! grep -qx "$ghsa" "$work/trailer-ghsa"; then
+    if ! grep -qx "$ghsa" "$work/trailer-ghsa$trailer_scope"; then
       for fix in $(git --git-dir="$adv_gitdir" log --format=%H --regexp-ignore-case --fixed-strings \
         --grep="$ghsa" $(cat "$adv_refs") --not $adv_excl --); do
         if [ -n "$(trailer_ref "$fix")" ]; then
@@ -179,7 +245,7 @@ check_advisories() {
     if [ -n "$fixed_by" ]; then
       status=FIXED
       detail="the pinned history already has $(printf '%.12s' "$fixed_by"), which names this advisory"
-    elif grep -qx "$ghsa" "$work/trailer-ghsa"; then
+    elif grep -qx "$ghsa" "$work/trailer-ghsa$trailer_scope"; then
       status=PORTED
       detail="named by an Upstream trailer"
     elif [ -n "$ported_by" ]; then
@@ -204,6 +270,7 @@ check_advisories() {
 }
 
 check_node() {
+  trailer_scope=""
   if [ "$fetch" = 1 ]; then
     git fetch --quiet --prune --no-tags "$upstream_url" \
       "+refs/heads/*:$node_ns/heads/*" "+refs/tags/*:$node_ns/tags/*" ||
@@ -248,6 +315,34 @@ check_node() {
   done 8<"$work/entry-edges"
   printf 'upstream-drift: node: %d fork commits with an upstream parent: %d allowed, %d not allowed\n' \
     "$entries" "$entries_allowed" "$((entries - entries_allowed))"
+
+  tag_refs=$(git for-each-ref --format='%(refname)' "$node_ns/tags/")
+  git rev-list --merges "$target_sha" --not $tag_refs >"$work/target-merges"
+  rewritten=0
+  rewritten_allowed=0
+  while read -r sha <&9; do
+    remerge=$(git show --remerge-diff --format= --no-color "$sha") || die "git show --remerge-diff $sha failed"
+    [ -n "$remerge" ] || continue
+    rewritten=$((rewritten + 1))
+    waiver=$(waiver_for "$sha")
+    case "$waiver" in
+      allowed-merge:*)
+        printf '%s\n' "$sha" >>"$work/used"
+        status=ALLOWED
+        detail=$waiver
+        rewritten_allowed=$((rewritten_allowed + 1))
+        ;;
+      *)
+        status=UNPORTED
+        detail="a merge in the target history whose result is not what git merges automatically (git show --remerge-diff $(git rev-parse --short=12 "$sha")): it resolved conflicts or dropped one side, as 'git merge -s ours' does. This is checked even when an upstream ref also contains the merge. Review it, then add '$sha allowed-merge: <reason>' to $waiver_file"
+        count_unported
+        ;;
+    esac
+    printf '%-8s node rewritten merge %s %s\n' "$status" "$(git rev-parse --short=12 "$sha")" "$(git log -1 --format=%s "$sha")"
+    printf '         %s\n' "$detail"
+  done 9<"$work/target-merges"
+  printf 'upstream-drift: node: %d merges in the target history rewrite the automatic result: %d allowed, %d not allowed\n' \
+    "$rewritten" "$rewritten_allowed" "$((rewritten - rewritten_allowed))"
 
   : >"$work/upstream-raw"
   while IFS= read -r ref; do
@@ -324,7 +419,9 @@ check_node() {
   merges_own=0
   for sha in $(sort -u "$work/upstream-merges"); do
     merges=$((merges + 1))
-    git show --cc --format= --no-color "$sha" | grep -q . || continue
+    own=$(git show --cc --format= --no-color "$sha") || die "git show --cc $sha failed"
+    remerge=$(git show --remerge-diff --format= --no-color "$sha") || die "git show --remerge-diff $sha failed"
+    [ -n "$own$remerge" ] || continue
     merges_own=$((merges_own + 1))
     waiver=$(waiver_for "$sha")
     [ -z "$waiver" ] || printf '%s\n' "$sha" >>"$work/used"
@@ -338,19 +435,19 @@ check_node() {
       note_pending "$sha" "node merge" "$waiver"
     else
       status=UNPORTED
-      detail="upstream merge whose combined diff is not empty: it carries changes that none of its parents has (git show --cc $(git rev-parse --short=12 "$sha")), so porting its parents is not enough"
+      detail="upstream merge with changes of its own: its combined diff or its remerge diff is not empty, so it adds changes that none of its parents has or drops one side's changes (git show --cc / --remerge-diff $(git rev-parse --short=12 "$sha")); porting its parents is not enough"
       count_unported
     fi
     printf '%-8s node merge %s %s\n' "$status" "$(git rev-parse --short=12 "$sha")" "$(git log -1 --format=%s "$sha")"
     printf '         %s\n' "$detail"
   done
   printf 'upstream-drift: node: %d upstream merges outside the target, %d with changes of their own\n' "$merges" "$merges_own"
-  check_advisories node "$upstream_slug" "$(git show "$target_sha:go.mod" | awk '$1 == "module" { print $2; exit }')" \
+  check_advisories node "$upstream_slug" "$(git show "$target_sha:go.mod" | awk '$1 == "module" && !found { print $2; found = 1 }')" \
     "$(git rev-parse --git-common-dir)" "$work/node-refs" "$target_sha"
 }
 
 dockerfile_arg() {
-  git show "$target_sha:Dockerfile" | awk -F= -v key="$1" '$1 == "ARG " key { sub(/[[:space:]]+$/, "", $2); print $2; exit }'
+  git show "$target_sha:Dockerfile" | awk -F= -v key="$1" '$1 == "ARG " key && !found { sub(/[[:space:]]+$/, "", $2); print $2; found = 1 }'
 }
 
 gomod_version() {
@@ -409,6 +506,8 @@ security_log() {
 
 check_thirdparty() {
   name=$1
+  trailer_scope=""
+  [ "$name" != xray ] || trailer_scope=-xray
   slug=$2
   module=$3
   line=$4
