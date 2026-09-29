@@ -293,8 +293,14 @@ Why the rules look like this:
   `(cherry picked from commit <sha>)` line in any commit message of the checked history.
 - **Patch files.** An `Upstream: <sha or GHSA id>` line in the header of a patch file, meaning the lines before the
   first `diff --git`. Lines inside the diff are ignored. A header counts only for a file that the build really applies:
-  the Makefile must apply `patches/xray-*.patch`, and the Dockerfile at the checked commit must run `git apply` on that
-  file. It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
+  - the Makefile must apply `patches/xray-*.patch` on a line that is not a comment, without `--check`, `--stat`,
+    `--numstat`, `--summary`, `-R` or `--reverse`, and without ignoring the failure (`|| true`);
+  - the Dockerfile at the checked commit is read the way docker reads it (continuation lines joined, comment lines
+    dropped). Its `xray-builder` stage must `COPY patches/<name> /patches/<name>`, nothing else may be copied or added
+    to that destination or to `/patches/` itself, and a `RUN` must run `git apply` on `/patches/<name>` with at most
+    `--verbose`, joined to the rest of the `RUN` only by `&&`, so that a failed apply fails the build. A Dockerfile that
+    changes the escape character counts no patch at all.
+  It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
   sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
   - `e5a9fb752e0dcc127dd1740316c853571c16052f` and `8f15190c230fe6975c9b18e31316c6bc494f3863`, the QUIC sniffer;
