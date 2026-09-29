@@ -113,7 +113,13 @@ RUN git init -q . \
  && ! grep -qE "(^|[^[:alnum:]_])r[.](rules|balancers)([^[:alnum:]_]|$)" app/router/router.go app/router/balancing.go app/router/balancing_override.go \
  && grep -qF "b, ok := r.balancer(balancer)" app/router/balancing_override.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
- && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
+ && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "3" \
+ && test "$(grep -c 'revocable.Release()' app/proxyman/inbound/worker.go)" = "3" \
+ && grep -qF "w.proxy.Process(ctx, net.Network_UDP, conn, revocable.Wrap(w.dispatcher))" app/proxyman/inbound/worker.go \
+ && grep -qF "if w.activeConn[id] == conn {" app/proxyman/inbound/worker.go \
+ && grep -qF "w.removeConn(id, conn)" app/proxyman/inbound/worker.go \
+ && grep -qF "for ctx.Err() == nil {" proxy/shadowsocks/server.go \
+ && grep -qF "buf.ReleaseMulti(mpayload[i:])" proxy/shadowsocks/server.go \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
  && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \

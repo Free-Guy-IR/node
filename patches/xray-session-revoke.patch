@@ -442,7 +442,7 @@ index 0000000..bd97652
 +	return ch
 +}
 diff --git a/app/proxyman/inbound/worker.go b/app/proxyman/inbound/worker.go
-index be671b0..0497fdd 100644
+index be671b0..bd1bce5 100644
 --- a/app/proxyman/inbound/worker.go
 +++ b/app/proxyman/inbound/worker.go
 @@ -128,7 +128,9 @@ func (w *tcpWorker) callback(conn stat.Connection) {
@@ -456,7 +456,41 @@ index be671b0..0497fdd 100644
 +	revocable.Release()
  	cancel()
  	conn.Close()
-@@ -527,7 +529,9 @@ func (w *dsWorker) callback(conn stat.Connection) {
+@@ -374,21 +376,25 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
+ 			}
+ 			ctx = session.ContextWithContent(ctx, content)
+-			if err := w.proxy.Process(ctx, net.Network_UDP, conn, w.dispatcher); err != nil {
++			revocable := trackRevocable(w.tag, conn, cancel)
++			if err := w.proxy.Process(ctx, net.Network_UDP, conn, revocable.Wrap(w.dispatcher)); err != nil {
+ 				errors.LogInfoInner(ctx, err, "connection ends")
+ 			}
++			revocable.Release()
+ 			conn.Close()
+ 			// conn not removed by checker TODO may be lock worker here is better
+-			if !conn.inactive {
+-				conn.setInactive()
+-				w.removeConn(id)
+-			}
++			w.removeConn(id, conn)
+ 		}()
+ 	}
+ }
+ 
+-func (w *udpWorker) removeConn(id connID) {
++func (w *udpWorker) removeConn(id connID, conn *udpConn) {
+ 	w.Lock()
+-	delete(w.activeConn, id)
+-	w.Unlock()
++	defer w.Unlock()
++	if !conn.inactive {
++		conn.setInactive()
++		if w.activeConn[id] == conn {
++			delete(w.activeConn, id)
++		}
++	}
+ }
+ 
+@@ -527,7 +533,9 @@ func (w *dsWorker) callback(conn stat.Connection) {
  	ctx = session.ContextWithContent(ctx, content)
  
 -	if err := w.proxy.Process(ctx, net.Network_UNIX, conn, w.dispatcher); err != nil {
@@ -1409,6 +1443,28 @@ index 0000000..2b3ba41
 +		t.Fatalf("%d sessions leaked in the registry", len(members))
 +	}
 +}
+diff --git a/proxy/shadowsocks/server.go b/proxy/shadowsocks/server.go
+index 360ea38..fef51d7 100644
+--- a/proxy/shadowsocks/server.go
++++ b/proxy/shadowsocks/server.go
+@@ -134,5 +134,5 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
+ 	var dest *net.Destination
+ 	reader := buf.NewPacketReader(conn)
+-	for {
++	for ctx.Err() == nil {
+ 		mpayload, err := reader.ReadMultiBuffer()
+ 		if err != nil {
+@@ -140,5 +140,9 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
+ 		}
+ 
+-		for _, payload := range mpayload {
++		for i, payload := range mpayload {
++			if ctx.Err() != nil {
++				buf.ReleaseMulti(mpayload[i:])
++				break
++			}
+ 			var request *protocol.RequestHeader
+ 			var data *buf.Buffer
 diff --git a/proxy/shadowsocks/udp_revoke_test.go b/proxy/shadowsocks/udp_revoke_test.go
 new file mode 100644
 index 0000000..b421887

@@ -482,6 +482,50 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   - The full `app/router` suite passes with and without `-race`.
 - **Removal condition:** drop the patch when the pin moves to a release that contains `598bde7` (v26.9.x).
 
+### FORK DEVIATION: a revoked user's UDP flows are cut too (patches/xray-session-revoke.patch)
+
+- **Upstream:** Xray has no session revoke. `RemoveUserOperation` removes a user from the inbound, and every
+  connection or flow the user already has keeps running. The fork's `RevokeUserOperation` (package
+  `app/proxyman/sessionrevoke`) closes them, and the node sends it when a user is removed or its credential changes.
+- **The gap in the first 0.6.21 patch (F-r2B-1, fixed):** only the TCP and unix socket workers passed their
+  dispatcher through the revocable wrapper. A UDP flow never registered with the revoke registry, so a revoke closed
+  nothing on UDP. The Shadowsocks (AEAD, not 2022) server keeps the user it decoded from a source's first packet and
+  checks the later packets of that source against that user only, and the UDP worker keeps a flow until it has been
+  idle for 2 minutes. A client that kept sending therefore kept its UDP flow after its user was removed or rotated:
+  40 and 39 echoes in 4 s after `SyncUser` in the r2-B node test.
+- **The fork fix:**
+  - the UDP worker wraps its dispatcher per flow like the TCP worker, so the flow's first dispatch binds it to its user
+    and a revoke cancels the flow's context and closes it. A new flow that still carries a revoked user object is
+    refused at dispatch;
+  - the Shadowsocks UDP loop stops reading and dispatching once the flow's context is cancelled, so the packets
+    already queued in the flow are dropped and not forwarded;
+  - when a flow ends, the worker removes it from its table only if the table still points to that flow, under the
+    worker lock. Before, the cleanup of a revoked flow could remove the newer flow the same source had already opened.
+- **Stock core:** unchanged. On the stock Xray core a removed or rotated Shadowsocks AEAD user keeps an open UDP flow
+  until it has been idle for 2 minutes; the r2-B test reproduces this on the stock v26.3.27 core as well.
+- **Residuals:**
+  1. A UDP flow is bound to the first user that dispatches on it. Shadowsocks AEAD decodes a source with one user
+     only, so this is exact there. For Shadowsocks 2022 several users could share one source address only behind a
+     relay that multiplexes them onto one UDP socket; revoking the first of them then cuts the shared flow, and it
+     forms again on the next packet with the users that remain.
+  2. Shadowsocks 2022 UDP flows were already cut before this fix by its own user update; hysteria runs over QUIC and is
+     not handled by the UDP worker.
+- **Tests:**
+  - `TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow` (`app/proxyman/inbound`): a revoke closes the flow, the next
+    flow with the revoked user is refused and removed, a later flow of the same source with the new credential is kept
+    when the old flow's cleanup runs, and no session stays registered.
+  - `TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations`, under `-race`: 16 sources send packets
+    without pause while one user's credential is revoked 31 times, with a new credential added between most revokes;
+    every flow of a revoked generation ends, the other
+    user's flows stay open, and each source ends with exactly one live flow, which is the one the worker routes to.
+  - `TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled` (`proxy/shadowsocks`): packets read after the cancel are
+    not dispatched.
+  - Each of the four fix lines has its own failing mutant: the unwrapped UDP dispatcher, the cleanup without the
+    identity check, the missing `Release`, and either Shadowsocks context check.
+  - The node test `TestRotatingOrRemovingAShadowsocksUserCutsItsUDPFlow` (`backend/xray`, from r2-B) runs the real
+    core: it fails on the core without this fix and passes with it.
+- **Removal condition:** none while the node relies on `RevokeUserOperation`; it goes with the session revoke patch.
+
 ### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)
 
 - It carries upstream `0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18` with its `Upstream:` line. The Manager methods, the
