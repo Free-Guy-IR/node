@@ -108,6 +108,7 @@ case $STUB_MODE:$url in
   endless:*) body=$full; next="https://api.github.com/advisories?after=cursor$calls&per_page=100" ;;
   two-pages:*after=*) body='[{"ghsa_id":"GHSA-stub-last","withdrawn_at":"2020-01-01T00:00:00Z"}]' ;;
   two-pages:*) body=$full; next="${url%%\?*}?after=cursor1&per_page=100" ;;
+  foreign-next:*) body=$full; next="https://api.github.com.attacker.example/advisories?after=cursor1&per_page=100" ;;
 esac
 printf '%s\n' "$body" >"$out"
 if [ -n "$hdr" ]; then
@@ -429,6 +430,16 @@ check advisories-two-pages 0 UPSTREAM_FETCH=1 PATH="$tmp/stub:$PATH" STUB_MODE=t
 if [ "$(grep -c 'after=cursor1' "$tmp/advisories-two-pages/stub.log")" != 2 ]; then
   printf 'FAIL     %-28s the second page was not requested through the Link header of each endpoint\n' advisories-two-pages
   sed 's/^/         | /' "$tmp/advisories-two-pages/stub.log" | tail -6
+  failed=$((failed + 1))
+fi
+
+base advisories-foreign-next
+: >"$tmp/advisories-foreign-next/stub.log"
+git -C "$tmp/advisories-foreign-next/fork" fetch -q "$tmp/advisories-foreign-next/upw" "$(sha_of "$tmp/advisories-foreign-next/upw" U1)"
+git -C "$tmp/advisories-foreign-next/fork" cherry-pick -x "$(sha_of "$tmp/advisories-foreign-next/upw" U1)" >/dev/null
+check advisories-foreign-next 2 UPSTREAM_FETCH=1 GITHUB_TOKEN=fixture-token PATH="$tmp/stub:$PATH" STUB_MODE=foreign-next STUB_LOG="$tmp/advisories-foreign-next/stub.log"
+if grep -q 'attacker[.]example' "$tmp/advisories-foreign-next/stub.log"; then
+  printf 'FAIL     %-28s the API token was sent to a next link outside the GitHub API\n' advisories-foreign-next
   failed=$((failed + 1))
 fi
 
