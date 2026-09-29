@@ -42,6 +42,405 @@ index 0000000..7985060
 +func trackRevocable(tag string, conn stat.Connection, cancel context.CancelFunc) *sessionrevoke.Session {
 +	return sessionrevoke.Track(tag, conn, cancel)
 +}
+diff --git a/app/proxyman/inbound/udp_revoke_test.go b/app/proxyman/inbound/udp_revoke_test.go
+new file mode 100644
+index 0000000..bd97652
+--- /dev/null
++++ b/app/proxyman/inbound/udp_revoke_test.go
+@@ -0,0 +1,393 @@
++package inbound
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/proxyman/sessionrevoke"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/proxy"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++)
++
++type linkDispatcher struct{}
++
++func (linkDispatcher) Type() interface{} { return routing.DispatcherType() }
++func (linkDispatcher) Start() error      { return nil }
++func (linkDispatcher) Close() error      { return nil }
++
++func (linkDispatcher) Dispatch(context.Context, net.Destination) (*transport.Link, error) {
++	return &transport.Link{}, nil
++}
++
++func (linkDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
++	return nil
++}
++
++func startTestUDPWorker(t *testing.T, tag string, p proxy.Inbound) *udpWorker {
++	t.Helper()
++	w := &udpWorker{
++		proxy:      p,
++		address:    net.LocalHostIP,
++		tag:        tag,
++		stream:     &internet.MemoryStreamConfig{},
++		dispatcher: linkDispatcher{},
++		ctx:        context.WithValue(context.Background(), "cone", true),
++	}
++	common.Must(w.Start())
++	t.Cleanup(func() { w.Close() })
++	return w
++}
++
++func sendProbe(w *udpWorker, source net.Destination) {
++	packet := buf.New()
++	common.Must2(packet.WriteString("probe"))
++	w.callback(packet, source, net.Destination{})
++}
++
++func registeredConn(w *udpWorker, source net.Destination) *udpConn {
++	w.Lock()
++	defer w.Unlock()
++	return w.activeConn[connID{src: source}]
++}
++
++func receive[T any](t *testing.T, ch <-chan T, what string) T {
++	t.Helper()
++	select {
++	case v := <-ch:
++		return v
++	case <-time.After(2 * time.Second):
++		t.Fatalf("timed out waiting for %s", what)
++		var zero T
++		return zero
++	}
++}
++
++type udpFlowProxy struct {
++	users      chan *protocol.MemoryUser
++	dispatched chan error
++	ended      chan struct{}
++	returned   chan struct{}
++	hold       chan struct{}
++}
++
++func (p *udpFlowProxy) Network() []net.Network { return []net.Network{net.Network_UDP} }
++
++func (p *udpFlowProxy) Process(ctx context.Context, _ net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
++	reader := buf.NewPacketReader(conn)
++	first, err := reader.ReadMultiBuffer()
++	if err != nil {
++		return err
++	}
++	buf.ReleaseMulti(first)
++	session.InboundFromContext(ctx).User = <-p.users
++	_, err = dispatcher.Dispatch(ctx, net.UDPDestination(net.LocalHostIP, 53))
++	p.dispatched <- err
++	if err != nil {
++		return err
++	}
++	for {
++		mb, err := reader.ReadMultiBuffer()
++		if err != nil {
++			break
++		}
++		buf.ReleaseMulti(mb)
++	}
++	p.ended <- struct{}{}
++	<-p.hold
++	p.returned <- struct{}{}
++	return nil
++}
++
++func TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow(t *testing.T) {
++	flows := &udpFlowProxy{
++		users:      make(chan *protocol.MemoryUser, 4),
++		dispatched: make(chan error, 4),
++		ended:      make(chan struct{}, 4),
++		returned:   make(chan struct{}, 4),
++		hold:       make(chan struct{}),
++	}
++	w := startTestUDPWorker(t, "udp-revoke-worker", flows)
++	source := net.UDPDestination(net.LocalHostIP, net.Port(40001))
++
++	revoked := &protocol.MemoryUser{Email: "udp-flow@revoke-test"}
++	flows.users <- revoked
++	sendProbe(w, source)
++	if err := receive(t, flows.dispatched, "the first flow's dispatch"); err != nil {
++		t.Fatalf("the first flow was refused: %v", err)
++	}
++
++	if closed := sessionrevoke.Revoke(w.tag, revoked.Email, revoked); closed != 1 {
++		t.Fatalf("Revoke closed %d UDP sessions of the user, want 1", closed)
++	}
++	receive(t, flows.ended, "the revoked user's UDP flow to close")
++
++	flows.users <- revoked
++	sendProbe(w, source)
++	if err := receive(t, flows.dispatched, "the revoked user's next flow"); err == nil {
++		t.Fatal("a new UDP flow carrying the revoked user was dispatched")
++	}
++	deadline := time.Now().Add(2 * time.Second)
++	for registeredConn(w, source) != nil {
++		if time.Now().After(deadline) {
++			t.Fatal("the refused flow stayed registered")
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++
++	flows.users <- &protocol.MemoryUser{Email: revoked.Email}
++	sendProbe(w, source)
++	if err := receive(t, flows.dispatched, "the rotated credential's flow"); err != nil {
++		t.Fatalf("the source's flow with the new credential was refused: %v", err)
++	}
++	current := registeredConn(w, source)
++	if current == nil {
++		t.Fatal("the source's flow with the new credential is not registered")
++	}
++
++	close(flows.hold)
++	receive(t, flows.returned, "the revoked flow's Process to return")
++	for settle := time.Now().Add(300 * time.Millisecond); time.Now().Before(settle); time.Sleep(10 * time.Millisecond) {
++		if registeredConn(w, source) != current {
++			t.Fatal("the revoked flow's cleanup dropped the source's live flow from the worker")
++		}
++	}
++
++	current.Close()
++	receive(t, flows.ended, "the live flow to close at the end of the test")
++	receive(t, flows.returned, "the live flow's Process to return")
++	for deadline := time.Now().Add(2 * time.Second); registeredConn(w, source) != nil; time.Sleep(10 * time.Millisecond) {
++		if time.Now().After(deadline) {
++			t.Fatal("the ended flow stayed registered")
++		}
++	}
++	if closed := sessionrevoke.Revoke(w.tag, revoked.Email, nil); closed != 0 {
++		t.Fatalf("%d UDP sessions stayed tracked after their flows ended", closed)
++	}
++}
++
++type raceFlow struct {
++	source net.Destination
++	user   *protocol.MemoryUser
++	conn   stat.Connection
++	ended  chan struct{}
++}
++
++type revokeRaceProxy struct {
++	mu      sync.Mutex
++	current map[string]*protocol.MemoryUser
++	owner   map[net.Port]string
++	flows   []*raceFlow
++	refused atomic.Int64
++}
++
++func (p *revokeRaceProxy) Network() []net.Network { return []net.Network{net.Network_UDP} }
++
++func (p *revokeRaceProxy) Process(ctx context.Context, _ net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
++	reader := buf.NewPacketReader(conn)
++	first, err := reader.ReadMultiBuffer()
++	if err != nil {
++		return err
++	}
++	buf.ReleaseMulti(first)
++	inbound := session.InboundFromContext(ctx)
++	p.mu.Lock()
++	user := p.current[p.owner[inbound.Source.Port]]
++	p.mu.Unlock()
++	if user == nil {
++		return errors.New("no current credential for this source")
++	}
++	inbound.User = user
++	if _, err := dispatcher.Dispatch(ctx, net.UDPDestination(net.LocalHostIP, 53)); err != nil {
++		p.refused.Add(1)
++		return err
++	}
++	flow := &raceFlow{source: inbound.Source, user: user, conn: conn, ended: make(chan struct{})}
++	p.mu.Lock()
++	p.flows = append(p.flows, flow)
++	p.mu.Unlock()
++	for {
++		mb, err := reader.ReadMultiBuffer()
++		if err != nil {
++			break
++		}
++		buf.ReleaseMulti(mb)
++	}
++	close(flow.ended)
++	return nil
++}
++
++func (p *revokeRaceProxy) setCurrent(email string, user *protocol.MemoryUser) *protocol.MemoryUser {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	previous := p.current[email]
++	p.current[email] = user
++	return previous
++}
++
++func (p *revokeRaceProxy) snapshot() []*raceFlow {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	return append([]*raceFlow(nil), p.flows...)
++}
++
++func isEnded(flow *raceFlow) bool {
++	select {
++	case <-flow.ended:
++		return true
++	default:
++		return false
++	}
++}
++
++func TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations(t *testing.T) {
++	const victim, bystander = "victim@udp-revoke-race", "bystander@udp-revoke-race"
++	p := &revokeRaceProxy{
++		current: map[string]*protocol.MemoryUser{
++			victim:    {Email: victim},
++			bystander: {Email: bystander},
++		},
++		owner: make(map[net.Port]string),
++	}
++	var sources []net.Destination
++	for i := 0; i < 16; i++ {
++		port := net.Port(41000 + i)
++		p.owner[port] = victim
++		if i%2 == 1 {
++			p.owner[port] = bystander
++		}
++		sources = append(sources, net.UDPDestination(net.LocalHostIP, port))
++	}
++	w := startTestUDPWorker(t, "udp-revoke-race", p)
++
++	stop := make(chan struct{})
++	var senders sync.WaitGroup
++	for _, source := range sources {
++		senders.Add(1)
++		go func() {
++			defer senders.Done()
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				sendProbe(w, source)
++				time.Sleep(200 * time.Microsecond)
++			}
++		}()
++	}
++	stopSenders := sync.OnceFunc(func() {
++		close(stop)
++		senders.Wait()
++	})
++	defer stopSenders()
++
++	revoked := make(map[*protocol.MemoryUser]bool)
++	for round := 0; round < 40; round++ {
++		time.Sleep(5 * time.Millisecond)
++		if old := p.setCurrent(victim, nil); old != nil {
++			sessionrevoke.Revoke(w.tag, victim, old)
++			revoked[old] = true
++		}
++		if round%4 != 3 {
++			p.setCurrent(victim, &protocol.MemoryUser{Email: victim})
++		}
++	}
++	final := &protocol.MemoryUser{Email: victim}
++	if old := p.setCurrent(victim, nil); old != nil {
++		sessionrevoke.Revoke(w.tag, victim, old)
++		revoked[old] = true
++	}
++	p.setCurrent(victim, final)
++
++	liveSources := func() map[net.Destination]int {
++		live := make(map[net.Destination]int)
++		for _, flow := range p.snapshot() {
++			if !revoked[flow.user] && !isEnded(flow) {
++				live[flow.source]++
++			}
++		}
++		return live
++	}
++	for deadline := time.Now().Add(5 * time.Second); len(liveSources()) < len(sources) && time.Now().Before(deadline); {
++		time.Sleep(10 * time.Millisecond)
++	}
++	stopSenders()
++
++	flows := p.snapshot()
++	defer func() {
++		for _, flow := range flows {
++			flow.conn.Close()
++		}
++	}()
++
++	deadline := time.After(3 * time.Second)
++	survivors, cut := 0, 0
++	for _, flow := range flows {
++		if !revoked[flow.user] {
++			continue
++		}
++		select {
++		case <-flow.ended:
++			cut++
++		case <-deadline:
++			deadline = closedTimer()
++			survivors++
++		}
++	}
++	t.Logf("%d credentials revoked, %d flows of them cut, %d new flows refused at dispatch", len(revoked), cut, p.refused.Load())
++	if survivors > 0 {
++		t.Errorf("%d UDP flows of revoked credentials were still open 3s after the last revoke", survivors)
++	}
++
++	accepted := 0
++	for _, flow := range flows {
++		if revoked[flow.user] {
++			continue
++		}
++		accepted++
++		if isEnded(flow) {
++			t.Errorf("a flow of the live credential %s from %v was cut", flow.user.Email, flow.source)
++		}
++	}
++	if accepted == 0 {
++		t.Fatal("no flow of a live credential was accepted")
++	}
++
++	for _, source := range sources {
++		var live []*raceFlow
++		for _, flow := range flows {
++			if flow.source == source && !isEnded(flow) {
++				live = append(live, flow)
++			}
++		}
++		if len(live) != 1 {
++			t.Errorf("source %v has %d live flows, want exactly 1", source, len(live))
++			continue
++		}
++		if revoked[live[0].user] {
++			t.Errorf("source %v is still served by a flow of a revoked credential", source)
++		}
++		if conn := registeredConn(w, source); conn == nil || stat.Connection(conn) != live[0].conn {
++			t.Errorf("the worker does not route source %v to its live flow", source)
++		}
++	}
++}
++
++func closedTimer() <-chan time.Time {
++	ch := make(chan time.Time)
++	close(ch)
++	return ch
++}
 diff --git a/app/proxyman/inbound/worker.go b/app/proxyman/inbound/worker.go
 index be671b0..0497fdd 100644
 --- a/app/proxyman/inbound/worker.go
@@ -1008,5 +1407,125 @@ index 0000000..2b3ba41
 +	defer active.Unlock()
 +	if members := active.sessions[newUserKey("in-race", "race@revoke-test")]; len(members) != 0 {
 +		t.Fatalf("%d sessions leaked in the registry", len(members))
++	}
++}
+diff --git a/proxy/shadowsocks/udp_revoke_test.go b/proxy/shadowsocks/udp_revoke_test.go
+new file mode 100644
+index 0000000..b421887
+--- /dev/null
++++ b/proxy/shadowsocks/udp_revoke_test.go
+@@ -0,0 +1,114 @@
++package shadowsocks
++
++import (
++	"context"
++	"io"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++type queuedPacketConn struct {
++	net.Conn
++	packets chan buf.MultiBuffer
++}
++
++func (c *queuedPacketConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	mb, ok := <-c.packets
++	if !ok {
++		return nil, io.EOF
++	}
++	return mb, nil
++}
++
++func (c *queuedPacketConn) Write(b []byte) (int, error) { return len(b), nil }
++
++type deliveredWriter struct {
++	delivered chan string
++}
++
++func (w *deliveredWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	for _, b := range mb {
++		w.delivered <- b.String()
++	}
++	buf.ReleaseMulti(mb)
++	return nil
++}
++
++type deliveringDispatcher struct {
++	writer *deliveredWriter
++}
++
++func (deliveringDispatcher) Type() interface{} { return routing.DispatcherType() }
++func (deliveringDispatcher) Start() error      { return nil }
++func (deliveringDispatcher) Close() error      { return nil }
++
++func (d deliveringDispatcher) Dispatch(ctx context.Context, _ net.Destination) (*transport.Link, error) {
++	reader, _ := pipe.New()
++	return &transport.Link{Reader: reader, Writer: d.writer}, nil
++}
++
++func (deliveringDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
++	return nil
++}
++
++func encodedUDPPacket(t *testing.T, user *protocol.MemoryUser, payload string) *buf.Buffer {
++	t.Helper()
++	encoded, err := EncodeUDPPacket(&protocol.RequestHeader{
++		Version: Version,
++		Command: protocol.RequestCommandUDP,
++		Address: net.LocalHostIP,
++		Port:    53,
++		User:    user,
++	}, []byte(payload))
++	common.Must(err)
++	return encoded
++}
++
++func TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled(t *testing.T) {
++	account, err := (&Account{Password: "udp-flow-key", CipherType: CipherType_AES_128_GCM}).AsAccount()
++	common.Must(err)
++	user := &protocol.MemoryUser{Email: "udp-flow@revoke-test", Account: account}
++	server := &Server{validator: new(Validator), cone: true}
++	common.Must(server.validator.Add(user))
++
++	conn := &queuedPacketConn{packets: make(chan buf.MultiBuffer, 4)}
++	defer close(conn.packets)
++	delivered := make(chan string, 4)
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, &session.Inbound{Source: net.UDPDestination(net.LocalHostIP, 40002)})
++
++	finished := make(chan error, 1)
++	go func() {
++		finished <- server.handleUDPPayload(ctx, conn, deliveringDispatcher{writer: &deliveredWriter{delivered: delivered}})
++	}()
++
++	conn.packets <- buf.MultiBuffer{encodedUDPPacket(t, user, "before-cancel")}
++	select {
++	case got := <-delivered:
++		if got != "before-cancel" {
++			t.Fatalf("delivered %q, want the first packet", got)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("the first packet of the flow was not delivered")
++	}
++
++	cancel()
++	conn.packets <- buf.MultiBuffer{encodedUDPPacket(t, user, "after-cancel"), encodedUDPPacket(t, user, "after-cancel")}
++	select {
++	case got := <-delivered:
++		t.Fatalf("the flow delivered %q after its context was cancelled", got)
++	case <-finished:
++	case <-time.After(2 * time.Second):
++		t.Fatal("the flow kept reading after its context was cancelled")
 +	}
 +}
