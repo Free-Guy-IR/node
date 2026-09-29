@@ -1,0 +1,156 @@
+package l2tp
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+const fallbackBoot = "5a4b3c2d-1e0f-4a1b-9c8d-7e6f5a4b3c2d"
+
+func (e *acctEnv) bootAt(boot string, centis int64) {
+	e.t.Helper()
+	e.write(filepath.Join(procRoot, "sys", "kernel", "random", "boot_id"), boot+"\n")
+	e.write(filepath.Join(procRoot, "uptime"), fmt.Sprintf("%d.%02d 0.00\n", centis/100, centis%100))
+}
+
+func (e *acctEnv) sessionWithMono(ifname, username string, pid int, started int64, mono string, rx, tx int64) {
+	e.t.Helper()
+	content := fmt.Sprintf("user=%s\ntunnel_ip=127.0.0.1\nclient=\ntag=%s\npid=%d\nstarted=%d\nmono=%s\n", username, e.tag, pid, started, mono)
+	e.write(filepath.Join(sessionStateDir, ifname), content)
+	e.counters(ifname, rx, tx)
+}
+
+func (e *acctEnv) finalWithMono(ifname, username string, pid int, started int64, mono string, rx, tx int64) {
+	e.t.Helper()
+	content := fmt.Sprintf("user=%s\ntag=%s\nifname=%s\npid=%d\nstarted=%d\nmono=%s\nrx=%d\ntx=%d\n", username, e.tag, ifname, pid, started, mono, rx, tx)
+	e.write(e.finalName(ifname), content)
+}
+
+func openFallbackWindow(t *testing.T, e *acctEnv) *bool {
+	t.Helper()
+	pinWallClock(t, fallbackLoad)
+	e.bootAt(fallbackBoot, 500000)
+	e.write(e.countedPath(), "not a counted state\n")
+	blocked := true
+	blockListing(t, func() string { return sessionStateDir }, &blocked)
+	return &blocked
+}
+
+func TestSessionStartedBeforeTheFallbackUnderAClockThatWasAheadIsTakenAsCounted(t *testing.T) {
+	e := newAcctEnv(t)
+	e.sessionWithMono("ppp0", "7", 100, fallbackLoad+600, fallbackBoot+":400000", 4000, 1000)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("7")
+	a.poll()
+	*blocked = false
+	a.poll()
+	expectUsers(t, "a session present at the fallback whose start the clock put after it", takeUsers(t, a), map[string]int64{})
+	e.counters("ppp0", 4100, 1050)
+	a.poll()
+	expectUsers(t, "its growth", takeUsers(t, a), map[string]int64{"7": 150})
+}
+
+func TestSessionStartedAfterTheFallbackUnderAClockSteppedBackCountsFromZero(t *testing.T) {
+	e := newAcctEnv(t)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("8")
+	a.poll()
+	e.sessionWithMono("ppp1", "8", 200, fallbackLoad-600, fallbackBoot+":600000", 70, 30)
+	*blocked = false
+	a.poll()
+	expectUsers(t, "a session started after the fallback whose start the clock put before it", takeUsers(t, a), map[string]int64{"8": 100})
+}
+
+func TestFinalOfASessionStartedBeforeTheFallbackUnderAClockThatWasAheadIsTakenAsCounted(t *testing.T) {
+	e := newAcctEnv(t)
+	blocked := openFallbackWindow(t, e)
+	blockListing(t, func() string { return sessionFinalDir }, blocked)
+	e.finalWithMono("ppp0", "7", 100, fallbackLoad+600, fallbackBoot+":400000", 4000, 1000)
+	a := e.instance("7")
+	a.poll()
+	*blocked = false
+	a.poll()
+	expectUsers(t, "a final present at the fallback whose start the clock put after it", takeUsers(t, a), map[string]int64{})
+}
+
+func TestFallbackKeepsItsBootTimeAcrossARestart(t *testing.T) {
+	e := newAcctEnv(t)
+	e.sessionWithMono("ppp0", "7", 100, fallbackLoad+600, fallbackBoot+":400000", 4000, 1000)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("7")
+	a.poll()
+	pinWallClock(t, fallbackLoad-3600)
+	e.bootAt(fallbackBoot, 700000)
+	b := e.instance("7")
+	*blocked = false
+	b.poll()
+	expectUsers(t, "a session present at the fallback, after a restart under another clock", takeUsers(t, b), map[string]int64{})
+}
+
+func (e *acctEnv) failCounters(ifname string) func() {
+	e.t.Helper()
+	rx := filepath.Join(sysClassNet, ifname, "statistics", "rx_bytes")
+	saved, err := os.ReadFile(rx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.Remove(rx); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.MkdirAll(rx, 0o700); err != nil {
+		e.t.Fatal(err)
+	}
+	return func() {
+		if err := os.RemoveAll(rx); err != nil {
+			e.t.Fatal(err)
+		}
+		e.write(rx, string(saved))
+	}
+}
+
+func TestFallbackNeverTakesACounterThatCannotBeReadAsZero(t *testing.T) {
+	e := newAcctEnv(t)
+	pinWallClock(t, fallbackLoad)
+	e.session("ppp0", "7", 100, fallbackLoad-3600, 4000, 1000)
+	e.write(e.countedPath(), "not a counted state\n")
+	restore := e.failCounters("ppp0")
+	a := e.instance("7")
+	a.poll()
+	restore()
+	a.poll()
+	expectUsers(t, "a session present at the fallback whose counters could not be read at first", takeUsers(t, a), map[string]int64{})
+	e.counters("ppp0", 4100, 1050)
+	a.poll()
+	expectUsers(t, "its growth", takeUsers(t, a), map[string]int64{"7": 150})
+}
+
+func TestFallbackWindowNeverTakesACounterThatCannotBeReadAsZero(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, fallbackLoad-3600, 4000, 1000)
+	blocked := openFallbackWindow(t, e)
+	a := e.instance("7")
+	a.poll()
+	restore := e.failCounters("ppp0")
+	*blocked = false
+	a.poll()
+	restore()
+	a.poll()
+	expectUsers(t, "a session first listed while its counters could not be read", takeUsers(t, a), map[string]int64{})
+}
+
+func TestCounterThatCannotBeReadIsNotCountedAndLosesNothing(t *testing.T) {
+	e := newAcctEnv(t)
+	e.session("ppp0", "7", 100, 1000, 4000, 1000)
+	a := e.instance("7")
+	a.poll()
+	expectUsers(t, "first poll", takeUsers(t, a), map[string]int64{"7": 5000})
+	e.counters("ppp0", 4100, 1050)
+	restore := e.failCounters("ppp0")
+	a.poll()
+	expectUsers(t, "while a counter cannot be read", takeUsers(t, a), map[string]int64{})
+	restore()
+	a.poll()
+	expectUsers(t, "once it can", takeUsers(t, a), map[string]int64{"7": 150})
+}
