@@ -368,6 +368,9 @@ func (o *L2TP) loadCountedLocked() {
 	if err != nil {
 		o.emitLogf("Error", "l2tp: counted state of %s is unreadable, counting only growth from now on: %v", tag, err)
 		counted = presentAsCounted(tag)
+		if !counted.pendingSessions && !counted.pendingFinals && counted.save(tag) == nil {
+			counted.dirty = false
+		}
 	}
 	o.counted = counted
 }
