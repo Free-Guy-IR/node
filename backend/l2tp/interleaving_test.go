@@ -37,6 +37,8 @@ type interleaving struct {
 	failOpen   atomic.Int64
 	failProc   atomic.Bool
 	failRemove atomic.Bool
+	failList   [2]atomic.Bool
+	failRead   atomic.Bool
 }
 
 func TestL2TPBillingStaysExactAcrossRandomInterleavings(t *testing.T) {
@@ -54,7 +56,7 @@ func newInterleaving(t *testing.T, seed int64) *interleaving {
 		r:       rand.New(rand.NewSource(seed)),
 		e:       e,
 		h:       newFakeHost(t, e),
-		users:   []string{"u1", "u2", "u3"},
+		users:   []string{"u1", "u2", "u2="},
 		live:    make(map[int]*fakePppd),
 		truth:   make(map[string]int64),
 		billed:  make(map[string]int64),
@@ -63,7 +65,25 @@ func newInterleaving(t *testing.T, seed int64) *interleaving {
 	}
 	sessionIsAlive = pppdSessionIsAlive
 	prevOpen, prevProc, prevRemove := openFinalRecord, readProcFile, removeFinalRecord
-	t.Cleanup(func() { openFinalRecord, readProcFile, removeFinalRecord = prevOpen, prevProc, prevRemove })
+	prevList, prevRead := listDir, readSessionFile
+	t.Cleanup(func() {
+		openFinalRecord, readProcFile, removeFinalRecord = prevOpen, prevProc, prevRemove
+		listDir, readSessionFile = prevList, prevRead
+	})
+	listDir = func(name string) ([]os.DirEntry, error) {
+		for i, dir := range []string{sessionStateDir, sessionFinalDir} {
+			if name == dir && x.failList[i].Load() {
+				return nil, tooManyOpenFiles(name)
+			}
+		}
+		return prevList(name)
+	}
+	readSessionFile = func(path string) ([]byte, error) {
+		if x.failRead.Load() {
+			return nil, tooManyOpenFiles(path)
+		}
+		return prevRead(path)
+	}
 	openFinalRecord = func(path string) (io.ReadCloser, error) {
 		if x.failOpen.Add(-1) >= 0 {
 			return nil, tooManyOpenFiles(path)
@@ -218,8 +238,17 @@ func (x *interleaving) endGracefully() {
 	}
 }
 
+func (x *interleaving) clearFailures() {
+	x.failOpen.Store(0)
+	x.failProc.Store(false)
+	x.failRemove.Store(false)
+	x.failList[0].Store(false)
+	x.failList[1].Store(false)
+	x.failRead.Store(false)
+}
+
 func (x *interleaving) step() {
-	switch x.r.Intn(16) {
+	switch x.r.Intn(17) {
 	case 0, 1:
 		if len(x.live) < 4 {
 			x.racing(x.up(x.spawn()))
@@ -287,6 +316,16 @@ func (x *interleaving) step() {
 		x.failOpen.Store(int64(x.r.Intn(3 * countedGraceRounds / 10)))
 		x.failProc.Store(x.r.Intn(3) == 0)
 		x.failRemove.Store(x.r.Intn(4) == 0)
+		x.failList[0].Store(x.r.Intn(5) == 0)
+		x.failList[1].Store(x.r.Intn(5) == 0)
+		x.failRead.Store(x.r.Intn(5) == 0)
+	case 16:
+		x.clearFailures()
+		x.o.poll()
+		x.o.poll()
+		x.take()
+		x.e.write(x.e.countedPath(), "not a counted state\n")
+		x.o = x.e.instance(x.users...)
 	case 14, 15:
 		x.h.advance(int64(1 + x.r.Intn(90)))
 	}
@@ -296,9 +335,7 @@ func (x *interleaving) run(steps int) {
 	for i := 0; i < steps; i++ {
 		x.step()
 	}
-	x.failOpen.Store(0)
-	x.failProc.Store(false)
-	x.failRemove.Store(false)
+	x.clearFailures()
 	x.endGracefully()
 	x.o.poll()
 	x.o.poll()
