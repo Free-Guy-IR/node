@@ -36,7 +36,8 @@ provably gone for 360 consecutive polls.
 Lifecycle: created at the first poll that sees the session; updated by every poll; marked consumed when
 the session's final record is counted (a renegotiated session keeps counting from it); removed after the
 grace once the session is neither listed nor held by a pending final record. Persisted after every poll
-that changed it; loaded by `New`. The file format is unchanged (`v2`): see
+that changed it; loaded by `New`. The file format stays `v2`, with one optional `since <T>` line for an
+open unreadable-state fallback window: see
 [contracts/l2tp-counted-state.md](contracts/l2tp-counted-state.md).
 
 ## L2TP final record

@@ -20,6 +20,11 @@ rename, mode `0755`), so a pppd that runs a script while Restart or Start rewrit
 old or the new complete script, never a truncated one. They contain no comment lines and use only POSIX
 `sh` (busybox ash in the image, dash and bash in tests).
 
+The directories the scripts use are assigned single-quoted. The scripts read a record line by line as
+whole lines (`IFS= read -r`, a last line without a newline included) and cut the key at the first `=`;
+the value is everything after it, kept byte for byte, so a user name may contain or end in `=` (the node
+accepts any printable ASCII in a user name). Lines without `=` are ignored.
+
 ## Session file (written by ip-up)
 
 Lines `key=value`:
@@ -121,8 +126,9 @@ Kinds, by the keys present:
 
 - A record that cannot be opened, or cannot be read to the end, is left in place and retried at every
   poll; the first failure of a streak logs one line. While it is pending, every watermark of the
-  interface named in its file name is held (not aged). It counts as already counted when the counted
-  state is unreadable (below). After 360 consecutive failing polls it is set aside as
+  interface named in its file name is held (not aged). When the counted state is unreadable, it keeps the
+  fallback window open and is decided by that window once it can be read (below). After 360 consecutive
+  failing polls it is set aside as
   `.<name>.unreadable` with one log line and is not billed.
 - A readable record of this inbound (or untagged) without a user, without an interface, without `rx` or
   `tx`, or with a number that is not a non-negative integer (empty `pid` and `started` read as `0`) is set
@@ -132,6 +138,15 @@ Kinds, by the keys present:
   cannot be read has no known inbound, so whichever inbound reaches the end of the grace first sets it
   aside.
 - Records set aside keep their content for inspection; they are dot-prefixed and never read again.
+
+## Listing and read errors
+
+`ENOENT` on the session or final-record directory means there is nothing to list. Any other error
+listing either directory (for example `EMFILE`, `EACCES`, `ENOTDIR`) holds every watermark for that
+poll, so none ages while the sessions or final records cannot be seen. A session file that cannot be
+read (other than `ENOENT`) holds the watermarks of its interface. Each of the three kinds of failure logs
+one line per failure streak. A session that is not listed in a poll is not counted in it and is counted
+from its watermark once it is listed again.
 
 ## pppd liveness
 
@@ -148,14 +163,15 @@ otherwise it puts it back. The user sync terminates a session only when its pppd
 
 ## Counted-state file
 
-Unchanged by this release: still `v2`, same lines, same rules. One file per inbound tag, written atomically,
-mode `0600`.
+Still `v2`: the lines below are unchanged, and this release adds one optional `since` line. One file per
+inbound tag, written atomically, mode `0600`.
 
 ```
 v2
 <ifname> <pid> <started> <rx> <tx>
 consumed <ifname> <pid> <started> <rx> <tx>
 final <final record file name>
+since <T>
 ...
 ```
 
@@ -166,10 +182,30 @@ final <final record file name>
   A renegotiated session is listed again under its consumed identity and keeps counting from it.
 - `final <name>` names a final record that was present when the state was unreadable and counts as
   already counted.
+- `since <T>` (optional, added in this release, header still `v2`) is the time of an unreadable-state
+  fallback whose window is still open (below). A malformed, zero, negative or repeated `since` line makes
+  the file unreadable. A reader without this line type falls back as for any unreadable file.
 - Missing file: nothing has been counted in this container yet.
-- Present but unreadable, wrong version or malformed line: the reader treats every live session and
-  final record present at that moment, including final records that cannot be read yet, as counted up to
-  its current value and logs one line.
+- Present but unreadable, wrong version or malformed line: the reader logs one line and falls back:
+  - every live session it can list and read is counted up to its current value, and every final record
+    it can read is named `final` (counted);
+  - if that load could list and read everything, nothing more is needed;
+  - otherwise the fallback keeps a window open with its time `T` (the wall clock when the unreadable state
+    was found): until then, a session or identity final record that has no watermark is taken as counted
+    (the session up to its value when first seen, the final record whole) if its `started` is strictly
+    before `T`, and counts from zero (a final record: billed whole) if it started at or after `T`; a final
+    record without identity and without a watermark is taken as counted;
+  - the window closes after 360 consecutive clean polls: every session listed and its counters readable,
+    no listing, read or removal failure, no unreadable final record.
+
+  Strictly before, not at or before: a session whose ip-up fell in the second of the fallback can only have
+  been counted by the previous process if that process polled it in that same second before it stopped,
+  so counting it from zero can double at most the bytes of that one second, while taking it as counted
+  would under-bill every byte it moves until the listings recover. Within an open window, a clock stepped
+  back before `T` makes a new session look older and under-bills it.
+- The fallback state is written when it is built, and again at every poll that changes it, including while
+  its window is open, so a restart never falls back again over what was counted; a restart during an open
+  window continues it with the same `T`.
 - Written only when the content changed during a poll. A failed write logs once per failure streak, keeps
   the in-memory state and is retried at the next changing poll.
 - A watermark that is neither listed nor held gains one miss per poll and is dropped after 360 misses;
@@ -208,7 +244,7 @@ what that poll counted; a hand-over carries them to the next instance.
 
 ## Known residuals
 
-Both are reachable only when the scripts could not record what they normally record:
+The first two are reachable only when the scripts could not record what they normally record:
 
 1. Same-pid watermark borrow for a session or final without a fingerprint. The production ip-up always
    writes `proc`; it is empty only when `/proc` could not be read at ip-up, or for files of the pre-fix
@@ -219,3 +255,8 @@ Both are reachable only when the scripts could not record what they normally rec
    (the record could not be written, or was removed from outside). If this pppd was never polled and an
    unconsumed watermark of an earlier pppd with the same pid and interface name is still within the grace,
    the tail is billed against that watermark. Every pid-only final logs an error line.
+
+The unreadable-state fallback under-bills by design ("counting only growth from now on"): the bytes a
+session present at the fallback moved after the previous process last counted it and before the fallback
+first sees it are not billed. When its session file could not be read at the fallback, that includes its
+growth until the file can first be read.
