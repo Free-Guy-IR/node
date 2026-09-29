@@ -33,6 +33,7 @@ type fakeHost struct {
 	bin     string
 	boot    string
 	clock   int64
+	uptime  int64
 	ifindex int
 	ticks   int64
 }
@@ -63,11 +64,23 @@ func newFakeHost(t *testing.T, e *acctEnv) *fakeHost {
 func (h *fakeHost) reboot(boot string) {
 	h.boot = boot
 	h.e.write(filepath.Join(procRoot, "sys", "kernel", "random", "boot_id"), boot+"\n")
+	h.uptime = 1500
+	h.writeUptime()
+}
+
+func (h *fakeHost) writeUptime() {
+	h.e.write(filepath.Join(procRoot, "uptime"), fmt.Sprintf("%d.%02d 0.00\n", h.uptime/100, h.uptime%100))
+}
+
+func (h *fakeHost) stepClock(seconds int64) {
+	h.clock += seconds
+	h.e.write(filepath.Join(h.bin, "clock"), strconv.FormatInt(h.clock, 10)+"\n")
 }
 
 func (h *fakeHost) advance(seconds int64) {
-	h.clock += seconds
-	h.e.write(filepath.Join(h.bin, "clock"), strconv.FormatInt(h.clock, 10)+"\n")
+	h.stepClock(seconds)
+	h.uptime += seconds*100 + 1
+	h.writeUptime()
 }
 
 func (h *fakeHost) freeIfname() string {

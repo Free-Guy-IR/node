@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -153,4 +154,31 @@ func TestCounterThatCannotBeReadIsNotCountedAndLosesNothing(t *testing.T) {
 	restore()
 	a.poll()
 	expectUsers(t, "once it can", takeUsers(t, a), map[string]int64{"7": 150})
+}
+
+func TestScriptsRecordTheBootTimeOfASessionAndKeepItAcrossARenegotiation(t *testing.T) {
+	e := newAcctEnv(t)
+	h := newFakeHost(t, e)
+	a := e.instance("7")
+	p := h.spawn(4100, "7")
+	h.advance(30)
+	h.ipUp(p)
+	first, ok := h.session(p.ifname)
+	want := parseMono(h.boot + ":" + strconv.FormatInt(h.uptime, 10))
+	if !ok || first.mono != want {
+		t.Fatalf("ip-up recorded boot time %+v, want %+v", first.mono, want)
+	}
+	h.advance(600)
+	h.stepClock(-3600)
+	h.ipDown(p)
+	h.ipUp(p)
+	again, _ := h.session(p.ifname)
+	if again.mono != first.mono || again.identity() != first.identity() {
+		t.Fatalf("a renegotiation changed the boot time or identity: %+v -> %+v", first, again)
+	}
+	scan := scanFinalRecords(e.tag)
+	if len(scan.records) != 1 || scan.records[0].mono != first.mono {
+		t.Fatalf("ip-down did not copy the boot time into the final record: %+v", scan.records)
+	}
+	a.poll()
 }
