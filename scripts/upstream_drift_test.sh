@@ -222,6 +222,7 @@ xray_patch() {
     awk -v n="$4" 'BEGIN { for (i = 0; i < n; i++) printf "+var line%08d = 0\n", i }'
     printf ' package main\n \n-func a() int { return 0 }\n+func a() int { return 1 }\n'
   } >"$f/patches/$2"
+  printf 'build_xray:\n\tfor patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done\n' >"$f/Makefile"
   if [ "$5" = applied ]; then
     printf 'FROM scratch AS xray-builder\nCOPY patches/%s /patches/%s\nRUN git apply --verbose /patches/%s\n' "$2" "$2" "$2" >>"$f/Dockerfile"
   fi
@@ -254,6 +255,129 @@ check pending-issue-only 2
 
 pending pending-issue-and-until 'taken with the next release issue:x/y#1 until:2026-10-05'
 check pending-issue-and-until 0
+
+xray_makefile='build_xray:
+	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done'
+
+third_party() {
+  s=$tmp/$1
+  mkdir -p "$s/$2-up"
+  git -C "$s/$2-up" init -q
+  printf 'package core\n' >"$s/$2-up/core.go"
+  git -C "$s/$2-up" add -A
+  commit "$s/$2-up" -m "${3}0 pin"
+  git -C "$s/$2-up" tag v1.0.0
+  [ "$4" = main ] || git -C "$s/$2-up" branch -m "$4"
+  printf 'package core\n\nvar guarded = true\n' >"$s/$2-up/core.go"
+  git -C "$s/$2-up" add -A
+  commit "$s/$2-up" -m "${3}1 fix a panic in the core"
+  git init -q --bare "$s/cache/$2.git"
+  git --git-dir="$s/cache/$2.git" fetch -q "$s/$2-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+  printf '[]\n' >"$s/cache/$2-repo-advisories.json"
+  printf '[]\n' >"$s/cache/$2-global-advisories.json"
+}
+
+xray_fixture() {
+  base "$1"
+  s=$tmp/$1
+  f=$s/fork
+  git -C "$f" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$f" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  third_party "$1" xray X main
+  third_party "$1" sing-box B oldstable
+  case $4 in
+    X*) carried=$(sha_of "$s/xray-up" "$4") ;;
+    *) carried=$(sha_of "$s/sing-box-up" "$4") ;;
+  esac
+  mkdir -p "$f/patches"
+  {
+    printf 'Subject: carried fix\n\nUpstream: %s\n---\n' "$carried"
+    printf 'diff --git a/core.go b/core.go\n--- a/core.go\n+++ b/core.go\n@@ -1 +1,3 @@\n package core\n+\n+var guarded = true\n'
+  } >"$f/patches/xray-fix.patch"
+  printf '%s\n' "$3" >"$f/Makefile"
+  {
+    printf 'FROM scratch AS builder\nRUN true\n\n'
+    printf 'FROM scratch AS singbox-builder\nARG SINGBOX_VERSION=v1.0.0\n\n'
+    printf 'FROM scratch AS xray-builder\nARG XRAY_COMMIT=%s\n' "$(sha_of "$s/xray-up" X0)"
+    printf '%s\n' "$2"
+  } >"$f/Dockerfile"
+  git -C "$f" add -A
+  commit "$f" -m "carry xray-fix.patch"
+}
+
+xray_makefile_commented='# build_xray:
+#	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done'
+
+xray_copy='COPY patches/xray-fix.patch /patches/xray-fix.patch'
+
+xray_fixture xray-patch-applied "$xray_copy
+RUN git init -q . \\
+ && git apply --verbose /patches/xray-fix.patch \\
+ && true" "$xray_makefile" X1
+check xray-patch-applied 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-not-applied "$xray_copy
+RUN true" "$xray_makefile" X1
+check xray-patch-not-applied 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-commented-continuation "$xray_copy
+RUN git init -q . \\
+#  && git apply --verbose /patches/xray-fix.patch \\
+ && true" "$xray_makefile" X1
+check xray-patch-commented-continuation 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-commented-run "$xray_copy
+# RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-commented-run 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-check-only "$xray_copy
+RUN git apply --check /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-check-only 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-stat-only "$xray_copy
+RUN git apply --stat /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-stat-only 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-reversed "$xray_copy
+RUN git apply -R /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-reversed 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-failure-ignored "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch || true" "$xray_makefile" X1
+check xray-patch-failure-ignored 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-other-stage "RUN true" "$xray_makefile" X1
+printf 'FROM scratch AS builder\n%s\nRUN git apply --verbose /patches/xray-fix.patch\n' "$xray_copy" >>"$tmp/xray-patch-other-stage/fork/Dockerfile.head"
+{ cat "$tmp/xray-patch-other-stage/fork/Dockerfile.head"; cat "$tmp/xray-patch-other-stage/fork/Dockerfile"; } >"$tmp/xray-patch-other-stage/fork/Dockerfile.new"
+mv "$tmp/xray-patch-other-stage/fork/Dockerfile.new" "$tmp/xray-patch-other-stage/fork/Dockerfile"
+rm "$tmp/xray-patch-other-stage/fork/Dockerfile.head"
+git -C "$tmp/xray-patch-other-stage/fork" add -A
+commit "$tmp/xray-patch-other-stage/fork" -m "apply the patch in another stage"
+check xray-patch-other-stage 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-copied-from-elsewhere "COPY patches/other.patch /patches/xray-fix.patch
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-copied-from-elsewhere 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-makefile-commented "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile_commented" X1
+check xray-patch-makefile-commented 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-names-another-component "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" B1
+check xray-patch-names-another-component 1 DRIFT_COMPONENTS="node sing-box"
+
+pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
+check pending-not-a-calendar-day 2
+
+pending pending-day-zero 'taken with the next release until:2026-10-00'
+check pending-day-zero 2
+
+pending pending-malformed-issue-with-date 'taken with the next release until:2026-10-05 issue:none'
+check pending-malformed-issue-with-date 2
+
+pending pending-issue-without-number 'taken with the next release until:2026-10-05 issue:x/y#z'
+check pending-issue-without-number 2
 
 stub_curl
 base advisories-endless
