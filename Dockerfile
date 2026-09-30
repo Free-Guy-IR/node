@@ -122,9 +122,16 @@ RUN git init -q . \
  && grep -qF "buf.ReleaseMulti(mpayload[i:])" proxy/shadowsocks/server.go \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
  && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
+ && grep -qF "message RevokeUserOperation {" app/proxyman/sessionrevoke/config.proto \
+ && grep -qF "func (op *RevokeUserOperation) ApplyInbound(ctx context.Context, handler inbound.Handler) error {" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "if err := manager.RemoveUser(ctx, op.Email); err != nil {" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "closed := Revoke(handler.Tag(), op.Email, current)" app/proxyman/sessionrevoke/operation.go \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \
  && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
  && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
+ && grep -qF "conn.T = signal.CancelAfterInactivity(ctx, cancel, 300*time.Second)" common/singbridge/pipe.go \
+ && ! grep -qF "time.After(300 * time.Second)" common/singbridge/pipe.go \
+ && grep -qF "T: signal.CancelAfterInactivity(ctx, func() {" proxy/shadowsocks_2022/outbound.go \
  && git apply --verbose /patches/xray-stats-register-race.patch \
  && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
  && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
@@ -144,6 +151,8 @@ RUN git init -q . \
  && grep -qF "tunnel, err := h.processWireGuard(ctx, dialer)" proxy/wireguard/client.go \
  && grep -qF "if h.closed {" proxy/wireguard/client.go \
  && ! grep -qE "h[.]net[.]Dial" proxy/wireguard/client.go \
+ && test "$(grep -c 'case <-bind.closedCh:' proxy/wireguard/bind.go)" = "3" \
+ && grep -B1 -F "close(bind.closedCh)" proxy/wireguard/bind.go | grep -qF "default:" \
  && git apply --verbose /patches/xray-wireguard-tun-close.patch \
  && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
  && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \

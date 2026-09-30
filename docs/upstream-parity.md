@@ -403,6 +403,14 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 
 ## Fork deviations in the Xray build
 
+The xray-builder stage of the Dockerfile applies every `patches/xray-*.patch` and greps the result after each one, so
+a patch that is missing, reordered or edited down fails the image build. `make test_xray_guards` proves that the
+guards cover every fix: it runs the stage's apply-and-guard chain on the pinned commit, then drops the diff of one
+non-test file from one patch at a time and requires the chain or the linux/amd64 build to fail. On 2026-09-30 all 55
+removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevoke/operation.go`, `singbridge/pipe.go`,
+`shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
+(r2-B review).
+
 ### FORK DEVIATION: trusted forwarder CIDRs and the trusted header's own value (patches/xray-xff-trusted-header.patch)
 
 - **Builds on:** upstream 711aea4e34b0a00073d2fea6577f28a5d7c9b5eb (#6309), carried as patches/xray-trusted-xff.patch. The new patch applies after it in lexical order (Makefile glob and Dockerfile).
