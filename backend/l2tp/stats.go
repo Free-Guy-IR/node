@@ -54,6 +54,9 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	sessions := listed.sessions
 	scan := scanFinalRecords(tag)
 	finals := scan.records
+	if o.counted.since > 0 && !o.counted.bootKnown {
+		o.counted.noteBoot(currentBootID())
+	}
 	resolved := o.counted.takeStartedBeforeFallback(sessions)
 
 	perUser := make(map[string][]l2tpSession)
@@ -71,6 +74,10 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	removeFailed := false
 	for _, rec := range finals {
 		ended[rec.ifname] = struct{}{}
+		if o.counted.undecided(rec) {
+			resolved = false
+			continue
+		}
 		if err := removeFinalRecord(rec.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			if !removeFailed && !o.finalRemoveFailing {
 				o.emitLogf("Error", "l2tp: cannot remove final record %s, it is billed once it can be removed: %v", rec.path, err)

@@ -47,6 +47,7 @@ type countedState struct {
 	sinceMono  monoStamp
 	sinceBoots []string
 	sinceClean int
+	bootKnown  bool
 }
 
 func newCountedState() *countedState {
@@ -377,18 +378,29 @@ func presentAsCounted(tag string, now int64, mono monoStamp) *countedState {
 	return c
 }
 
-func (c *countedState) startedBefore(started int64, mono monoStamp) bool {
+func (c *countedState) startedBefore(started int64, mono monoStamp, live bool) bool {
 	if c.sinceMono.ok && mono.ok {
 		if mono.boot == c.sinceMono.boot {
 			return mono.centis < c.sinceMono.centis
 		}
-		return !slices.Contains(c.sinceBoots, mono.boot)
+		return !live && !slices.Contains(c.sinceBoots, mono.boot)
 	}
 	return started < c.since
 }
 
 func (c *countedState) startedBeforeFallback(rec finalRecord) bool {
-	return c.since > 0 && (!rec.hasIdentity || c.startedBefore(rec.identity.started, rec.mono))
+	return c.since > 0 && (!rec.hasIdentity || c.startedBefore(rec.identity.started, rec.mono, false))
+}
+
+func (c *countedState) undecided(rec finalRecord) bool {
+	if c.since == 0 || c.bootKnown || !c.sinceMono.ok || !rec.hasIdentity || !rec.mono.ok {
+		return false
+	}
+	if rec.mono.boot == c.sinceMono.boot || slices.Contains(c.sinceBoots, rec.mono.boot) {
+		return false
+	}
+	_, known := c.match(rec)
+	return !known
 }
 
 func (c *countedState) takeStartedBeforeFallback(sessions []l2tpSession) bool {
@@ -398,7 +410,7 @@ func (c *countedState) takeStartedBeforeFallback(sessions []l2tpSession) bool {
 	resolved := true
 	for _, s := range sessions {
 		id := s.identity()
-		if _, known := c.entries[id]; known || !c.startedBefore(s.started, s.mono) {
+		if _, known := c.entries[id]; known || !c.startedBefore(s.started, s.mono, true) {
 			continue
 		}
 		if rx, tx, ok := sessionBytes(s); ok {
@@ -443,7 +455,11 @@ func (o *L2TP) loadCountedLocked() {
 }
 
 func (c *countedState) noteBoot(boot string) {
-	if c.since == 0 || !c.sinceMono.ok || boot == "" || boot == c.sinceMono.boot || slices.Contains(c.sinceBoots, boot) {
+	if boot == "" {
+		return
+	}
+	c.bootKnown = true
+	if c.since == 0 || !c.sinceMono.ok || boot == c.sinceMono.boot || slices.Contains(c.sinceBoots, boot) {
 		return
 	}
 	c.sinceBoots = append(c.sinceBoots, boot)
