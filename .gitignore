@@ -35,3 +35,4 @@ superpowers/
 certs/
 generated/
 pasarguard-node*
+/main
