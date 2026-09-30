@@ -80,6 +80,10 @@ fixture text-starting-mz
 printf 'MZ is a text line, not a PE header\n' >"$tmp/text-starting-mz/notes.md"
 check text-starting-mz 0
 
+fixture long-text-starting-mz
+printf 'MZ opens this note, and the note runs on well past the sixty-four bytes a PE header needs before its offset\n' >"$tmp/long-text-starting-mz/notes.md"
+check long-text-starting-mz 0
+
 fixture spaced-name
 printf '\177ELF\002\001\001\000' >"$tmp/spaced-name/a binary with spaces"
 check spaced-name 1
