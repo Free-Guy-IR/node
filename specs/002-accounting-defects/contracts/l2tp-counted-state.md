@@ -39,6 +39,7 @@ Lines `key=value`:
 | `ifname` | this release | the interface name, also the file name |
 | `ifindex` | this release | `/sys/class/net/<ifname>/ifindex` at ip-up, empty when unreadable |
 | `proc` | this release | process fingerprint `<boot_id>:<pppd starttime>`, empty when unreadable |
+| `mono` | this release | boot time of the session start `<boot_id>:<uptime in centiseconds>`, kept across a renegotiation like `started`; empty when unreadable |
 
 `proc` is `/proc/sys/kernel/random/boot_id` and field 22 of `/proc/<pid>/stat` (the pppd start time in
 clock ticks since boot). It identifies one pppd process across its whole life and tells it apart from a
@@ -110,6 +111,7 @@ One file per ended session or renegotiated IPCP phase, name `<ifname>.<shell pid
 | `pid` | this feature | pppd pid from the source; omitted when empty |
 | `started` | this feature | start time from the source; omitted when empty |
 | `proc` | this release | process fingerprint from the source; omitted when empty |
+| `mono` | this release | boot time of the session start from the source; omitted when empty |
 
 Kinds, by the keys present:
 
@@ -171,7 +173,7 @@ v2
 <ifname> <pid> <started> <rx> <tx>
 consumed <ifname> <pid> <started> <rx> <tx>
 final <final record file name>
-since <T>
+since <T> [<boot>:<centis> [<later boot>...]]
 ...
 ```
 
@@ -182,27 +184,37 @@ since <T>
   A renegotiated session is listed again under its consumed identity and keeps counting from it.
 - `final <name>` names a final record that was present when the state was unreadable and counts as
   already counted.
-- `since <T>` (optional, added in this release, header still `v2`) is the time of an unreadable-state
-  fallback whose window is still open (below). A malformed, zero, negative or repeated `since` line makes
-  the file unreadable. A reader without this line type falls back as for any unreadable file.
+- `since <T> [<boot>:<centis> [<later boot>...]]` (optional, added in this release, header still `v2`) is
+  an unreadable-state fallback whose window is still open (below): its wall time `T`, its boot time, and
+  the boots the node started in after it while the window stayed open. A malformed, zero, negative or
+  repeated `since` line, a malformed boot time or a later boot holding `:` makes the file unreadable. A
+  reader without this line type falls back as for any unreadable file.
 - Missing file: nothing has been counted in this container yet.
 - Present but unreadable, wrong version or malformed line: the reader logs one line and falls back:
-  - every live session it can list and read is counted up to its current value, and every final record
-    it can read is named `final` (counted);
+  - every live session it can list and whose counters (and interface index) it can read is counted up to
+    its current value, and every final record it can read is named `final` (counted);
   - if that load could list and read everything, nothing more is needed;
-  - otherwise the fallback keeps a window open with its time `T` (the wall clock when the unreadable state
-    was found): until then, a session or identity final record that has no watermark is taken as counted
-    (the session up to its value when first seen, the final record whole) if its `started` is strictly
-    before `T`, and counts from zero (a final record: billed whole) if it started at or after `T`; a final
-    record without identity and without a watermark is taken as counted;
-  - the window closes after 360 consecutive clean polls: every session listed and its counters readable,
-    no listing, read or removal failure, no unreadable final record.
+  - otherwise the fallback keeps a window open with its wall time `T` and its boot time (boot id and
+    uptime when the unreadable state was found): until it closes, a session or identity final record that
+    has no watermark is taken as counted (the session up to its value when first seen, the final record
+    whole) if it started before the fallback, and counts from zero (a final record: billed whole) if it
+    started at or after it; a final record without identity and without a watermark is taken as counted;
+  - "started before the fallback" is decided on boot time when both the record and the fallback carry
+    one: same boot, strictly earlier uptime; a live session of any other boot is after (a live session is
+    of the current boot); a final record of a boot the node started in after the fallback is after, and
+    one of another boot is before; a final record of a boot the window cannot place yet (the boot id could
+    not be read) waits unbilled, and the boot id is read again at every poll. Records without a boot time
+    fall back to the wall clock: `started` strictly before `T`;
+  - the window closes after 360 consecutive clean polls: every session listed and resolved, no listing,
+    read or removal failure, no unreadable or waiting final record.
 
-  Strictly before, not at or before: a session whose ip-up fell in the second of the fallback can only have
-  been counted by the previous process if that process polled it in that same second before it stopped,
-  so counting it from zero can double at most the bytes of that one second, while taking it as counted
-  would under-bill every byte it moves until the listings recover. Within an open window, a clock stepped
-  back before `T` makes a new session look older and under-bills it.
+  Boot time, not wall time: uptime only moves forward within a boot, so a wall clock stepped back or ahead
+  cannot make a session counted before the fallback look new (billed again) or one started after it look
+  old (never billed). Strictly earlier: a session started in the centisecond of the fallback counts from
+  zero; the previous process could only have counted it by polling it within that same centisecond before
+  it stopped. For records without a boot time (written by the previous scripts, or when `/proc/uptime`
+  could not be read), the wall-clock rule keeps the old exposure: a clock stepped back or ahead across
+  `T` misjudges them.
 - The fallback state is written when it is built, and again at every poll that changes it, including while
   its window is open, so a restart never falls back again over what was counted; a restart during an open
   window continues it with the same `T`.
@@ -226,7 +238,8 @@ since <T>
    still names its interface before and after the counters are read: baseline = its watermark; a session
    without a watermark and without `proc` takes the baseline of the fallback below, others start at zero;
    count `max(current - baseline, 0)`; store `max(current, baseline)`. A session whose interface index no
-   longer matches is kept listed but not counted in that poll.
+   longer matches, or whose counters cannot be read, is kept listed but not counted in that poll; a counter
+   that cannot be read is never taken as zero.
 4. Age watermarks that were neither listed nor held (the grace), persist if changed, then sweep the
    per-pppd records.
 
