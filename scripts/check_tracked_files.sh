@@ -41,9 +41,14 @@ while IFS= read -r -d '' entry; do
       ;;
     4d5a*)
       [ "${#magic}" -ge 128 ] || continue
-      pe_offset=$((16#${magic:126:2}${magic:124:2}${magic:122:2}${magic:120:2}))
-      signature=$(od -An -tx1 -j "$pe_offset" -N4 -v "$work/blob" | tr -d ' \n')
-      [ "$signature" != 50450000 ] || refuse "$path is a PE executable"
+      header_offset=$((16#${magic:126:2}${magic:124:2}${magic:122:2}${magic:120:2}))
+      [ $((header_offset + 4)) -le "$size" ] || continue
+      signature=$(od -An -tx1 -j "$header_offset" -N4 -v "$work/blob" | tr -d ' \n')
+      if [ "$signature" = 50450000 ]; then
+        refuse "$path is a PE executable"
+      else
+        refuse "$path is an MZ executable"
+      fi
       ;;
   esac
 done <"$work/index"
