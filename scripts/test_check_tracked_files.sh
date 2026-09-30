@@ -68,6 +68,10 @@ fixture pe
 { printf 'MZ'; head -c 58 /dev/zero; printf '\100\000\000\000PE\000\000'; } >"$tmp/pe/node.exe.bin"
 check pe 1
 
+fixture dos-mz
+{ printf 'MZ'; head -c 58 /dev/zero; printf '\100\000\000\000NE\000\000'; } >"$tmp/dos-mz/tool.bin"
+check dos-mz 1
+
 fixture large
 head -c $((5 * 1024 * 1024 + 1)) /dev/zero | tr '\0' 'a' >"$tmp/large/big.txt"
 check large 1
