@@ -18,7 +18,10 @@ func TestFallbackDoesNotBillAgainASessionWhoseCounterCannotBeReadAtTheLoad(t *te
 	restore()
 	e.counters("ppp0", 4100, 1050)
 	b.poll()
-	expectUsers(t, "growth of a session whose counter could not be read when the counted state was unreadable", takeUsers(t, b), map[string]int64{"7": 150})
+	expectUsers(t, "a session whose counter could not be read when the counted state was unreadable, at its first reading", takeUsers(t, b), map[string]int64{})
+	e.counters("ppp0", 4200, 1100)
+	b.poll()
+	expectUsers(t, "its growth after that", takeUsers(t, b), map[string]int64{"7": 150})
 }
 
 func TestFallbackDoesNotBillAgainASessionWhoseInterfaceCannotBeCheckedAtTheLoad(t *testing.T) {
@@ -34,7 +37,10 @@ func TestFallbackDoesNotBillAgainASessionWhoseInterfaceCannotBeCheckedAtTheLoad(
 	restore()
 	e.counters("ppp0", 4100, 1050)
 	b.poll()
-	expectUsers(t, "growth of a session whose interface could not be checked when the counted state was unreadable", takeUsers(t, b), map[string]int64{"7": 150})
+	expectUsers(t, "a session whose interface could not be checked when the counted state was unreadable, at its first reading", takeUsers(t, b), map[string]int64{})
+	e.counters("ppp0", 4200, 1100)
+	b.poll()
+	expectUsers(t, "its growth after that", takeUsers(t, b), map[string]int64{"7": 150})
 }
 
 func TestFallbackWindowDoesNotBillAgainASessionWhoseCounterCannotBeReadWhenFirstListed(t *testing.T) {
