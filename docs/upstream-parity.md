@@ -441,6 +441,9 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
 - **Tests:**
   - `testing/trustedheader` holds 16 scenarios, among them two lists with an IPv4-mapped entry that must fail closed, run in websocket, httpupgrade, splithttp, grpc/encoding (Tun and TunMulti) and common/protocol/http. Each scenario re-executes the test binary with its own `XRAY_TRUSTED_FORWARDER_CIDRS`.
   - `TestInvalidCIDRListLogsOnce` covers 32 concurrent first uses; it passes under `-race`.
+  - `TestRepeatedOrListTrustedHeaderFallsBackToThePeer` (from the r2-B review) sends the trusted header as repeated
+    lines, as a comma list, empty, and repeated `X-Forwarded-For` lines as the trusted key; each must give the TCP peer.
+    It fails when the single-value check `len(found) == 1` is loosened to `>= 1`.
   - The upstream `TestDialWithRemoteAddr` (ws, httpupgrade, splithttp), `TestApplyTrustedXForwardedFor` and `TestRemoteAddrFromContext` now expect the TCP peer when the variable is unset.
   - All of these run in `make test_xray_patches`.
 - **Removal condition:** drop this patch only when upstream Xray takes the address from the trusted header's value and gates it on the peer address, or when the owner decides to accept upstream's first-entry behaviour.
@@ -493,6 +496,8 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
     held by the endpoint: an unrelated pick took 1.9 s with the read-lock fix and passes with this one (limit 500 ms).
     It fails again when the webhooks are closed before the mutex is released and picks take the mutex.
   - The full `app/router` suite passes with and without `-race`.
+- **Mutants:** the pin's `slices.Clip` line, an equivalent mutant in the review, no longer exists. Every writer now
+  copies the rules into a new slice, so a published slice is never appended to.
 - **Removal condition:** drop the patch when the pin moves to a release that contains `598bde7` (v26.9.x).
 
 ### FORK DEVIATION: a revoked user's UDP flows are cut too (patches/xray-session-revoke.patch)
@@ -576,6 +581,12 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
   - `TestProcessWhileClosingDoesNotRaceOrPanic`: four workers run the real `Process` while the handler is closed 50
     times, under `-race`. On the pin it reported "close of closed channel", and then a data race at `client.go:87`
     against `:225`. With the fix, 10 runs pass under `-race`.
+  - Pins for each fix line, added after the r2-B review found them unpinned; each fails on its own mutant:
+    `TestAClosedHandlerNeverBuildsANewTunnel` (without the `h.closed` check a Process after Close builds a tunnel that
+    nothing closes), `TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock` (a DNS lookup held open while the
+    handler closes; a TCP or UDP dial through `h.net` then panics on the nil tunnel), `TestClosingABindTwiceDoesNotPanic`
+    (without the tolerant close, "close of closed channel"), and `TestProcessTCPWhileClosingDoesNotRaceOrPanic`, the
+    TCP twin of the race test.
 - **Removal condition:** drop the patch when the pin moves past `8626311`.
 
 ### FORK DEVIATION: Dockerfile.xray removed

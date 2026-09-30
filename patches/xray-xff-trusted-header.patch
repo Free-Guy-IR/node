@@ -285,6 +285,71 @@ index 0000000..89c2678
 +		})
 +	}
 +}
+diff --git a/common/protocol/http/trusted_repeated_header_test.go b/common/protocol/http/trusted_repeated_header_test.go
+new file mode 100644
+index 0000000..232f085
+--- /dev/null
++++ b/common/protocol/http/trusted_repeated_header_test.go
+@@ -0,0 +1,59 @@
++package http_test
++
++import (
++	"fmt"
++	gonet "net"
++	"net/http"
++	"os"
++	"os/exec"
++	"strings"
++	"testing"
++
++	. "github.com/xtls/xray-core/common/protocol/http"
++)
++
++const repeatedHeaderChild = "XRAY_TRUSTED_REPEATED_HEADER_CHILD"
++
++func TestRepeatedOrListTrustedHeaderFallsBackToThePeer(t *testing.T) {
++	cases := map[string][]string{
++		"repeated lines": {"fd00::7", "fd00::8"},
++		"comma list":     {"fd00::7, fd00::8"},
++		"empty value":    {""},
++		"repeated xff":   nil,
++	}
++	if name := os.Getenv(repeatedHeaderChild); name != "" {
++		header := http.Header{}
++		trusted := []string{"CF-Connecting-IP"}
++		if name == "repeated xff" {
++			trusted = []string{"X-Forwarded-For"}
++			header.Add("X-Forwarded-For", "fd00::7")
++			header.Add("X-Forwarded-For", "fd00::8")
++		} else {
++			for _, value := range cases[name] {
++				header.Add("CF-Connecting-IP", value)
++			}
++		}
++		peer := &gonet.TCPAddr{IP: gonet.ParseIP("127.0.0.1"), Port: 12345}
++		fmt.Println("source=" + ApplyTrustedXForwardedFor(header, trusted, peer).String())
++		return
++	}
++	for name := range cases {
++		t.Run(name, func(t *testing.T) {
++			env := []string{repeatedHeaderChild + "=" + name, "XRAY_TRUSTED_FORWARDER_CIDRS=127.0.0.1/32"}
++			for _, kv := range os.Environ() {
++				if !strings.HasPrefix(kv, "XRAY_TRUSTED_FORWARDER_CIDRS=") && !strings.HasPrefix(kv, repeatedHeaderChild+"=") {
++					env = append(env, kv)
++				}
++			}
++			cmd := exec.Command(os.Args[0], "-test.run=^TestRepeatedOrListTrustedHeaderFallsBackToThePeer$", "-test.count=1")
++			cmd.Env = env
++			out, err := cmd.CombinedOutput()
++			if err != nil {
++				t.Fatalf("child failed: %v\n%s", err, out)
++			}
++			if !strings.Contains(string(out), "source=127.0.0.1:12345") {
++				t.Fatalf("a %s trusted header did not fall back to the TCP peer:\n%s", name, out)
++			}
++		})
++	}
++}
 diff --git a/common/protocol/http/trusted_xff_test.go b/common/protocol/http/trusted_xff_test.go
 index 4f2c821..0b87b67 100644
 --- a/common/protocol/http/trusted_xff_test.go

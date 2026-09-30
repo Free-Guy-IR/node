@@ -156,3 +156,25 @@ index 0000000..708c61f
 +		t.Fatal("SniffQUIC accepted a truncated initial packet")
 +	}
 +}
+diff --git a/common/protocol/quic/sniff_varint_bound_test.go b/common/protocol/quic/sniff_varint_bound_test.go
+new file mode 100644
+index 0000000..ea80c56
+--- /dev/null
++++ b/common/protocol/quic/sniff_varint_bound_test.go
+@@ -0,0 +1,16 @@
++package quic
++
++import "testing"
++
++func TestSniffQUICHugeTokenLengthNoPanic(t *testing.T) {
++	packet := []byte{0xC0, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}
++	packet = append(packet, make([]byte, 64)...)
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("SniffQUIC panicked on an initial packet whose token length does not fit in int32: %v", r)
++		}
++	}()
++	if _, err := SniffQUIC(packet); err == nil {
++		t.Fatal("SniffQUIC accepted a token length larger than the packet")
++	}
++}

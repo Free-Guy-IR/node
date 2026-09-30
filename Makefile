@@ -170,10 +170,10 @@ test_xray_guards:
 test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow|TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations|TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled' ./app/proxyman/inbound/ ./proxy/shadowsocks/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic' ./common/protocol/quic/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic|TestSniffQUICHugeTokenLengthNoPanic' ./common/protocol/quic/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce|TestRepeatedOrListTrustedHeaderFallsBackToThePeer' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
@@ -181,7 +181,7 @@ test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
-	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic|TestAClosedHandlerNeverBuildsANewTunnel|TestProcessTCPWhileClosingDoesNotRaceOrPanic|TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock|TestClosingABindTwiceDoesNotPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)
