@@ -250,3 +250,16 @@ jobs:
 
       - name: Check the workflows against the policy
         run: bash scripts/workflow_policy.sh
+
+  repo-hygiene:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Test the tracked-file guard
+        run: bash scripts/test_check_tracked_files.sh
+
+      - name: Refuse tracked executables and files over 5 MB
+        run: bash scripts/check_tracked_files.sh
