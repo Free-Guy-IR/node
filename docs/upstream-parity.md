@@ -427,9 +427,9 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
   - Entries are comma-separated. Whitespace around each entry is trimmed, and empty entries between commas are ignored. A value made only of separators counts as empty, so nothing is trusted.
   - Any entry that is not a valid CIDR makes the whole setting fail closed: no header is trusted, and exactly one error is logged ("XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured"). The core does not panic.
   - A bare IP without a prefix length counts as invalid.
-  - An entry written as an IPv4-mapped IPv6 prefix, for example `::ffff:127.0.0.0/104`, counts as invalid too, with
+  - An entry written as an IPv4-mapped IPv6 prefix, for example `::ffff:127.0.0.1/128`, counts as invalid too, with
     its own error log naming the entry. Peers are unmapped before the check, so such an entry could never match; before
-    this rule it parsed without error and silently trusted nothing (F-r2B-4). Write the IPv4 form, `127.0.0.0/8`.
+    this rule it parsed without error and silently trusted nothing (F-r2B-4). Write the IPv4 form, `127.0.0.1/32`.
   - A peer on a unix socket listener is reported as `0.0.0.0` (Xray's `UnixConnWrapper`), so it is trusted only by an
     entry that contains `0.0.0.0`, such as `0.0.0.0/32` or `0.0.0.0/0`.
 - **Why the environment and not config:** the node starts xray with `cmd.Env = append(os.Environ(), ...)` (backend/xray/core.go:269), so the container environment reaches the core with no Xray proto or panel change. The variable is per node and applies to every inbound of that node's xray.

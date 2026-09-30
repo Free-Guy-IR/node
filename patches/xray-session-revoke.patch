@@ -1467,10 +1467,10 @@ index 360ea38..fef51d7 100644
  			var data *buf.Buffer
 diff --git a/proxy/shadowsocks/udp_revoke_test.go b/proxy/shadowsocks/udp_revoke_test.go
 new file mode 100644
-index 0000000..b421887
+index 0000000..1c150d4
 --- /dev/null
 +++ b/proxy/shadowsocks/udp_revoke_test.go
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +package shadowsocks
 +
 +import (
@@ -1547,7 +1547,8 @@ index 0000000..b421887
 +}
 +
 +func TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled(t *testing.T) {
-+	account, err := (&Account{Password: "udp-flow-key", CipherType: CipherType_AES_128_GCM}).AsAccount()
++	key := "udp-flow-key"
++	account, err := (&Account{CipherType: CipherType_AES_128_GCM, Password: key}).AsAccount()
 +	common.Must(err)
 +	user := &protocol.MemoryUser{Email: "udp-flow@revoke-test", Account: account}
 +	server := &Server{validator: new(Validator), cone: true}
