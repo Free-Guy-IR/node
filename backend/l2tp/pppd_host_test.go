@@ -79,7 +79,7 @@ func (h *fakeHost) stepClock(seconds int64) {
 
 func (h *fakeHost) advance(seconds int64) {
 	h.stepClock(seconds)
-	h.uptime += seconds*100 + 1
+	h.uptime += max(seconds, 0)*100 + 1
 	h.writeUptime()
 }
 
