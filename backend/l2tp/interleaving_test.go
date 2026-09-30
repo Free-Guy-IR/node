@@ -39,6 +39,7 @@ type interleaving struct {
 	failRemove atomic.Bool
 	failList   [2]atomic.Bool
 	failRead   atomic.Bool
+	failCount  atomic.Bool
 }
 
 func TestL2TPBillingStaysExactAcrossRandomInterleavings(t *testing.T) {
@@ -65,10 +66,10 @@ func newInterleaving(t *testing.T, seed int64) *interleaving {
 	}
 	sessionIsAlive = pppdSessionIsAlive
 	prevOpen, prevProc, prevRemove := openFinalRecord, readProcFile, removeFinalRecord
-	prevList, prevRead := listDir, readSessionFile
+	prevList, prevRead, prevCounter, prevClock := listDir, readSessionFile, readCounterFile, wallClock
 	t.Cleanup(func() {
 		openFinalRecord, readProcFile, removeFinalRecord = prevOpen, prevProc, prevRemove
-		listDir, readSessionFile = prevList, prevRead
+		listDir, readSessionFile, readCounterFile, wallClock = prevList, prevRead, prevCounter, prevClock
 	})
 	listDir = func(name string) ([]os.DirEntry, error) {
 		for i, dir := range []string{sessionStateDir, sessionFinalDir} {
@@ -78,6 +79,13 @@ func newInterleaving(t *testing.T, seed int64) *interleaving {
 		}
 		return prevList(name)
 	}
+	readCounterFile = func(path string) ([]byte, error) {
+		if x.failCount.Load() {
+			return nil, tooManyOpenFiles(path)
+		}
+		return prevCounter(path)
+	}
+	wallClock = func() time.Time { return time.Unix(x.h.clock, 0) }
 	readSessionFile = func(path string) ([]byte, error) {
 		if x.failRead.Load() {
 			return nil, tooManyOpenFiles(path)
@@ -245,10 +253,11 @@ func (x *interleaving) clearFailures() {
 	x.failList[0].Store(false)
 	x.failList[1].Store(false)
 	x.failRead.Store(false)
+	x.failCount.Store(false)
 }
 
 func (x *interleaving) step() {
-	switch x.r.Intn(17) {
+	switch x.r.Intn(18) {
 	case 0, 1:
 		if len(x.live) < 4 {
 			x.racing(x.up(x.spawn()))
@@ -304,7 +313,6 @@ func (x *interleaving) step() {
 		x.endGracefully()
 		x.o.poll()
 		x.take()
-		x.o = x.e.instance(x.users...)
 		x.nextPid = 3000
 		x.h.advance(int64(x.r.Intn(3)))
 		if x.r.Intn(2) == 0 {
@@ -312,6 +320,7 @@ func (x *interleaving) step() {
 			x.h.ticks = 90000
 			x.h.ifindex = 40
 		}
+		x.o = x.e.instance(x.users...)
 	case 13:
 		x.failOpen.Store(int64(x.r.Intn(3 * countedGraceRounds / 10)))
 		x.failProc.Store(x.r.Intn(3) == 0)
@@ -319,13 +328,25 @@ func (x *interleaving) step() {
 		x.failList[0].Store(x.r.Intn(5) == 0)
 		x.failList[1].Store(x.r.Intn(5) == 0)
 		x.failRead.Store(x.r.Intn(5) == 0)
+		x.failCount.Store(x.r.Intn(5) == 0)
 	case 16:
 		x.clearFailures()
 		x.o.poll()
 		x.o.poll()
 		x.take()
+		x.h.advance(0)
 		x.e.write(x.e.countedPath(), "not a counted state\n")
+		switch x.r.Intn(3) {
+		case 0:
+			x.failList[0].Store(true)
+		case 1:
+			x.failCount.Store(true)
+		}
 		x.o = x.e.instance(x.users...)
+		x.clearFailures()
+		x.o.poll()
+	case 17:
+		x.h.stepClock(-int64(1 + x.r.Intn(7200)))
 	case 14, 15:
 		x.h.advance(int64(1 + x.r.Intn(90)))
 	}
