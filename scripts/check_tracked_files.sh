@@ -36,7 +36,7 @@ while IFS= read -r -d '' entry; do
     7f454c46*)
       refuse "$path is an ELF executable or object"
       ;;
-    feedface* | feedfacf* | cefaedfe* | cffaedfe* | cafebabe* | bebafeca*)
+    feedface* | feedfacf* | cefaedfe* | cffaedfe* | cafebabe* | bebafeca* | cafebabf* | bfbafeca*)
       refuse "$path is a Mach-O binary"
       ;;
     4d5a*)
