@@ -69,4 +69,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.1.8-0.20260907010238-c543d656a39a
+replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.1.9-faketls-rewind.0.20260929164514-7d0f004a01dd
