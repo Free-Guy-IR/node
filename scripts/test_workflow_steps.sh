@@ -4,9 +4,9 @@ set -u
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root" || exit 2
 
-WF_BRANCH=docker-build-dev.yml
-WF_MANUAL=docker-build.yml
-WF_RELEASE=release.yml
+WF_BRANCH=image-branch.yml
+WF_MANUAL=image-manual.yml
+WF_RELEASE=publish-release.yml
 WF_IMAGE=image.yml
 WF_GUARD=release-guard.yml
 WF_TESTS=run-tests.yml
@@ -499,6 +499,7 @@ run_step c3-dev-custom "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/dev
 run_step c3-vbranch "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/v2 GITHUB_REF_NAME=v2 INPUT_TAG="" CURL_MAP="$F/map_none"
 run_step c3-reltag "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="" CURL_MAP="$F/map_none"
 expect c3-reltag log 'Publish Release'
+expect c3-reltag log "gh workflow run $WF_RELEASE --ref v0.6.21"
 reject c3-reltag out 'latest'
 run_step c3-reltag-custom "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="rebuild-0.6.21" CURL_MAP="$F/map_none"
 expect c3-reltag-custom out '^tags=rebuild-0.6.21$'
