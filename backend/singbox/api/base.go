@@ -63,5 +63,4 @@ func (c *Client) Close() {
 	if c.GrpcClient != nil {
 		_ = c.GrpcClient.Close()
 	}
-	c.StatsServiceClient = nil
 }
