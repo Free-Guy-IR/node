@@ -66,7 +66,27 @@ check macho-32 1
 
 fixture macho-fat
 printf '\312\376\272\276\000\000\000\002' >"$tmp/macho-fat/node"
-check macho-fat 1
+check macho-fat 1 "node is a Mach-O binary"
+
+fixture java-class
+printf '\312\376\272\276\000\000\000\064\000\021' >"$tmp/java-class/Main.class"
+check java-class 1 "Main.class is a compiled Java class"
+
+fixture wasm
+printf '\000asm\001\000\000\000' >"$tmp/wasm/app.wasm"
+check wasm 1 "app.wasm is a WebAssembly module"
+
+fixture appended-elf
+{ printf '#!/bin/sh\necho installing\nexit 0\n'; printf '\177ELF\002\001\001\000'; head -c 64 /dev/zero; } >"$tmp/appended-elf/install.sh"
+check appended-elf 1 "install.sh carries an embedded ELF executable"
+
+fixture elf-word-in-text
+printf 'the guard refuses ELF and Mach-O binaries\n' >"$tmp/elf-word-in-text/notes.md"
+check elf-word-in-text 0
+
+fixture gzip-data
+printf '\037\213\010\000\000\000\000\000\000\003' >"$tmp/gzip-data/fixture.json.gz"
+check gzip-data 0
 
 fixture macho-fat64
 printf '\312\376\272\277\000\000\000\002' >"$tmp/macho-fat64/node"
