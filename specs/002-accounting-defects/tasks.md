@@ -94,6 +94,25 @@ No shared prerequisite: each story owns disjoint files (see plan.md, Source Code
 - [X] T041 Dependencies and toolchain (u4-4): grpc 1.83.2, gopsutil 4.26.8, x/sys 0.48 with Upstream trailers (f53ffa2), Go 1.26.6 in every builder stage, go.mod and CI (345febd), govulncheck CI job (47ef6ee): 11 reachable vulnerabilities on 7192af8, none after
 - [X] T042 Upstream parity: docs/upstream-parity.md records the rejection of StartOrAttach and tracks upstream PR #78; scripts/upstream_drift.sh with .github/workflows/upstream-drift.yml and .github/upstream-waivers.txt fails on any upstream main or dev commit that is neither ported nor waived (4c1b0ba, 7ef54ca, 12f0fc7); on the merged head it reports 5 ported, 1 empty, 2 waived, 0 unported
 
+## Phase 9: Findings left open at the 2026-09-29 pause (all test-first: RED on the parent, GREEN on the fix, -race and an interleaving test for each concurrency item, mutants of the fix killed, verified by an agent that did not write it)
+
+- [ ] T043 Drift suite never stops silently: `sha_of` in `scripts/upstream_drift_test.sh` must not end its pipeline early under `pipefail`, and the suite fails when it ran fewer cases than it declares (F-R2C2-HARNESS) - branch `release/v0.6.21-acct-drift6`
+- [ ] T044 Drift check refuses a pagination link outside the GitHub API before the token reaches it, pinned by a case (845e23c) - branch `release/v0.6.21-acct-drift6`
+- [ ] T045 Drift Dockerfile reading fails closed: a shell comment, a heredoc body, a SHELL instruction, a later reversal of the patch and a patch file replaced before its apply never count as an applied port (F-R2C2-D11, RED 0c38c9b) - branch `release/v0.6.21-acct-drift6`
+- [ ] T046 Waivers that rest on an upstream branch state name that branch and lapse once the commit is reachable from any other upstream ref (F-R2C2-D10) - branch `release/v0.6.21-acct-drift6`
+- [ ] T047 Upstream Xray 08cb6e6 (WireGuard proxy startup races) ported with a test or waived with its reachability evidence - branch `release/v0.6.21-acct-drift6`
+- [ ] T048 Every drift mutant (loose_until, no_calendar, no_issue_check, patch_scope_off, applied_check_off and those of T043-T046) killed or proven equivalent on the final head with the full case count (F-D6-gaps) - branch `release/v0.6.21-acct-drift6`
+- [ ] T049 OpenVPN: a failed client listing after a management reconnect is retried until every carried session is reconciled, so a capped user is never locked out, and a status 3 without a Client ID column still settles them (F-R2C2-OVM1, F-OVM-R2, RED 42d0457) - branch `release/v0.6.21-acct-ovm`
+- [ ] T050 OpenVPN: real-time notifications that arrive while a command reply is awaited are dispatched in order, and an unterminated tail is never taken as a reply (F-OVM-R1) - branch `release/v0.6.21-acct-ovm`
+- [ ] T051 OpenVPN: `Backend.Restart` is serialised with `Shutdown` and refused after it (F-OVM-R4) - branch `release/v0.6.21-acct-ovm`
+- [ ] T052 sing-box: the health restart takes the sync lock, restarts with the active config and is refused after `Shutdown` (F-SB-stale) - branch `release/v0.6.21-acct-sbstale`
+- [ ] T053 Restart sweep: WireGuard, L2TP and MTProto restarts pinned against stale configs, concurrent syncs and revival after `Shutdown` - branch `release/v0.6.21-acct-sbstale`
+- [ ] T054 MTProto: after a give-up a run counts as serving only once it accepted a client, and an idle run is not a healthy run (F-VMN3-1, RED 8861bcf) - branch `release/v0.6.21-acct-mtgnode3`
+- [ ] T055 Controller tests: `controller/rest` and `controller/rpc` listen on their own ephemeral ports with a Start deadline that holds under load (F-RPC-5s) - branch `release/v0.6.21-acct-flake`
+- [ ] T056 Controller tests: the Start-build user sync test picks a port no other process can take between its Start rounds (F-C1-flake) - branch `release/v0.6.21-acct-flake`
+- [ ] T057 Non-author verification of `release/v0.6.21-acct-l2tpfix2` 5207e59: every RED on its parent, GREEN, -race under dash and bash, fresh mutants, seeded interleaving stress, hostile review
+- [ ] T058 Real-kernel WireGuard MTU tests in a Linux gate: own network namespace, NET_ADMIN only, the wireguard module loaded only if absent and unloaded after, `lsmod`, `ip link` and `ip addr` identical before and after, and mutants of the MTU code fail (GATE-WGK)
+
 ## Dependencies & Execution Order
 
 - T001-T002 first. Phases 3, 4, 5 and 6 run in parallel (disjoint files) once T001 is done.
