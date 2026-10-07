@@ -303,6 +303,8 @@ F=$H/fixtures
 printf 'releases/tags/stable 200 {}\n' >"$F/map_release"
 printf 'git/ref/tags/nightly 200 {}\n' >"$F/map_gittag"
 printf 'releases/tags/nightly 502 {}\n' >"$F/map_err"
+printf 'git/ref/heads/dev 200 {}\n' >"$F/map_branch_dev"
+printf 'git/ref/heads/dev 500 {}\n' >"$F/map_branch_err"
 
 WG_STEP="Run the real-kernel WireGuard integration tests"
 wg_log() { printf '%b' "$1" >"$F/wg_$2.txt"; }
@@ -393,6 +395,13 @@ run_step it-br-space "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="x" BRANCH="a b"
 run_step i3-latest "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="v0.6.21 latest" BRANCH="" CURL_MAP="$F/map_none"
 run_step i3-v "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="v2" BRANCH="v2" CURL_MAP="$F/map_none"
 run_step i3-gittag "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="nightly" BRANCH="" CURL_MAP="$F/map_gittag"
+SIG="sha256-$(printf 'b%.0s' $(seq 64)).sig"
+run_step f6-edge-branch "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="edge" BRANCH="edge" CURL_MAP="$F/map_none"
+expect f6-edge-branch log 'edge'
+run_step f6-edge-main "$WF_IMAGE" build "$CT" 0 "${base[@]}" TAGS="nightly edge" BRANCH="main" CURL_MAP="$F/map_none"
+run_step f6-sig-branch "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="$SIG" BRANCH="$SIG" CURL_MAP="$F/map_none"
+run_step f6-main-elsewhere "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="main" BRANCH="" CURL_MAP="$F/map_none"
+run_step f6-dev-branch "$WF_IMAGE" build "$CT" 0 "${base[@]}" TAGS="dev" BRANCH="dev" CURL_MAP="$F/map_branch_dev"
 unset CASE_WD
 
 PT="Point the tags at the image while the commit is still current"
@@ -436,6 +445,14 @@ expect c3-main-release stub 'releases/tags/stable'
 run_step c3-main-gittag "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_gittag"
 expect c3-main-gittag stub 'git/ref/tags/nightly'
 run_step c3-main-apierr "$WF_MANUAL" tags "$TS" 2 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_err"
+run_step c3-main-custom-dev "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="dev" CURL_MAP="$F/map_branch_dev"
+expect c3-main-custom-dev log 'branch'
+reject c3-main-custom-dev out '^tags='
+run_step c3-reltag-custom-dev "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="dev" CURL_MAP="$F/map_branch_dev"
+reject c3-reltag-custom-dev out '^tags='
+run_step c3-reltag-custom-lookup "$WF_MANUAL" tags "$TS" 2 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="dev" CURL_MAP="$F/map_branch_err"
+run_step c3-dev-own "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="" CURL_MAP="$F/map_branch_dev"
+expect c3-dev-own out '^tags=dev$'
 run_step c3-main-edge "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="edge" CURL_MAP="$F/map_none"
 run_step c3-main-main "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="main" CURL_MAP="$F/map_none"
 run_step c3-dev "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="" CURL_MAP="$F/map_none"
