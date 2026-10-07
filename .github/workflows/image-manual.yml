@@ -53,7 +53,7 @@ jobs:
               ;;
             refs/tags/*)
               if [ -z "${INPUT_TAG}" ]; then
-                echo "::error title=Release tags come only from Publish Release::${name} is a tag, and release image tags are immutable; publish a release with gh workflow run release.yml --ref ${name}, or rebuild this tag under a custom tag that does not look like a release"
+                echo "::error title=Release tags come only from Publish Release::${name} is a tag, and release image tags are immutable; publish a release with gh workflow run publish-release.yml --ref ${name}, or rebuild this tag under a custom tag that does not look like a release"
                 exit 1
               fi
               case "${INPUT_TAG}" in

@@ -98,7 +98,7 @@ policy check and the upstream drift check.
    from" pick the tag. Or:
 
    ```bash
-   gh workflow run release.yml --ref v0.6.21
+   gh workflow run publish-release.yml --ref v0.6.21
    ```
 
 The workflow refuses a branch, and a tag whose release is already published. It runs every gate on the tag's commit
@@ -115,8 +115,17 @@ A release published by hand, or by any tool other than Publish Release, is turne
 workflow_dispatch from the release tag:
 
 ```bash
-gh workflow run release.yml --ref vX.Y.Z
+gh workflow run publish-release.yml --ref vX.Y.Z
 ```
+
+A release event runs the workflow files of the tagged commit, so Release Guard covers only tags whose commit
+contains `.github/workflows/release-guard.yml`. Older tags and branches carry the old ungated `docker-build.yml`,
+`docker-build-dev.yml` and `release.yml`, which publish images and move `:latest` without any gate. That is why the
+publishing workflows live at new paths and the workflow policy refuses the old ones: the three old workflow ids are
+meant to be disabled in the repository settings (Actions, the workflow, Disable workflow), which stops them on every
+ref. Until the owner has disabled them, a release published on an old tag, or a manual run of the old workflow from
+an old tag or branch, still publishes ungated. A tag ruleset that lets only admins create `v*` tags, and never move or
+delete them, keeps new release tags on reviewed commits.
 
 ## Image tags
 

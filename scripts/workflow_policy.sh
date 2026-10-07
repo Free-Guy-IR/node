@@ -34,6 +34,15 @@ if ! "$actionlint_path" -shellcheck "$shellcheck_path" "${files[@]}"; then
   fail "actionlint reported the findings above"
 fi
 
+retired_paths="docker-build.yml docker-build-dev.yml release.yml"
+for file in "${files[@]}"; do
+  case " $retired_paths " in
+    *" ${file##*/} "*)
+      fail "$file: ${file##*/} is a retired workflow path. Old tags and branches carry an ungated workflow at this path, so its workflow id is disabled in the repository settings and a file here never runs; use image-branch.yml, image-manual.yml or publish-release.yml"
+      ;;
+  esac
+done
+
 sha_re='^[0-9a-f]{40}$'
 version_re='^v[0-9]+(\.[0-9]+){0,2}$'
 action_re='^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(/[^@]*)?@(.+)$'

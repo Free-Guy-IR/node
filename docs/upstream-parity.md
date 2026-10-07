@@ -627,9 +627,9 @@ workflow that publishes something calls both of them first, on the same commit, 
 
 | workflow | trigger | gated jobs | what it publishes |
 |---|---|---|---|
-| `docker-build-dev.yml` | push to a branch whose name has no `/` | `image` | `ghcr.io/free-guy-ir/node:<branch>`, moved only while the branch still points at the built commit |
-| `docker-build.yml` | run by hand | `image` | `:edge` from `main`, the branch-named tag from another branch, or a custom tag; never `:latest` or a release-like tag |
-| `release.yml` (Publish Release) | run by hand from a release tag | `assets`, `image`, `publish` | the draft release's zips and checksums, `:<tag>` and `:latest`, then the release itself |
+| `image-branch.yml` | push to a branch whose name has no `/` | `image` | `ghcr.io/free-guy-ir/node:<branch>`, moved only while the branch still points at the built commit |
+| `image-manual.yml` | run by hand | `image` | `:edge` from `main`, the branch-named tag from another branch, or a custom tag; never `:latest` or a release-like tag |
+| `publish-release.yml` (Publish Release) | run by hand from a release tag | `assets`, `image`, `publish` | the draft release's zips and checksums, `:<tag>` and `:latest`, then the release itself |
 
 So a red drift check blocks every image build and every release, by design: nothing ships while an upstream item is
 neither ported nor waived, even when the commit being built did not cause the drift. A new upstream commit turns every
