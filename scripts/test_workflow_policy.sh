@@ -74,6 +74,30 @@ YML
   fi
 }
 
+must_refuse_cut() {
+  local name=$1 file=$2 marker=$3 dir="$work/$1"
+  copy_workflows "$dir"
+  if ! python3 - "$dir/$file" "$marker" <<'PY2'
+import sys
+path, marker = sys.argv[1:3]
+text = open(path).read()
+if text.count(marker) != 1:
+    sys.exit(f"{path}: expected one match for {marker!r}, found {text.count(marker)}")
+open(path, "w").write(text[: text.index(marker)])
+PY2
+  then
+    printf 'FAIL %s: the mutation no longer applies\n' "$name"
+    failures=$((failures + 1))
+    return
+  fi
+  if run_policy "$dir"; then
+    printf 'FAIL %s: workflow_policy.sh accepts it\n' "$name"
+    failures=$((failures + 1))
+  else
+    printf 'ok   %s is refused\n' "$name"
+  fi
+}
+
 copy_workflows "$work/baseline"
 if run_policy "$work/baseline"; then
   printf 'ok   the unchanged workflows pass\n'
@@ -130,6 +154,50 @@ must_refuse "flow-style step on a branch-floating action" upstream-drift.yml \
   $'      - {name: Checkout codebase, uses: actions/checkout@main, with: {fetch-depth: 0, persist-credentials: false}}\n'
 must_refuse "quoted uses key on a branch-floating action" upstream-drift.yml \
   $'        uses: actions/checkout@v7\n' $'        "uses": actions/checkout@main\n'
+
+must_refuse "gate command allowed to fail with || true" run-tests.yml \
+  $'        run: bash scripts/workflow_policy.sh\n' $'        run: bash scripts/workflow_policy.sh || true\n'
+must_refuse "drift step running under set +e" upstream-drift.yml \
+  $'          set -o pipefail\n          log="$RUNNER_TEMP/upstream-drift.log"\n' $'          set +e\n          set -o pipefail\n          log="$RUNNER_TEMP/upstream-drift.log"\n'
+must_refuse "test suite step allowed to fail" run-tests.yml \
+  $'      - name: Run regular test suite\n' $'      - name: Run regular test suite\n        continue-on-error: true\n'
+must_refuse "test suite step removed" run-tests.yml \
+  $'      - name: Run regular test suite\n        run: TEST_INTEGRATION=true go test ./... -v -p 1\n' ''
+must_refuse "test suite narrowed to one package tree" run-tests.yml \
+  $'go test ./... -v -p 1\n' $'go test ./pkg/... -v -p 1\n'
+must_refuse_cut "workflow policy job removed" run-tests.yml $'  workflow-policy:\n'
+must_refuse "branch image job forced to run by an expression" "$WF_BRANCH" \
+  $'  image:\n    needs: [tests, drift]\n' $'  image:\n    needs: [tests, drift]\n    if: ${{ always() }}\n'
+must_refuse "tests job that does not call the test workflow" "$WF_BRANCH" \
+  $'  tests:\n    uses: ./.github/workflows/run-tests.yml\n' $'  tests:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Pretend\n        run: echo ok\n'
+must_refuse "test workflow called from a floating remote ref" "$WF_BRANCH" \
+  $'  tests:\n    uses: ./.github/workflows/run-tests.yml\n' $'  tests:\n    uses: Free-Guy-IR/node/.github/workflows/run-tests.yml@main\n'
+must_refuse "write scope outside the allowlist" "$WF_BRANCH" \
+  $'      contents: read\n      packages: write\n' $'      contents: write\n      packages: write\n'
+must_refuse "write permission at workflow level" run-tests.yml \
+  $'permissions:\n  contents: read\n' $'permissions:\n  contents: write\n'
+must_refuse "new publishing job without gates" "$WF_MANUAL" \
+  $'      branch: ${{ needs.tags.outputs.branch }}\n' $'      branch: ${{ needs.tags.outputs.branch }}\n\n  sneak:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      packages: write\n    steps:\n      - name: Push\n        run: echo push\n'
+must_refuse "stored secret instead of the job token" image.yml \
+  $'          password: ${{ secrets.GITHUB_TOKEN }}\n' $'          password: ${{ secrets.GHCR_PAT }}\n'
+must_refuse "every secret handed to the image workflow" "$WF_BRANCH" \
+  $'    uses: ./.github/workflows/image.yml\n' $'    uses: ./.github/workflows/image.yml\n    secrets: inherit\n'
+must_refuse "branch-floating action in a folded scalar" upstream-drift.yml \
+  $'        uses: actions/checkout@v7\n' $'        uses: >-\n          actions/checkout@main\n'
+must_refuse "local composite action" upstream-drift.yml \
+  $'        uses: actions/checkout@v7\n' $'        uses: ./.github/actions/checkout\n'
+
+for owned in /.github/workflows/ /.github/actions/ /.github/CODEOWNERS /.github/upstream-waivers.txt \
+  /scripts/workflow_policy.sh /scripts/workflowgate/ /scripts/workflow_gates.lock /scripts/image_tag_policy.sh \
+  /scripts/upstream_drift.sh /scripts/test_workflow_policy.sh /scripts/test_image_tag_policy.sh \
+  /scripts/test_workflow_steps.sh; do
+  if awk -v path="$owned" '$1 == path && NF > 1 { found = 1 } END { exit !found }' .github/CODEOWNERS; then
+    printf 'ok   CODEOWNERS covers %s\n' "$owned"
+  else
+    printf 'FAIL CODEOWNERS has no owner for %s\n' "$owned"
+    failures=$((failures + 1))
+  fi
+done
 
 if [ "$failures" -gt 0 ]; then
   printf 'workflow policy test: %d failures\n' "$failures"
