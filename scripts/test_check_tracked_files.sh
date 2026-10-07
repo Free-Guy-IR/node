@@ -50,7 +50,7 @@ check clean 0
 
 fixture elf
 printf '\177ELF\002\001\001\000' >"$tmp/elf/main"
-check elf 1
+check elf 1 "main is an ELF executable or object"
 
 fixture elf-hidden-name
 printf '\177ELF\002\001\001\000' >"$tmp/elf-hidden-name/notes.txt"
