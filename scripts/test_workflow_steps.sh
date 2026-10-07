@@ -16,61 +16,8 @@ H=$(mktemp -d "${TMPDIR:-/tmp}/workflow-steps-test.XXXXXX")
 trap 'rm -rf "$H"' EXIT
 mkdir -p "$H/bin" "$H/cases" "$H/fixtures"
 
-python3 - "$root/.github/workflows" "$H/steps" <<'PY' || exit 2
-import os
-import sys
-
-import yaml
-
-source, out = sys.argv[1], sys.argv[2]
-
-
-class Loader(yaml.SafeLoader):
-    pass
-
-
-Loader.yaml_implicit_resolvers = {
-    key: [resolver for resolver in resolvers if resolver[0] != "tag:yaml.org,2002:bool"]
-    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
-}
-
-
-def literal_env(*layers):
-    env = {}
-    for layer in layers:
-        for key, value in (layer or {}).items():
-            value = "" if value is None else str(value)
-            if "${{" in value:
-                env.pop(key, None)
-            else:
-                env[key] = value
-    return env
-
-
-os.makedirs(out, exist_ok=True)
-index = []
-for name in sorted(os.listdir(source)):
-    if not name.endswith((".yml", ".yaml")):
-        continue
-    with open(os.path.join(source, name)) as fh:
-        doc = yaml.load(fh, Loader=Loader)
-    for job_id, job in (doc.get("jobs") or {}).items():
-        for position, step in enumerate(job.get("steps") or []):
-            base = os.path.join(out, name, job_id, str(position))
-            os.makedirs(os.path.dirname(base), exist_ok=True)
-            kind = "run" if "run" in step else "uses"
-            if kind == "run":
-                with open(base + ".sh", "w") as fh:
-                    fh.write(step["run"])
-            env = literal_env(doc.get("env"), job.get("env"), step.get("env"))
-            with open(base + ".env", "wb") as fh:
-                fh.write(b"".join(f"{key}={value}".encode() + b"\0" for key, value in env.items()))
-            with open(base + ".wd", "w") as fh:
-                fh.write(str(step.get("working-directory", "")))
-            index.append("\t".join([name, job_id, str(position), kind, str(step.get("name", ""))]))
-with open(os.path.join(out, "index"), "w") as fh:
-    fh.write("\n".join(index) + "\n")
-PY
+(cd "$root/scripts/workflowgate" && go build -o "$H/workflowgate" .) || exit 2
+"$H/workflowgate" steps -dir "$root/.github/workflows" -out "$H/steps" || exit 2
 
 cat >"$H/bin/sudo" <<'SH'
 #!/usr/bin/env bash
@@ -349,15 +296,14 @@ TAGOBJ=3333333333333333333333333333333333333333
 DIG=sha256:$(printf 'a%.0s' $(seq 64))
 DIG2=sha256:$(printf 'c%.0s' $(seq 64))
 IMG=ghcr.io/free-guy-ir/node
-API="GITHUB_API_URL=https://api.example GITHUB_REPOSITORY=Free-Guy-IR/node GH_TOKEN=t"
-base="$API GITHUB_SHA=$SHA"
+API=(GITHUB_API_URL=https://api.example GITHUB_REPOSITORY=Free-Guy-IR/node GH_TOKEN=t)
+base=("${API[@]}" "GITHUB_SHA=$SHA")
 F=$H/fixtures
 : >"$F/map_none"
 printf 'releases/tags/stable 200 {}\n' >"$F/map_release"
 printf 'git/ref/tags/nightly 200 {}\n' >"$F/map_gittag"
 printf 'releases/tags/nightly 502 {}\n' >"$F/map_err"
 
-REQ='TestIntegrationMTUWithoutKeyKeepsTheKernelDefaultAndAHostSetValue TestIntegrationMTUFromConfigIsAppliedAndReapplied'
 WG_STEP="Run the real-kernel WireGuard integration tests"
 wg_log() { printf '%b' "$1" >"$F/wg_$2.txt"; }
 wg_log '=== RUN   TestIntegrationMTUWithoutKeyKeepsTheKernelDefaultAndAHostSetValue\n--- PASS: TestIntegrationMTUWithoutKeyKeepsTheKernelDefaultAndAHostSetValue (1.20s)\n--- PASS: TestIntegrationMTUFromConfigIsAppliedAndReapplied (0.90s)\n--- PASS: TestIntegrationE2ESyncUsers (12.00s)\n    --- PASS: TestIntegrationE2ESyncUsers/add (0.10s)\nPASS\nok  \tgithub.com/pasarguard/node/backend/wireguard\t30.1s\n' allpass
@@ -429,24 +375,24 @@ run_step explain-error "$WF_DRIFT" drift "$EX" 0 DRIFT_STATUS=2 DRIFT_KIND=error
 expect explain-error summary '^## Upstream drift check could not complete'
 
 CT="Check the requested tags"
-IB="$API CURL_MAP=$F/map_none"
+IB=("${API[@]}" "CURL_MAP=$F/map_none")
 export CASE_WD=$root
-run_step it-main "$WF_IMAGE" build "$CT" 0 $IB TAGS="main" BRANCH="main"
-run_step it-two "$WF_IMAGE" build "$CT" 1 $IB TAGS="v0.6.21 latest" BRANCH=""
-run_step it-two-ok "$WF_IMAGE" build "$CT" 0 $IB TAGS="nightly edge" BRANCH=""
-run_step it-empty "$WF_IMAGE" build "$CT" 0 $IB TAGS="" BRANCH=""
+run_step it-main "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="main" BRANCH="main"
+run_step it-two "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="v0.6.21 latest" BRANCH=""
+run_step it-two-ok "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="nightly edge" BRANCH=""
+run_step it-empty "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="" BRANCH=""
 reject it-empty stub curl
-run_step it-bang "$WF_IMAGE" build "$CT" 1 $IB TAGS="bad!" BRANCH=""
-run_step it-comma "$WF_IMAGE" build "$CT" 1 $IB TAGS="a,ghcr.io/x:latest" BRANCH=""
-run_step it-newline "$WF_IMAGE" build "$CT" 1 $IB TAGS="$(printf 'a\nb')" BRANCH=""
-run_step it-lead-dot "$WF_IMAGE" build "$CT" 1 $IB TAGS=".a" BRANCH=""
-run_step it-long "$WF_IMAGE" build "$CT" 1 $IB TAGS="$(printf 'a%.0s' $(seq 129))" BRANCH=""
-run_step it-br-slash "$WF_IMAGE" build "$CT" 0 $IB TAGS="x" BRANCH="feat/x"
-run_step it-br-dash "$WF_IMAGE" build "$CT" 1 $IB TAGS="x" BRANCH="-x"
-run_step it-br-space "$WF_IMAGE" build "$CT" 1 $IB TAGS="x" BRANCH="a b"
-run_step i3-latest "$WF_IMAGE" build "$CT" 1 $base TAGS="v0.6.21 latest" BRANCH="" CURL_MAP="$F/map_none"
-run_step i3-v "$WF_IMAGE" build "$CT" 1 $base TAGS="v2" BRANCH="v2" CURL_MAP="$F/map_none"
-run_step i3-gittag "$WF_IMAGE" build "$CT" 1 $base TAGS="nightly" BRANCH="" CURL_MAP="$F/map_gittag"
+run_step it-bang "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="bad!" BRANCH=""
+run_step it-comma "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="a,ghcr.io/x:latest" BRANCH=""
+run_step it-newline "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="$(printf 'a\nb')" BRANCH=""
+run_step it-lead-dot "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS=".a" BRANCH=""
+run_step it-long "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="$(printf 'a%.0s' $(seq 129))" BRANCH=""
+run_step it-br-slash "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="x" BRANCH="feat/x"
+run_step it-br-dash "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="x" BRANCH="-x"
+run_step it-br-space "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="x" BRANCH="a b"
+run_step i3-latest "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="v0.6.21 latest" BRANCH="" CURL_MAP="$F/map_none"
+run_step i3-v "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="v2" BRANCH="v2" CURL_MAP="$F/map_none"
+run_step i3-gittag "$WF_IMAGE" build "$CT" 1 "${base[@]}" TAGS="nightly" BRANCH="" CURL_MAP="$F/map_gittag"
 unset CASE_WD
 
 PT="Point the tags at the image while the commit is still current"
@@ -472,53 +418,53 @@ reject pt-nobranch stub 'ls-remote'
 
 TS="Choose the image tags for this ref"
 export CASE_WD=$root
-run_step c3-main "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="" CURL_MAP="$F/map_none"
+run_step c3-main "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="" CURL_MAP="$F/map_none"
 expect c3-main out '^tags=edge$'
 expect c3-main out '^branch=main$'
 reject c3-main out 'latest'
-run_step c3-main-custom "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly2" CURL_MAP="$F/map_none"
+run_step c3-main-custom "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly2" CURL_MAP="$F/map_none"
 expect c3-main-custom out '^tags=nightly2 edge$'
 reject c3-main-custom out 'latest'
-run_step c3-main-latest "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="latest" CURL_MAP="$F/map_none"
-run_step c3-main-v "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="v0.6.22" CURL_MAP="$F/map_none"
+run_step c3-main-latest "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="latest" CURL_MAP="$F/map_none"
+run_step c3-main-v "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="v0.6.22" CURL_MAP="$F/map_none"
 expect c3-main-v log 'release'
-run_step c3-main-v9x "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="v9-test" CURL_MAP="$F/map_none"
-run_step c3-main-vword "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="very-new" CURL_MAP="$F/map_none"
+run_step c3-main-v9x "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="v9-test" CURL_MAP="$F/map_none"
+run_step c3-main-vword "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="very-new" CURL_MAP="$F/map_none"
 expect c3-main-vword out '^tags=very-new edge$'
-run_step c3-main-release "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="stable" CURL_MAP="$F/map_release"
+run_step c3-main-release "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="stable" CURL_MAP="$F/map_release"
 expect c3-main-release stub 'releases/tags/stable'
-run_step c3-main-gittag "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_gittag"
+run_step c3-main-gittag "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_gittag"
 expect c3-main-gittag stub 'git/ref/tags/nightly'
-run_step c3-main-apierr "$WF_MANUAL" tags "$TS" 2 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_err"
-run_step c3-main-edge "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="edge" CURL_MAP="$F/map_none"
-run_step c3-main-main "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="main" CURL_MAP="$F/map_none"
-run_step c3-dev "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="" CURL_MAP="$F/map_none"
+run_step c3-main-apierr "$WF_MANUAL" tags "$TS" 2 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="nightly" CURL_MAP="$F/map_err"
+run_step c3-main-edge "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="edge" CURL_MAP="$F/map_none"
+run_step c3-main-main "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_TAG="main" CURL_MAP="$F/map_none"
+run_step c3-dev "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="" CURL_MAP="$F/map_none"
 expect c3-dev out '^tags=dev$'
 expect c3-dev out '^branch=dev$'
-run_step c3-dev-custom "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="other" CURL_MAP="$F/map_none"
-run_step c3-vbranch "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/heads/v2 GITHUB_REF_NAME=v2 INPUT_TAG="" CURL_MAP="$F/map_none"
-run_step c3-reltag "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="" CURL_MAP="$F/map_none"
+run_step c3-dev-custom "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/dev GITHUB_REF_NAME=dev INPUT_TAG="other" CURL_MAP="$F/map_none"
+run_step c3-vbranch "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/heads/v2 GITHUB_REF_NAME=v2 INPUT_TAG="" CURL_MAP="$F/map_none"
+run_step c3-reltag "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="" CURL_MAP="$F/map_none"
 expect c3-reltag log 'Publish Release'
 expect c3-reltag log "gh workflow run $WF_RELEASE --ref v0.6.21"
 reject c3-reltag out 'latest'
-run_step c3-reltag-custom "$WF_MANUAL" tags "$TS" 0 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="rebuild-0.6.21" CURL_MAP="$F/map_none"
+run_step c3-reltag-custom "$WF_MANUAL" tags "$TS" 0 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="rebuild-0.6.21" CURL_MAP="$F/map_none"
 expect c3-reltag-custom out '^tags=rebuild-0.6.21$'
 expect c3-reltag-custom out '^branch=$'
-run_step c3-reltag-vcustom "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="v0.6.21-rebuild" CURL_MAP="$F/map_none"
-run_step c3-reltag-edge "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="edge" CURL_MAP="$F/map_none"
-run_step c3-pull "$WF_MANUAL" tags "$TS" 1 $base GITHUB_REF=refs/pull/3/merge GITHUB_REF_NAME=3/merge INPUT_TAG="" CURL_MAP="$F/map_none"
+run_step c3-reltag-vcustom "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="v0.6.21-rebuild" CURL_MAP="$F/map_none"
+run_step c3-reltag-edge "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_NAME=v0.6.21 INPUT_TAG="edge" CURL_MAP="$F/map_none"
+run_step c3-pull "$WF_MANUAL" tags "$TS" 1 "${base[@]}" GITHUB_REF=refs/pull/3/merge GITHUB_REF_NAME=3/merge INPUT_TAG="" CURL_MAP="$F/map_none"
 unset CASE_WD
 
 RS="Require a release tag that is not published yet"
-run_step rs-branch "$WF_RELEASE" resolve "$RS" 1 $base GITHUB_REF=refs/heads/main GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main
+run_step rs-branch "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/heads/main GITHUB_REF_TYPE=branch GITHUB_REF_NAME=main
 expect rs-branch log 'Run this from the release tag'
 reject rs-branch stub curl
-run_step rs-ok "$WF_RELEASE" resolve "$RS" 0 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=404
+run_step rs-ok "$WF_RELEASE" resolve "$RS" 0 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=404
 expect rs-ok summary "Releasing v0.6.21 at $SHA"
-run_step rs-published "$WF_RELEASE" resolve "$RS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=200
+run_step rs-published "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=200
 expect rs-published log 'Release already published'
-run_step rs-apierr "$WF_RELEASE" resolve "$RS" 1 $base GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=500
-run_step rs-badname "$WF_RELEASE" resolve "$RS" 1 $base GITHUB_REF=refs/tags/v1+x GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1+x CURL_STATUS=404
+run_step rs-apierr "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=500
+run_step rs-badname "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/tags/v1+x GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1+x CURL_STATUS=404
 reject rs-badname stub curl
 
 FD="Find the draft release for this tag"
@@ -527,24 +473,24 @@ printf '[{"tag_name":"v0.6.21","draft":true,"prerelease":true}]' >"$F/rel_pre.js
 printf '[{"tag_name":"v0.6.20","draft":false,"prerelease":false}]' >"$F/rel_none.json"
 printf '[{"tag_name":"v0.6.21","draft":false,"prerelease":false}]' >"$F/rel_pub.json"
 printf '[{"tag_name":"v0.6.21","draft":true,"prerelease":false},{"tag_name":"v0.6.21","draft":true,"prerelease":false}]' >"$F/rel_two.json"
-run_step fd-pages "$WF_RELEASE" publish "$FD" 0 $base TAG=v0.6.21 GH_RELEASES="$F/rel_pages.json"
+run_step fd-pages "$WF_RELEASE" publish "$FD" 0 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_pages.json"
 expect fd-pages out '^prerelease=false$'
 expect fd-pages stub 'gh api --paginate repos/Free-Guy-IR/node/releases\?per_page=100'
-run_step fd-pre "$WF_RELEASE" publish "$FD" 0 $base TAG=v0.6.21 GH_RELEASES="$F/rel_pre.json"
+run_step fd-pre "$WF_RELEASE" publish "$FD" 0 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_pre.json"
 expect fd-pre out '^prerelease=true$'
-run_step fd-none "$WF_RELEASE" publish "$FD" 1 $base TAG=v0.6.21 GH_RELEASES="$F/rel_none.json"
+run_step fd-none "$WF_RELEASE" publish "$FD" 1 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_none.json"
 expect fd-none log 'found 0 releases for v0.6.21'
-run_step fd-pub "$WF_RELEASE" publish "$FD" 1 $base TAG=v0.6.21 GH_RELEASES="$F/rel_pub.json"
+run_step fd-pub "$WF_RELEASE" publish "$FD" 1 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_pub.json"
 expect fd-pub log 'not a draft any more'
-run_step fd-two "$WF_RELEASE" publish "$FD" 1 $base TAG=v0.6.21 GH_RELEASES="$F/rel_two.json"
+run_step fd-two "$WF_RELEASE" publish "$FD" 1 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_two.json"
 
 TC="Check that the tag still points at the tested commit"
-run_step tc-light "$WF_RELEASE" publish "$TC" 0 $base TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
-run_step tc-annot "$WF_RELEASE" publish "$TC" 0 $base TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"tag\",\"sha\":\"$TAGOBJ\"}}" GH_TAGOBJ="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
+run_step tc-light "$WF_RELEASE" publish "$TC" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
+run_step tc-annot "$WF_RELEASE" publish "$TC" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"tag\",\"sha\":\"$TAGOBJ\"}}" GH_TAGOBJ="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
 expect tc-annot stub "git/tags/$TAGOBJ"
-run_step tc-moved "$WF_RELEASE" publish "$TC" 1 $base TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$OTHER\"}}"
+run_step tc-moved "$WF_RELEASE" publish "$TC" 1 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$OTHER\"}}"
 expect tc-moved log 'Tag moved::v0.6.21 now points at commit 2222'
-run_step tc-nodigest "$WF_RELEASE" publish "$TC" 1 $base TAG=v0.6.21 DIGEST="" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
+run_step tc-nodigest "$WF_RELEASE" publish "$TC" 1 "${base[@]}" TAG=v0.6.21 DIGEST="" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
 expect tc-nodigest log 'No image digest'
 
 VC="Verify the asset checksums"
@@ -563,20 +509,20 @@ CASE_WD=$F/vc-bad run_step vc-bad "$WF_RELEASE" publish "$VC" nz
 CASE_WD=$F/vc-empty run_step vc-empty "$WF_RELEASE" publish "$VC" 1
 expect vc-empty log 'the build jobs produced no zip'
 
-run_step up "$WF_RELEASE" publish "Upload the assets to the draft release" 0 $base TAG=v0.6.21
+run_step up "$WF_RELEASE" publish "Upload the assets to the draft release" 0 "${base[@]}" TAG=v0.6.21
 expect up stub '^gh release upload v0.6.21 dist/\* --clobber$'
 
 TI="Tag the tested image"
-run_step ti-final "$WF_RELEASE" publish "$TI" 0 $base TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false
+run_step ti-final "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false
 expect ti-final stub "^docker buildx imagetools create --tag $IMG:v0.6.21 --tag $IMG:latest $IMG@$DIG$"
 expect ti-final summary 'as v0.6.21 latest'
-run_step ti-pre "$WF_RELEASE" publish "$TI" 0 $base TAG=v0.6.22-rc1 DIGEST="$DIG" PRERELEASE=true
+run_step ti-pre "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.22-rc1 DIGEST="$DIG" PRERELEASE=true
 expect ti-pre stub "^docker buildx imagetools create --tag $IMG:v0.6.22-rc1 $IMG@$DIG$"
 
 PB="Publish the release"
 mkdir -p "$F/pb/dist"
 printf x >"$F/pb/dist/a.zip"
-CASE_WD=$F/pb run_step pb "$WF_RELEASE" publish "$PB" 0 $base TAG=v0.6.21
+CASE_WD=$F/pb run_step pb "$WF_RELEASE" publish "$PB" 0 "${base[@]}" TAG=v0.6.21
 expect pb stub '^gh release edit v0.6.21 --draft=false$'
 
 GD="Turn a release published outside Publish Release back into a draft"

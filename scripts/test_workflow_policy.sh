@@ -30,8 +30,11 @@ open(path, "w").write(text.replace(old, new))
 PY
 }
 
+gate="$work/workflowgate"
+(cd scripts/workflowgate && go build -o "$gate" .) || exit 2
+
 run_policy() {
-  WORKFLOW_DIR="$1" WORKFLOW_POLICY_REMOTE=0 bash scripts/workflow_policy.sh >"$1.log" 2>&1
+  WORKFLOWGATE="$gate" WORKFLOW_DIR="$1" WORKFLOW_POLICY_REMOTE=0 bash scripts/workflow_policy.sh >"$1.log" 2>&1
 }
 
 must_refuse() {

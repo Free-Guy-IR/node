@@ -34,15 +34,6 @@ if ! "$actionlint_path" -shellcheck "$shellcheck_path" "${files[@]}"; then
   fail "actionlint reported the findings above"
 fi
 
-retired_paths="docker-build.yml docker-build-dev.yml release.yml"
-for file in "${files[@]}"; do
-  case " $retired_paths " in
-    *" ${file##*/} "*)
-      fail "$file: ${file##*/} is a retired workflow path. Old tags and branches carry an ungated workflow at this path, so its workflow id is disabled in the repository settings and a file here never runs; use image-branch.yml, image-manual.yml or publish-release.yml"
-      ;;
-  esac
-done
-
 sha_re='^[0-9a-f]{40}$'
 version_re='^v[0-9]+(\.[0-9]+){0,2}$'
 action_re='^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(/[^@]*)?@(.+)$'
@@ -119,24 +110,27 @@ check_uses() {
   esac
 }
 
-for file in "${files[@]}"; do
-  if ! grep -Eq '^permissions:' "$file"; then
-    fail "$file: no top-level permissions block"
-  fi
-  while IFS= read -r match; do
-    line_no=${match%%:*}
-    value=${match#*:}
-    value=$(printf '%s\n' "$value" | sed -E \
-      -e 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*//' \
-      -e 's/[[:space:]]+#.*$//' \
-      -e 's/[[:space:]]+$//' \
-      -e "s/^[\"'](.*)[\"']\$/\\1/")
-    check_uses "$file:$line_no" "$value"
-  done < <(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]' "$file" || true)
-done
+gate_lock=${WORKFLOW_GATES_LOCK:-scripts/workflow_gates.lock}
+gate=${WORKFLOWGATE:-}
+if [ -z "$gate" ]; then
+  gate="$work/workflowgate"
+  (cd scripts/workflowgate && go build -o "$gate" .) || die "cannot build scripts/workflowgate (it needs Go)"
+fi
+
+if ! "$gate" check -dir "$workflow_dir" -lock "$gate_lock"; then
+  fail "the gate checker reported the findings above"
+fi
+
+if "$gate" uses -dir "$workflow_dir" >"$work/uses"; then
+  while IFS=$'\t' read -r where value; do
+    check_uses "$where" "$value"
+  done <"$work/uses"
+else
+  fail "the gate checker could not list the uses: values"
+fi
 
 if [ "$failures" -gt 0 ]; then
   printf 'workflow-policy: %d findings in %d workflow files\n' "$failures" "${#files[@]}"
   exit 1
 fi
-printf 'workflow-policy: %d workflow files pass actionlint, the pin convention and the permissions rule\n' "${#files[@]}"
+printf 'workflow-policy: %d workflow files pass actionlint, the gate checker and the pin convention\n' "${#files[@]}"

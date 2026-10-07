@@ -250,3 +250,16 @@ jobs:
 
       - name: Check the workflows against the policy
         run: bash scripts/workflow_policy.sh
+
+      - name: Test the gate checker
+        working-directory: scripts/workflowgate
+        run: go test ./...
+
+      - name: Test that the policy refuses gate-disabling edits
+        run: bash scripts/test_workflow_policy.sh
+
+      - name: Test the image tag policy
+        run: bash scripts/test_image_tag_policy.sh
+
+      - name: Test the steps of the publishing workflows
+        run: bash scripts/test_workflow_steps.sh
