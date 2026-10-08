@@ -25,10 +25,18 @@ type Xray struct {
 	mu          sync.RWMutex
 	syncMu      sync.Mutex
 	syncEntered func(context.Context)
+	holderMu    sync.Mutex
+	syncHolder  *userSync
+	stuckGrace  time.Duration
 	shutDown    bool
 }
 
 var errShutDown = errors.New("xray has been shut down")
+
+const (
+	defaultStuckGrace = 60 * time.Second
+	stuckSyncPoll     = 250 * time.Millisecond
+)
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
 	executableAbsolutePath, err := filepath.Abs(cfg.XrayExecutablePath)
@@ -124,9 +132,18 @@ func (x *Xray) Started() bool {
 }
 
 func (x *Xray) Restart() error {
-	unlock := x.lockSync(context.Background())
+	unlock := x.lockSyncForRestart()
 	defer unlock()
 	return x.restartCoreWithConfig(x.activeConfig())
+}
+
+func (x *Xray) RestartUnlessReplaced(observed *coreState) (bool, error) {
+	unlock := x.lockSyncForRestart()
+	defer unlock()
+	if current := x.core.state.Load(); current != observed && startedFromState(current) {
+		return false, nil
+	}
+	return true, x.restartCoreWithConfig(x.activeConfig())
 }
 
 func (x *Xray) restartCoreWithConfig(config *Config) error {

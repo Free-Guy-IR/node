@@ -87,14 +87,19 @@ func (x *Xray) checkXrayHealth(baseCtx context.Context) {
 	maxFailures := 10 // Give Xray API time to recover under load before restarting.
 	checkInterval := 2 * time.Second
 
-	restart := func(reason string) {
+	restart := func(reason string, observed *coreState) {
 		log.Println(reason)
 		if tail := x.core.RuntimeLogTail(10); len(tail) > 0 {
 			log.Printf("last %d xray log lines before restart:\n%s", len(tail), strings.Join(tail, "\n"))
 		}
-		if err := x.Restart(); err != nil {
+		restarted, err := x.RestartUnlessReplaced(observed)
+		switch {
+		case err != nil:
 			log.Println(err.Error())
-		} else {
+		case !restarted:
+			log.Println("a user sync already replaced the core, health restart skipped")
+			consecutiveFailures = 0
+		default:
 			log.Println("xray restarted")
 			consecutiveFailures = 0
 		}
@@ -111,6 +116,7 @@ func (x *Xray) checkXrayHealth(baseCtx context.Context) {
 				continue
 			}
 
+			observed := x.core.state.Load()
 			ctx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
 			_, err := x.GetSysStats(ctx)
 			cancel()
@@ -124,9 +130,9 @@ func (x *Xray) checkXrayHealth(baseCtx context.Context) {
 				log.Printf("xray health check failure %d/%d: %v", consecutiveFailures, maxFailures, err)
 
 				if !x.core.Started() {
-					restart("xray process is not running, restarting...")
+					restart("xray process is not running, restarting...", observed)
 				} else if consecutiveFailures >= maxFailures {
-					restart(fmt.Sprintf("xray health check failed %d times, restarting...", consecutiveFailures))
+					restart(fmt.Sprintf("xray health check failed %d times, restarting...", consecutiveFailures), observed)
 				}
 			} else {
 				consecutiveFailures = 0 // Reset on success
