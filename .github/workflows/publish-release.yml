@@ -14,6 +14,12 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout the full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Require a release tag that is not published yet
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,6 +49,33 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Require the tag commit to be on main or a release branch
+        run: |
+          if ! git for-each-ref --format='%(refname)' refs/remotes/origin/main 'refs/remotes/origin/release/**' > "$RUNNER_TEMP/branches"; then
+            echo "::error title=Cannot list the branches::git for-each-ref failed, so the tag commit cannot be checked against main and the release branches"
+            exit 1
+          fi
+          refs=()
+          while IFS= read -r ref; do
+            [ -n "${ref}" ] && refs+=("${ref}")
+          done < "$RUNNER_TEMP/branches"
+          if [ "${#refs[@]}" = 0 ]; then
+            echo "::error title=No branches to check::no origin/main or origin/release/** refs are present; the checkout must fetch them with fetch-depth 0"
+            exit 1
+          fi
+          on=""
+          for ref in "${refs[@]}"; do
+            if git merge-base --is-ancestor "${GITHUB_SHA}" "${ref}"; then
+              on="${ref#refs/remotes/origin/}"
+              break
+            fi
+          done
+          if [ -z "${on}" ]; then
+            echo "::error title=Tag is not on a released branch::${GITHUB_REF_NAME} (${GITHUB_SHA}) is on neither main nor a release/** branch, so its workflow files are not the reviewed ones; tag a commit that is on main or a release/** branch"
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is on ${on}; releasing ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     needs: resolve
@@ -203,6 +236,7 @@ jobs:
   publish:
     needs: [assets, image]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
       packages: write

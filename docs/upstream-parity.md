@@ -629,7 +629,7 @@ workflow that publishes something calls both of them first, on the same commit, 
 |---|---|---|---|
 | `image-branch.yml` | push to a branch whose name has no `/` | `image` | `ghcr.io/free-guy-ir/node:<branch>`, moved only while the branch still points at the built commit |
 | `image-manual.yml` | run by hand | `image` | `:edge` from `main`, the branch-named tag from another branch, or a custom tag; never `:latest` or a release-like tag |
-| `publish-release.yml` (Publish Release) | run by hand from a release tag | `assets`, `image`, `publish`, `latest` | the draft release's zips and checksums and `:<tag>`, then the release itself, then `:latest`, pointed at the image of GitHub's latest release |
+| `publish-release.yml` (Publish Release) | run by hand from a release tag on `main` or a `release/**` branch | `assets`, `image`, `publish`, `latest` | the draft release's zips and checksums and `:<tag>`, then the release itself, then `:latest`, pointed at the image of GitHub's latest release |
 
 So a red drift check blocks every image build and every release, by design: nothing ships while an upstream item is
 neither ported nor waived, even when the commit being built did not cause the drift. A new upstream commit turns every

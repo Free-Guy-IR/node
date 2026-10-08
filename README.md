@@ -101,7 +101,8 @@ policy check and the upstream drift check.
    gh workflow run publish-release.yml --ref v0.6.21
    ```
 
-The workflow refuses a branch, and a tag whose release is already published. It runs every gate on the tag's commit
+The workflow refuses a branch, a tag whose commit is on neither `main` nor a `release/**` branch, and a tag whose
+release is already published. It runs every gate on the tag's commit
 and builds the binaries and the multi-arch image. Then one job checks that the draft exists and the tag has not moved,
 uploads the zips and their `.sha256` files and tags the signed image `ghcr.io/free-guy-ir/node:<tag>`; if `:<tag>`
 already holds another image it fails, because release image tags are never repointed. Right before publishing it reads
@@ -113,6 +114,9 @@ runs and re-runs of older releases never move `:latest` backwards.
 If a gate fails, the draft stays a draft without assets: re-run the workflow after a transient failure, otherwise fix
 the cause on a new commit and release that under the next version. If a step fails after the image was tagged, re-run
 that run's failed jobs, which reuse its image; a new run builds a new image and is refused.
+
+The `publish` job runs in the `release` environment, so the owner can add a required reviewer there who approves
+every publish, and a tag policy that only `v*` tags may deploy.
 
 ## Release Guard
 
