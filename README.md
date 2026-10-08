@@ -135,8 +135,9 @@ delete them, keeps new release tags on reviewed commits.
   still points at the built commit.
 - **Build and Push Docker Image (Manual)** rebuilds an image by hand and never moves `:latest`. From `main` it moves
   `:edge`, and it can add a custom tag. From another branch it publishes only the branch-named tag. From a tag it
-  needs a custom tag. A custom tag may not be `latest`, `edge` or `main`, may not start with `v` and a digit, and may
-  not be the name of an existing release or tag.
+  needs a custom tag. A custom tag may not be `latest`, `edge` or `main`, may not start with `v` and a digit or with
+  `sha256-` (those names hold the image signatures and attestations), and may not be the name of an existing release,
+  tag or branch.
 
 # Contributors
 

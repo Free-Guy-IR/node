@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Custom image tag, from main or a tag only; never latest, edge, main, a v<digit> name or an existing release or tag name"
+        description: "Custom image tag, from main or a tag only; never latest, edge, main, a v<digit> or sha256- name, or the name of an existing release, tag or branch"
         required: false
 
 permissions:
@@ -69,7 +69,7 @@ jobs:
               exit 1
               ;;
           esac
-          bash scripts/image_tag_policy.sh "${tags[@]}"
+          bash scripts/image_tag_policy.sh --branch "${branch}" "${tags[@]}"
           echo "tags=${tags[*]}" >> "$GITHUB_OUTPUT"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
           echo "Image tags: ${tags[*]} (dispatched from ${GITHUB_REF}); :latest is never moved by this workflow." >> "$GITHUB_STEP_SUMMARY"

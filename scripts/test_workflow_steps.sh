@@ -381,7 +381,8 @@ IB=("${API[@]}" "CURL_MAP=$F/map_none")
 export CASE_WD=$root
 run_step it-main "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="main" BRANCH="main"
 run_step it-two "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="v0.6.21 latest" BRANCH=""
-run_step it-two-ok "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="nightly edge" BRANCH=""
+run_step it-two-ok "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="nightly edge" BRANCH="main"
+run_step it-two-edge-nobranch "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="nightly edge" BRANCH=""
 run_step it-empty "$WF_IMAGE" build "$CT" 0 "${IB[@]}" TAGS="" BRANCH=""
 reject it-empty stub curl
 run_step it-bang "$WF_IMAGE" build "$CT" 1 "${IB[@]}" TAGS="bad!" BRANCH=""
