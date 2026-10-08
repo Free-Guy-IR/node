@@ -164,10 +164,20 @@ must_refuse "drift step running under set +e" upstream-drift.yml \
   $'          set -o pipefail\n          log="$RUNNER_TEMP/upstream-drift.log"\n' $'          set +e\n          set -o pipefail\n          log="$RUNNER_TEMP/upstream-drift.log"\n'
 must_refuse "test suite step allowed to fail" run-tests.yml \
   $'      - name: Run regular test suite\n' $'      - name: Run regular test suite\n        continue-on-error: true\n'
-must_refuse "test suite step removed" run-tests.yml \
-  $'      - name: Run regular test suite\n        run: TEST_INTEGRATION=true go test ./... -v -p 1\n' ''
 must_refuse "test suite narrowed to one package tree" run-tests.yml \
-  $'go test ./... -v -p 1\n' $'go test ./pkg/... -v -p 1\n'
+  $'          TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"\n' $'          TEST_INTEGRATION=true go test -v -p 1 ./pkg/...\n'
+must_refuse "regular test suite replaced by a no-op" run-tests.yml \
+  $'          TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"\n' $'          echo skipped\n'
+must_refuse "race detector step removed" run-tests.yml \
+  $'      - name: Run the controller and backend tests under the race detector\n        run: TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...\n' ''
+must_refuse "race detector dropped from the controller and backend run" run-tests.yml \
+  $'go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...\n' $'go test -timeout 20m -v -p 1 ./controller/... ./backend/...\n'
+must_refuse "backend dropped from the race run" run-tests.yml \
+  $' ./controller/... ./backend/...\n' $' ./controller/...\n'
+must_refuse "Xray patch tests run without the race detector" run-tests.yml \
+  $'          CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches\n' $'          make test_xray_patches\n'
+must_refuse "Xray patch guard replay removed" run-tests.yml \
+  $'      - name: Replay the image build\'s Xray patch guards\n        run: make test_xray_guards XRAY_GUARD_SRC="$RUNNER_TEMP/xray-guard-src"\n' ''
 must_refuse_cut "workflow policy job removed" run-tests.yml $'  workflow-policy:\n'
 must_refuse "branch image job forced to run by an expression" "$WF_BRANCH" \
   $'  image:\n    needs: [tests, drift]\n' $'  image:\n    needs: [tests, drift]\n    if: ${{ always() }}\n'

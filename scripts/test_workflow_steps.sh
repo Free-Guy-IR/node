@@ -31,6 +31,13 @@ SH
 cat >"$H/bin/make" <<'SH'
 #!/usr/bin/env bash
 echo "make $*" >>"$STUB_LOG"
+echo "make-env $* :: GOFLAGS=${GOFLAGS:-} CGO_ENABLED=${CGO_ENABLED:-}" >>"$STUB_LOG"
+for arg in "$@"; do
+  if [ -n "${MAKE_FAIL_TARGET:-}" ] && [ "$arg" = "$MAKE_FAIL_TARGET" ]; then
+    echo "make: *** [$arg] Error 1"
+    exit 2
+  fi
+done
 if [ -n "${MTP_PLAN:-}" ]; then
   n=$(( $(cat "$STUB_DIR/mtp_count" 2>/dev/null || echo 0) + 1 ))
   echo "$n" >"$STUB_DIR/mtp_count"
@@ -43,6 +50,63 @@ if [ -n "${MTP_PLAN:-}" ]; then
 fi
 cat "$MAKE_OUT"
 exit "${MAKE_RC:-0}"
+SH
+cat >"$H/bin/go" <<'SH'
+#!/usr/bin/env bash
+echo "go $*" >>"$STUB_LOG"
+case "${1:-}" in
+  list)
+    printf '%b' "${GO_LIST:-}"
+    exit 0
+    ;;
+  test) shift ;;
+  *) exit 0 ;;
+esac
+race=0
+pkgs=()
+for arg in "$@"; do
+  case "$arg" in
+    -race) race=1 ;;
+    -*) ;;
+    *) pkgs+=("$arg") ;;
+  esac
+done
+[ "$race" = 1 ] || exit 0
+for racy in ${GO_RACY:-}; do
+  rel=${racy#github.com/pasarguard/node/}
+  for pkg in ${pkgs[@]+"${pkgs[@]}"}; do
+    hit=0
+    case "$pkg" in
+      ./...) hit=1 ;;
+      */...)
+        tree=${pkg%/...}
+        tree=${tree#./}
+        case "$rel" in "$tree" | "$tree"/*) hit=1 ;; esac
+        ;;
+      *) if [ "$pkg" = "$racy" ] || [ "$pkg" = "./$rel" ]; then hit=1; fi ;;
+    esac
+    if [ "$hit" = 1 ]; then
+      echo "WARNING: DATA RACE"
+      echo "--- FAIL: TestRacy"
+      echo "FAIL $racy"
+      exit 1
+    fi
+  done
+done
+exit 0
+SH
+cat >"$H/bin/cp" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" = 2 ] && [ "$1" = /usr/local/bin/xray ]; then
+  echo "cp $*" >>"$STUB_LOG"
+  : >"$2"
+  exit 0
+fi
+exec /bin/cp "$@"
+SH
+cat >"$H/bin/install" <<'SH'
+#!/usr/bin/env bash
+echo "install $*" >>"$STUB_LOG"
 SH
 cat >"$H/bin/git" <<'SH'
 #!/usr/bin/env bash
@@ -356,6 +420,82 @@ reject mt-fff stub 'sleep 135'
 run_step mt-none "$WF_TESTS" mtproto-fronting "$MT_STEP" 1 MTP_PLAN="none"
 expect mt-none log 'ran no test'
 reject mt-none stub 'sleep'
+
+GL='github.com/pasarguard/node/backend\ngithub.com/pasarguard/node/backend/xray\ngithub.com/pasarguard/node/backend/wireguard\ngithub.com/pasarguard/node/cmd/node\ngithub.com/pasarguard/node/common\ngithub.com/pasarguard/node/controller\ngithub.com/pasarguard/node/controller/rpc\ngithub.com/pasarguard/node/pkg/stats\n'
+guard_caught=0
+guard_clean=0
+race_controller=0
+race_backend=0
+plain_overlap=0
+patch_race=0
+while IFS=$'\t' read -r job idx; do
+  [ ! -s "$H/steps/$WF_TESTS/$job/$idx.wd" ] || continue
+  script="$H/steps/$WF_TESTS/$job/$idx.sh"
+  if grep -q 'test_xray_guards' "$script"; then
+    name="cov-guard-fail-$job-$idx"
+    new_case "$name"
+    exec_step "$H/cases/$name" "$WF_TESTS" "$job" "$idx" MAKE_FAIL_TARGET=test_xray_guards
+    rc=$?
+    if [ "$rc" != 0 ] && grep -q '^make test_xray_guards' "$H/cases/$name/stub"; then
+      guard_caught=$((guard_caught + 1))
+    fi
+    name="cov-guard-pass-$job-$idx"
+    new_case "$name"
+    if exec_step "$H/cases/$name" "$WF_TESTS" "$job" "$idx"; then
+      guard_clean=$((guard_clean + 1))
+    fi
+  fi
+  if grep -q 'go test' "$script"; then
+    for racy in controller/rpc backend/xray; do
+      name="cov-race-${racy%%/*}-$job-$idx"
+      new_case "$name"
+      exec_step "$H/cases/$name" "$WF_TESTS" "$job" "$idx" GO_LIST="$GL" GO_RACY="github.com/pasarguard/node/$racy"
+      rc=$?
+      if [ "$rc" != 0 ] && grep -q 'DATA RACE' "$H/cases/$name/log"; then
+        case "$racy" in
+          controller/*) race_controller=$((race_controller + 1)) ;;
+          backend/*) race_backend=$((race_backend + 1)) ;;
+        esac
+      fi
+      if grep '^go test' "$H/cases/$name/stub" | grep -v -- ' -race' | grep -Eq '\./\.\.\.|/controller|/backend'; then
+        plain_overlap=$((plain_overlap + 1))
+      fi
+    done
+  fi
+  if grep -q 'test_xray_patches' "$script"; then
+    name="cov-patches-$job-$idx"
+    new_case "$name"
+    exec_step "$H/cases/$name" "$WF_TESTS" "$job" "$idx"
+    if grep -Eq '^make-env test_xray_patches :: GOFLAGS=[^ ]*-race[^ ]* CGO_ENABLED=1$' "$H/cases/$name/stub"; then
+      patch_race=$((patch_race + 1))
+    fi
+  fi
+done < <(awk -F'\t' -v wf="$WF_TESTS" '$1 == wf && $4 == "run" { print $2 "\t" $3 }' "$H/steps/index")
+if [ "$guard_caught" -ge 1 ] && [ "$guard_clean" -ge 1 ]; then
+  ok
+else
+  bad "no step of $WF_TESTS runs make test_xray_guards and fails with it (caught $guard_caught, clean pass $guard_clean), so a partial Xray patch edit passes the gate"
+fi
+if [ "$race_controller" -ge 1 ]; then
+  ok
+else
+  bad "a data race in controller/rpc passes the gate: no go test step of $WF_TESTS runs the controller tests under -race"
+fi
+if [ "$race_backend" -ge 1 ]; then
+  ok
+else
+  bad "a data race in backend/xray passes the gate: no go test step of $WF_TESTS runs the backend tests under -race"
+fi
+if [ "$plain_overlap" = 0 ]; then
+  ok
+else
+  bad "a go test run without -race in $WF_TESTS also covers the controller or backend packages, so they run twice"
+fi
+if [ "$patch_race" -ge 1 ]; then
+  ok
+else
+  bad "make test_xray_patches runs without GOFLAGS=-race and CGO_ENABLED=1, so the Xray patch packages are not race-tested"
+fi
 
 DS="Compare with every upstream branch, tag, release and advisory"
 for kind in ok unported crash die; do

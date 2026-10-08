@@ -44,9 +44,12 @@ jobs:
           cp /usr/local/bin/xray "$RUNNER_TEMP/xray-stock"
           echo "XRAY_STOCK_EXECUTABLE_PATH=$RUNNER_TEMP/xray-stock" >> "$GITHUB_ENV"
           make build_xray XRAY_OUTPUT="$RUNNER_TEMP/xray"
-          make test_xray_patches
+          CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches
           sudo install -m 0755 "$RUNNER_TEMP/xray" /usr/local/bin/xray
           /usr/local/bin/xray version
+
+      - name: Replay the image build's Xray patch guards
+        run: make test_xray_guards XRAY_GUARD_SRC="$RUNNER_TEMP/xray-guard-src"
 
       - name: install wg
         run: make install_wg
@@ -58,7 +61,23 @@ jobs:
           make generate_client_cert
 
       - name: Run regular test suite
-        run: TEST_INTEGRATION=true go test ./... -v -p 1
+        run: |
+          go list ./... > "$RUNNER_TEMP/packages"
+          packages=()
+          while IFS= read -r package; do
+            case "${package}" in
+              */controller | */controller/* | */backend | */backend/*) ;;
+              *) packages+=("${package}") ;;
+            esac
+          done < "$RUNNER_TEMP/packages"
+          if [ "${#packages[@]}" = 0 ]; then
+            echo "::error title=No packages to test::go list ./... left nothing outside controller and backend"
+            exit 1
+          fi
+          TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"
+
+      - name: Run the controller and backend tests under the race detector
+        run: TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...
 
       - name: Check Xray process status races
         run: go test -race ./backend/xray -run '^TestCoreStarted' -count=10 -timeout=120s

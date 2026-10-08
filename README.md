@@ -81,8 +81,9 @@ docker compose -f docker-compose.yml -f docker-compose.l2tp.yml up -d
 # Releasing
 
 Releases are published by CI, never by hand. A release gets its binaries and its image only after every gate passes on
-the release commit: the test suite, the real-kernel WireGuard tests, the MTProto fronting leg, govulncheck, the workflow
-policy check and the upstream drift check.
+the release commit: the test suite, the controller and backend tests under the race detector, the Xray patch tests
+under the race detector, the replay of the image build's Xray patch guards, the real-kernel WireGuard tests, the
+MTProto fronting leg, govulncheck, the workflow policy check and the upstream drift check.
 
 1. Tag the release commit and push the tag. Never move or reuse a tag that was already released.
 
