@@ -455,6 +455,39 @@ check pending-malformed-issue-with-date 2
 pending pending-issue-without-number 'taken with the next release until:2026-10-05 issue:x/y#z'
 check pending-issue-without-number 2
 
+branch_scope() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/upw" checkout -q -b pr-61
+  printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "P1 telemt backend"
+  p1=$(sha_of "$s/upw" P1)
+  git -C "$s/upw" checkout -q main
+  printf '%s rejected: upstream PR #61 (branch pr-61, open, not merged) collides with the fork mtproto backend; revisit if upstream merges it branch:pr-61\n' "$p1" >>"$s/waivers"
+  if [ "$2" = merged ]; then
+    git -C "$s/upw" merge -q --no-ff --no-edit pr-61
+    git -C "$s/upw" branch -q -D pr-61
+    git -C "$s/upw" tag v9.9.9
+  fi
+}
+
+branch_scope branch-scope-on-branch open
+check branch-scope-on-branch 0
+
+branch_scope branch-scope-after-merge merged
+check branch-scope-after-merge 1
+
+base branch-scope-lint-unmerged
+printf '%s rejected: upstream PR, open, not merged; revisit if upstream merges it\n' \
+  "$(sha_of "$tmp/branch-scope-lint-unmerged/upw" U1)" >>"$tmp/branch-scope-lint-unmerged/waivers"
+check branch-scope-lint-unmerged 2
+
+base branch-scope-malformed-token
+printf '%s rejected: upstream PR #61 branch, open, not merged; revisit if upstream merges it branch:\n' \
+  "$(sha_of "$tmp/branch-scope-malformed-token/upw" U1)" >>"$tmp/branch-scope-malformed-token/waivers"
+check branch-scope-malformed-token 2
+
 stub_curl
 base advisories-endless
 : >"$tmp/advisories-endless/stub.log"
