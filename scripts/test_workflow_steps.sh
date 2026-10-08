@@ -130,6 +130,11 @@ case "$1 ${2:-}" in
     printf '%s\n' "${GH_VIEW:-0}"
     exit 0
     ;;
+  "run list")
+    [ "${GH_RUNS_RC:-0}" = 0 ] || exit "$GH_RUNS_RC"
+    printf '%s\n' "${GH_RUNS:-[]}"
+    exit 0
+    ;;
 esac
 if [ "$1" != api ]; then
   exit "${GH_RC:-0}"
@@ -486,13 +491,14 @@ run_step rs-badname "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/t
 reject rs-badname stub curl
 
 FD="Find the draft release for this tag"
-printf '[{"tag_name":"v0.6.20","draft":false,"prerelease":false}]\n[{"tag_name":"v0.6.21","draft":true,"prerelease":false}]\n' >"$F/rel_pages.json"
-printf '[{"tag_name":"v0.6.21","draft":true,"prerelease":true}]' >"$F/rel_pre.json"
+printf '[{"id":120,"tag_name":"v0.6.20","draft":false,"prerelease":false}]\n[{"id":123,"tag_name":"v0.6.21","draft":true,"prerelease":false}]\n' >"$F/rel_pages.json"
+printf '[{"id":123,"tag_name":"v0.6.21","draft":true,"prerelease":true}]' >"$F/rel_pre.json"
 printf '[{"tag_name":"v0.6.20","draft":false,"prerelease":false}]' >"$F/rel_none.json"
 printf '[{"tag_name":"v0.6.21","draft":false,"prerelease":false}]' >"$F/rel_pub.json"
 printf '[{"tag_name":"v0.6.21","draft":true,"prerelease":false},{"tag_name":"v0.6.21","draft":true,"prerelease":false}]' >"$F/rel_two.json"
 run_step fd-pages "$WF_RELEASE" publish "$FD" 0 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_pages.json"
 expect fd-pages out '^prerelease=false$'
+expect fd-pages out '^id=123$'
 expect fd-pages stub 'gh api --paginate repos/Free-Guy-IR/node/releases\?per_page=100'
 run_step fd-pre "$WF_RELEASE" publish "$FD" 0 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_pre.json"
 expect fd-pre out '^prerelease=true$'
@@ -531,17 +537,82 @@ run_step up "$WF_RELEASE" publish "Upload the assets to the draft release" 0 "${
 expect up stub '^gh release upload v0.6.21 dist/\* --clobber$'
 
 TI="Tag the tested image"
-run_step ti-final "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false
-expect ti-final stub "^docker buildx imagetools create --tag $IMG:v0.6.21 --tag $IMG:latest $IMG@$DIG$"
-expect ti-final summary 'as v0.6.21 latest'
-run_step ti-pre "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.22-rc1 DIGEST="$DIG" PRERELEASE=true
+printf '%s %s\n' "$IMG:v0.6.21" "$DIG" >"$F/tags_same"
+printf '%s %s\n' "$IMG:v0.6.21" "$DIG2" >"$F/tags_taken"
+: >"$F/tags_none"
+run_step ti-final "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false DOCKER_TAGS="$F/tags_none"
+expect ti-final stub "^docker buildx imagetools create --tag $IMG:v0.6.21 $IMG@$DIG$"
+reject ti-final stub ":latest"
+run_step ti-pre "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.22-rc1 DIGEST="$DIG" PRERELEASE=true DOCKER_TAGS="$F/tags_none"
 expect ti-pre stub "^docker buildx imagetools create --tag $IMG:v0.6.22-rc1 $IMG@$DIG$"
+run_step ti-same "$WF_RELEASE" publish "$TI" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false DOCKER_TAGS="$F/tags_same"
+reject ti-same stub 'imagetools create'
+expect ti-same stub "imagetools inspect $IMG:v0.6.21"
+run_step ti-taken "$WF_RELEASE" publish "$TI" 1 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false DOCKER_TAGS="$F/tags_taken"
+reject ti-taken stub 'imagetools create'
+expect ti-taken log 'already points at'
+expect ti-taken log 're-run'
+run_step ti-registry "$WF_RELEASE" publish "$TI" 1 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" PRERELEASE=false DOCKER_INSPECT_ERROR="unauthorized: authentication required"
+reject ti-registry stub 'imagetools create'
 
 PB="Publish the release"
-mkdir -p "$F/pb/dist"
-printf x >"$F/pb/dist/a.zip"
-CASE_WD=$F/pb run_step pb "$WF_RELEASE" publish "$PB" 0 "${base[@]}" TAG=v0.6.21
-expect pb stub '^gh release edit v0.6.21 --draft=false$'
+printf '{"object":{"type":"commit","sha":"%s"}}' "$SHA" >"$F/tag_sha.json"
+printf '{"object":{"type":"commit","sha":"%s"}}' "$OTHER" >"$F/tag_other.json"
+printf '{"id":123,"draft":true}' >"$F/rel_draft.json"
+printf '{"id":123,"draft":false}' >"$F/rel_published.json"
+printf 'git/ref/tags/v0.6.21 0 %s\nreleases/123 0 %s\n' "$F/tag_sha.json" "$F/rel_draft.json" >"$F/map_pb_ok"
+printf 'git/ref/tags/v0.6.21 0 %s\nreleases/123 0 %s\n' "$F/tag_other.json" "$F/rel_draft.json" >"$F/map_pb_before"
+printf 'git/ref/tags/v0.6.21 0 %s\ngit/ref/tags/v0.6.21 0 %s\nreleases/123 0 %s\n' "$F/tag_sha.json" "$F/tag_other.json" "$F/rel_draft.json" >"$F/map_pb_after"
+printf 'git/ref/tags/v0.6.21 0 %s\nreleases/123 0 %s\n' "$F/tag_sha.json" "$F/rel_published.json" >"$F/map_pb_published"
+printf 'git/ref/tags/v0.6.21 1 %s\nreleases/123 0 %s\n' "$F/missing.json" "$F/rel_draft.json" >"$F/map_pb_unreadable"
+export CASE_WD=$root
+run_step pb-ok "$WF_RELEASE" publish "$PB" 0 "${base[@]}" TAG=v0.6.21 RELEASE_ID=123 GH_MAP="$F/map_pb_ok"
+expect pb-ok stub '^gh release edit v0.6.21 --draft=false$'
+expect pb-ok stub 'git/ref/tags/v0.6.21'
+reject pb-ok stub 'draft=true'
+run_step pb-moved-before "$WF_RELEASE" publish "$PB" 1 "${base[@]}" TAG=v0.6.21 RELEASE_ID=123 GH_MAP="$F/map_pb_before"
+reject pb-moved-before stub 'draft=false'
+expect pb-moved-before log 'Tag moved'
+run_step pb-moved-after "$WF_RELEASE" publish "$PB" 1 "${base[@]}" TAG=v0.6.21 RELEASE_ID=123 GH_MAP="$F/map_pb_after"
+expect pb-moved-after stub '^gh release edit v0.6.21 --draft=false$'
+expect pb-moved-after stub '^gh release edit v0.6.21 --draft=true$'
+expect pb-moved-after log 'draft again'
+run_step pb-published "$WF_RELEASE" publish "$PB" 1 "${base[@]}" TAG=v0.6.21 RELEASE_ID=123 GH_MAP="$F/map_pb_published"
+reject pb-published stub 'draft=false'
+expect pb-published log 'published while this run'
+run_step pb-unreadable "$WF_RELEASE" publish "$PB" nz "${base[@]}" TAG=v0.6.21 RELEASE_ID=123 GH_MAP="$F/map_pb_unreadable"
+reject pb-unreadable stub 'release edit'
+unset CASE_WD
+
+if grep -qxF "$(printf '%s\t%s\t%s\t%s\t%s' "$WF_RELEASE" latest publish publish-release-latest -)" "$H/steps/jobs"; then
+  ok
+else
+  bad "$WF_RELEASE has no job latest that needs publish and runs in the concurrency group publish-release-latest"
+  grep -F "$WF_RELEASE" "$H/steps/jobs" | sed 's/^/     | /'
+fi
+LT="Point :latest at the image of the latest release"
+printf 'releases/latest 200 {"tag_name":"v0.6.22"}\n' >"$F/map_latest_b"
+printf 'releases/latest 404 {}\n' >"$F/map_latest_none"
+printf 'releases/latest 500 {}\n' >"$F/map_latest_err"
+printf 'releases/latest 200 {"tag_name":"v0.6.23"}\n' >"$F/map_latest_noimage"
+printf 'releases/latest 200 {"tag_name":"a;b"}\n' >"$F/map_latest_bad"
+printf '%s %s\n%s %s\n%s %s\n' "$IMG:v0.6.21" "$DIG" "$IMG:v0.6.22" "$DIG2" "$IMG:latest" "$DIG" >"$F/tags_ab"
+printf '%s %s\n%s %s\n%s %s\n' "$IMG:v0.6.21" "$DIG" "$IMG:v0.6.22" "$DIG2" "$IMG:latest" "$DIG2" >"$F/tags_ab_done"
+run_step lt-older-run "$WF_RELEASE" latest "$LT" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" CURL_MAP="$F/map_latest_b" DOCKER_TAGS="$F/tags_ab"
+expect lt-older-run stub "^docker buildx imagetools create --tag $IMG:latest $IMG@$DIG2$"
+reject lt-older-run stub "create --tag $IMG:latest $IMG@$DIG$"
+run_step lt-done "$WF_RELEASE" latest "$LT" 0 "${base[@]}" TAG=v0.6.22 DIGEST="$DIG2" CURL_MAP="$F/map_latest_b" DOCKER_TAGS="$F/tags_ab_done"
+reject lt-done stub 'imagetools create'
+run_step lt-none "$WF_RELEASE" latest "$LT" 0 "${base[@]}" TAG=v0.6.22-rc1 DIGEST="$DIG2" CURL_MAP="$F/map_latest_none" DOCKER_TAGS="$F/tags_ab"
+reject lt-none stub 'imagetools create'
+run_step lt-apierr "$WF_RELEASE" latest "$LT" 1 "${base[@]}" TAG=v0.6.22 DIGEST="$DIG2" CURL_MAP="$F/map_latest_err" DOCKER_TAGS="$F/tags_ab"
+reject lt-apierr stub 'imagetools create'
+run_step lt-noimage "$WF_RELEASE" latest "$LT" 1 "${base[@]}" TAG=v0.6.23 DIGEST="$DIG2" CURL_MAP="$F/map_latest_noimage" DOCKER_TAGS="$F/tags_ab"
+reject lt-noimage stub 'imagetools create'
+run_step lt-badtag "$WF_RELEASE" latest "$LT" 1 "${base[@]}" TAG=v0.6.22 DIGEST="$DIG2" CURL_MAP="$F/map_latest_bad" DOCKER_TAGS="$F/tags_ab"
+reject lt-badtag stub 'imagetools'
+run_step lt-registry "$WF_RELEASE" latest "$LT" 1 "${base[@]}" TAG=v0.6.22 DIGEST="$DIG2" CURL_MAP="$F/map_latest_b" DOCKER_INSPECT_ERROR="unauthorized: authentication required"
+reject lt-registry stub 'imagetools create'
 
 GD="Turn a release published outside Publish Release back into a draft"
 run_step guard "$WF_GUARD" refuse-hand-published "$GD" 1 GH_TOKEN=t GH_REPO=Free-Guy-IR/node TAG=v0.6.21 ACTOR=someone
@@ -551,6 +622,15 @@ expect guard log 'Publish Release'
 expect guard log 'workflow_dispatch from the tag'
 expect guard log "gh workflow run $WF_RELEASE --ref v0.6.21"
 expect guard summary "gh workflow run $WF_RELEASE --ref v0.6.21"
+reject guard log 'had no tested assets'
+RUNS='[{"databaseId":77,"status":"in_progress","conclusion":"","url":"https://github.com/Free-Guy-IR/node/actions/runs/77"}]'
+run_step guard-run "$WF_GUARD" refuse-hand-published "$GD" 1 GH_TOKEN=t GH_REPO=Free-Guy-IR/node TAG=v0.6.21 ACTOR=someone GH_RUNS="$RUNS"
+expect guard-run stub '^gh release edit --draft=true -- v0.6.21$'
+expect guard-run log 'actions/runs/77'
+expect guard-run log 're-run'
+run_step guard-runs-fail "$WF_GUARD" refuse-hand-published "$GD" 1 GH_TOKEN=t GH_REPO=Free-Guy-IR/node TAG=v0.6.21 ACTOR=someone GH_RUNS_RC=1
+expect guard-runs-fail stub '^gh release edit --draft=true -- v0.6.21$'
+expect guard-runs-fail log "gh workflow run $WF_RELEASE --ref v0.6.21"
 run_step guard-dash "$WF_GUARD" refuse-hand-published "$GD" 1 GH_TOKEN=t GH_REPO=Free-Guy-IR/node TAG=-x ACTOR=someone
 expect guard-dash stub '^gh release edit --draft=true -- -x$'
 run_step guard-ghfail "$WF_GUARD" refuse-hand-published "$GD" nz GH_TOKEN=t GH_REPO=Free-Guy-IR/node TAG=v1 ACTOR=someone GH_RC=1
