@@ -29,12 +29,11 @@ type deviceModel struct {
 	events     []deviceEvent
 	closed     bool
 	afterClose int
+	syncDwell  time.Duration
 }
 
 func (d *deviceModel) configure(cfg wgtypes.Config) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	if d.closed {
 		d.afterClose++
 	}
@@ -49,6 +48,12 @@ func (d *deviceModel) configure(cfg wgtypes.Config) error {
 		d.peers[peer.PublicKey.String()] = struct{}{}
 	}
 	d.events = append(d.events, deviceEvent{restart: cfg.PrivateKey != nil, peers: d.sortedPeersLocked()})
+	dwell := d.syncDwell
+	d.mu.Unlock()
+
+	if cfg.PrivateKey == nil && dwell > 0 {
+		time.Sleep(dwell)
+	}
 	return nil
 }
 
@@ -269,6 +274,9 @@ func fireRestarts(wg *WireGuard, rng *rand.Rand, count int, within time.Duration
 func TestWireGuardRestartNeverAppliesAPeerSetOlderThanACommittedSync(t *testing.T) {
 	users := newSweepUsers(t, 6)
 	wg, device := newSweepWireGuard(t, []*common.User{users[0]})
+	device.mu.Lock()
+	device.syncDwell = 4 * time.Millisecond
+	device.mu.Unlock()
 	ctx := context.Background()
 	seed := uint64(time.Now().UnixNano())
 	t.Logf("seed %d", seed)
@@ -276,7 +284,7 @@ func TestWireGuardRestartNeverAppliesAPeerSetOlderThanACommittedSync(t *testing.
 
 	restartTotal := 0
 	for round := range 60 {
-		restarts := fireRestarts(wg, rng, 3, 2*time.Millisecond)
+		restarts := fireRestarts(wg, rng, 4, 5*time.Millisecond)
 
 		var err error
 		switch rng.IntN(3) {
@@ -307,7 +315,7 @@ func TestWireGuardRestartNeverAppliesAPeerSetOlderThanACommittedSync(t *testing.
 		if !slices.Equal(devicePeers, committed) {
 			t.Fatalf("round %d: the running device serves %v while the committed peer store holds %v", round, devicePeers, committed)
 		}
-		restartTotal += 3
+		restartTotal += 4
 	}
 
 	events, _, _ := device.snapshot()
