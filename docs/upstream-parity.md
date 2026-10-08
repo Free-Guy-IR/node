@@ -365,7 +365,14 @@ Heads checked:
 
 **mtg**
 
-- Nothing after the pin: no commit, no advisory, no release.
+- The node pins the fork `Free-Guy-IR/mtg` master. The drift check reads upstream `9seconds/mtg`, whose `master`
+  carries `d2722ef5` (PR #549, "doctor: validate fronting domain TLS certificate"). It is not reachable from the
+  fork pin and its message matches the `expired`/`untrusted` keywords, so it is flagged. It is waived as
+  `not-applicable`: it changes only `internal/cli/doctor.go`, the `mtg doctor` self-diagnostic command. The node
+  links the mtg library packages (`mtglib`, `network/v2`, `antireplay`, `ipblocklist`, `mtglib/obfuscation`) and
+  never builds or runs the `doctor` CLI, so the fronting-domain certificate probe is unreachable at the node's
+  runtime.
+- No mtg advisory and no mtg release after the pin.
 
 **node**
 
