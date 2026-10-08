@@ -176,6 +176,7 @@ dockerfile_applies_patch() {
       for (i = 1; i <= length(c); i++) {
         ch = substr(c, i, 1)
         if (sq) { out = out ch; if (ch == q) sq = 0; prev = ch; continue }
+        if (ch == "\\") { out = out substr(c, i, 2); prev = substr(c, i + 1, 1); i++; continue }
         if (dq) { out = out ch; if (ch == "\"") dq = 0; prev = ch; continue }
         if (ch == q) { sq = 1; out = out ch; prev = ch; continue }
         if (ch == "\"") { dq = 1; out = out ch; prev = ch; continue }
@@ -185,33 +186,169 @@ dockerfile_applies_patch() {
       }
       return out
     }
-    function first_word(c) {
-      sub(/^[ \t]+/, "", c)
-      if (match(c, /[ \t]/)) return substr(c, 1, RSTART - 1)
-      return c
+    function close_paren(s, k,   d, i, ch, sq, dq) {
+      d = 0
+      sq = 0
+      dq = 0
+      for (i = k; i <= length(s); i++) {
+        ch = substr(s, i, 1)
+        if (sq) { if (ch == q) sq = 0; continue }
+        if (ch == "\\") { i++; continue }
+        if (ch == "`") return 0
+        if (dq) {
+          if (ch == "\"") dq = 0
+          else if (ch == "$" && substr(s, i + 1, 1) == "(") { d++; i++ }
+          continue
+        }
+        if (ch == q) { sq = 1; continue }
+        if (ch == "\"") { dq = 1; continue }
+        if (ch == "(") d++
+        else if (ch == ")") { d--; if (d == 0) return i }
+      }
+      return 0
     }
-    function is_apply(c,   words, k, j, path) {
+    function split_cmds(s,   n, i, ch, two, cur, sq, dq, j) {
+      ns = 0
+      cur = ""
+      sq = 0
+      dq = 0
+      n = length(s)
+      i = 1
+      while (i <= n) {
+        ch = substr(s, i, 1)
+        if (sq) { cur = cur ch; if (ch == q) sq = 0; i++; continue }
+        if (ch == "\\") { cur = cur substr(s, i, 2); i += 2; continue }
+        if (ch == "$" && substr(s, i + 1, 1) == "(") {
+          if (substr(s, i + 2, 1) == "(") return 0
+          j = close_paren(s, i + 1)
+          if (!j) return 0
+          queue[++nq] = substr(s, i + 2, j - i - 2)
+          cur = cur substr(s, i, j - i + 1)
+          i = j + 1
+          continue
+        }
+        if (ch == "`") return 0
+        if (dq) { cur = cur ch; if (ch == "\"") dq = 0; i++; continue }
+        if (ch == q) { sq = 1; cur = cur ch; i++; continue }
+        if (ch == "\"") { dq = 1; cur = cur ch; i++; continue }
+        two = substr(s, i, 2)
+        if (two == "&&" || two == "||") { seg[++ns] = cur; segop[ns] = two; cur = ""; i += 2; continue }
+        if (ch == ";" || ch == "|" || ch == "&") { seg[++ns] = cur; segop[ns] = ch; cur = ""; i++; continue }
+        if (ch == "<" || ch == ">" || ch == "(" || ch == ")") return 0
+        cur = cur ch
+        i++
+      }
+      if (sq || dq) return 0
+      seg[++ns] = cur
+      segop[ns] = "end"
+      return 1
+    }
+    function classify(c,   w, nw, k, cmd, j, path, a) {
       sub(/^[ \t]+/, "", c)
       sub(/[ \t]+$/, "", c)
-      k = split(c, words, /[ \t]+/)
-      if (k < 3 || words[1] != "git" || words[2] != "apply") return 0
-      path = ""
-      for (j = 3; j <= k; j++) {
-        if (words[j] == "--verbose" || words[j] == "-v") continue
-        if (substr(words[j], 1, 1) == "-" || path != "") return 0
-        path = words[j]
+      nw = split(c, w, /[ \t]+/)
+      if (nw == 0) return "other"
+      k = 1
+      while (k <= nw && w[k] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+        a = w[k]
+        sub(/=.*/, "", a)
+        if (a !~ /^(CGO_ENABLED|GOOS|GOARCH|GOARM|GOAMD64)$/) return "other"
+        k++
       }
-      return path == "/patches/" name
+      if (k > nw) return "other"
+      if (k > 1) {
+        if (w[k] == "go" && w[k + 1] == "build") return build_args(w, nw, k + 2)
+        return "other"
+      }
+      if (w[k] == "!") {
+        k++
+        if (w[k] == "grep" || w[k] == "test") return "read"
+        return "other"
+      }
+      cmd = w[k]
+      if (cmd == "grep" || cmd == "test") return "read"
+      if (cmd == "true" && nw == k) return "read"
+      if (cmd == "go" && w[k + 1] == "build") return build_args(w, nw, k + 2)
+      if (cmd == "apk" && (w[k + 1] == "update" || w[k + 1] == "add")) return "setup"
+      if (cmd != "git") return "other"
+      if (w[k + 1] == "init" || w[k + 1] == "remote" || w[k + 1] == "fetch" || w[k + 1] == "checkout") {
+        for (j = k + 2; j <= nw; j++) if (w[j] ~ /^-(c|u)$|^--(upload-pack|config|exec|template|separate-git-dir|git-dir|work-tree)/) return "other"
+        return "setup"
+      }
+      if (w[k + 1] != "apply") return "other"
+      path = ""
+      for (j = k + 2; j <= nw; j++) {
+        if (w[j] == "--verbose" || w[j] == "-v") continue
+        if (substr(w[j], 1, 1) == "-" || path != "") return "other"
+        path = w[j]
+      }
+      if (path !~ /^\/patches\/[A-Za-z0-9._-]+$/) return "other"
+      return "apply:" substr(path, 10)
     }
-    function handle(s,   w, n, i, kw, args, nargs, from_flag, from_val, dest, bn, rest, c, op, prev, fw) {
+    function build_args(w, nw, j) {
+      for (; j <= nw; j++) if (w[j] ~ /^-(-)?(overlay|toolexec|modfile|mod|C|pgo|exec)(=|$)/) return "other"
+      return "build"
+    }
+    function sub_ok(   qi, si, cls) {
+      for (qi = 1; qi <= nq; qi++) {
+        if (!split_cmds(queue[qi])) return 0
+        for (si = 1; si <= ns; si++) {
+          if (segop[si] != "&&" && segop[si] != "|" && segop[si] != "end") return 0
+          cls = classify(seg[si])
+          if (cls == "read") continue
+          if (cls == "other") {
+            if (seg[si] ~ /^[ \t]*git[ \t]+rev-parse[ \t]+HEAD[ \t]*$/) continue
+          }
+          return 0
+        }
+      }
+      return 1
+    }
+    function run_xray(rest,   si, cls, prev, piped, x) {
+      if (substr(rest, 1, 1) == "[" || rest ~ /^[ \t]*--/) { tainted = 1; return }
+      rest = strip_comment(rest)
+      nq = 0
+      if (!split_cmds(rest)) { tainted = 1; return }
+      prev = "start"
+      for (si = 1; si <= ns; si++) {
+        if (segop[si] != "&&" && segop[si] != "|" && segop[si] != "end") tainted = 1
+        piped = (segop[si] == "|" || prev == "|")
+        cls = classify(seg[si])
+        if (cls != "read" && piped) tainted = 1
+        if (substr(cls, 1, 6) == "apply:") {
+          x = substr(cls, 7)
+          if (built) tainted = 1
+          apply_seen = 1
+          if (x == name) {
+            if (applied) tainted = 1
+            applied = 1
+          }
+        } else {
+          if (index(seg[si], "/patches")) tainted = 1
+          if (cls == "setup" && (apply_seen || built)) tainted = 1
+          if (cls == "build") {
+            if (!apply_seen) tainted = 1
+            built = 1
+          }
+          if (cls == "other") tainted = 1
+        }
+        prev = segop[si]
+      }
+      if (!sub_ok()) tainted = 1
+    }
+    function handle(s,   w, n, i, kw, rest, args, nargs, from_flag, from_val, dest, bn, a) {
       sub(/^[ \t]+/, "", s)
       n = split(s, w, /[ \t]+/)
       kw = toupper(w[1])
+      rest = substr(s, length(w[1]) + 1)
+      sub(/^[ \t]+/, "", rest)
       if (kw == "FROM") {
+        nstage++
         stage = ""
         for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
         return
       }
+      if ((kw == "ENV" || kw == "ARG") && index(s, "XRAY_EXECUTABLE_PATH")) tainted = 1
       if (kw == "COPY" || kw == "ADD") {
         nargs = 0
         from_flag = 0
@@ -227,44 +364,32 @@ dockerfile_applies_patch() {
         dest = args[nargs]
         bn = dest
         sub(/.*\//, "", bn)
-        if (bn == "xray" && from_flag && from_val != "xray-builder") tainted = 1
+        if (stage != "xray-builder" && bn == "xray") {
+          if (from_val != "xray-builder") tainted = 1
+          else xray_copied[nstage] = 1
+        }
         if (stage != "xray-builder") return
-        if (dest !~ /^\/patches(\/|$)/) return
+        if (dest !~ /^\/patches(\/|$)/) { tainted = 1; return }
         seen_patch_copy = 1
         if (kw == "COPY" && !from_flag && nargs == 2 && args[1] == "patches/" name && dest == "/patches/" name) copied = 1
         else if (dest == "/patches/" name || dest ~ /^\/patches\/?$/) tainted = 1
         return
       }
-      if (stage != "xray-builder") return
-      if (kw == "SHELL") { tainted = 1; return }
-      if (kw == "WORKDIR") { if (seen_patch_copy) tainted = 1; return }
-      if (kw != "RUN") return
-      rest = strip_comment(substr(s, 4))
-      prev = "start"
-      while (rest != "") {
-        if (match(rest, /&&|[|][|]|;|[|]|&/)) {
-          c = substr(rest, 1, RSTART - 1)
-          op = substr(rest, RSTART, RLENGTH)
-          rest = substr(rest, RSTART + RLENGTH)
-        } else {
-          c = rest
-          op = "end"
-          rest = ""
-        }
-        fw = first_word(c)
-        if (fw == "cd" || fw == "pushd" || fw == "popd") tainted = 1
-        if (index(c, "/patches/" name) > 0) {
-          if ((prev == "start" || prev == "&&") && (op == "end" || op == "&&") && is_apply(c)) {
-            if (applied) tainted = 1
-            else applied = 1
-          } else {
-            tainted = 1
-          }
-        }
-        prev = op
+      if (stage != "xray-builder") {
+        if (kw == "RUN" && index(s, "bin/xray")) tainted = 1
+        return
       }
+      if (kw == "ARG") {
+        a = rest
+        sub(/=.*/, "", a)
+        if (a !~ /^(TARGET|BUILD)[A-Z]*$|^XRAY_[A-Z0-9_]+$/) tainted = 1
+        return
+      }
+      if (kw == "WORKDIR") { if (seen_patch_copy) tainted = 1; return }
+      if (kw != "RUN") { tainted = 1; return }
+      run_xray(rest)
     }
-    BEGIN { in_hd = 0; nterm = 0 }
+    BEGIN { in_hd = 0; nterm = 0; nstage = 0 }
     in_hd {
       t = $0
       sub(/^[ \t]+/, "", t)
@@ -309,6 +434,8 @@ dockerfile_applies_patch() {
     }
     END {
       if (inst != "") handle(inst)
+      if (!xray_copied[nstage]) tainted = 1
+      if (!built) tainted = 1
       exit !(applied && copied && !tainted && !odd_escape)
     }'
 }
