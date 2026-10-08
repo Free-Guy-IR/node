@@ -480,7 +480,7 @@ if makefile_applies_xray_patches; then
   xray_build_note=$(printf '%s\n' "$dockerfile_text" | awk -v name= -v explain=1 -v q="'" "$dockerfile_program")
   [ -z "$xray_build_note" ] ||
     printf 'upstream-drift: xray: no patch header counts, because the Dockerfile'"'"'s xray build is not one the check can follow: %s\n' "$xray_build_note"
-  git ls-tree -r --name-only "$target_sha" -- patches/ >"$work/patch-files"
+  git ls-tree -r "$target_sha" -- patches/ | awk -F'\t' '$1 ~ /^100(644|755) blob / { print $2 }' >"$work/patch-files"
   while IFS= read -r patch_path; do
     case "$patch_path" in
       patches/xray-*.patch) ;;
@@ -804,7 +804,10 @@ check_node() {
 }
 
 dockerfile_arg() {
-  git show "$target_sha:Dockerfile" | awk -F= -v key="$1" '$1 == "ARG " key && !found { sub(/[[:space:]]+$/, "", $2); print $2; found = 1 }'
+  printf '%s\n' "$dockerfile_text" | awk -v key="$1" '
+    toupper($1) == "ARG" { for (i = 2; i <= NF; i++) if (index($i, key "=") == 1) { n++; if (n == 1) v = substr($i, length(key) + 2) } }
+    END { if (n > 1) exit 3; if (n == 1) print v }' ||
+    die "Dockerfile declares ARG $1 with a value more than once, so the build may use another value than the check reads"
 }
 
 gomod_version() {
