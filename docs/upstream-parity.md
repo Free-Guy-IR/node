@@ -296,10 +296,16 @@ Why the rules look like this:
   - the Makefile must apply `patches/xray-*.patch` on a line that is not a comment, without `--check`, `--stat`,
     `--numstat`, `--summary`, `-R` or `--reverse`, and without ignoring the failure (`|| true`);
   - the Dockerfile at the checked commit is read the way docker reads it (continuation lines joined, comment lines
-    dropped). Its `xray-builder` stage must `COPY patches/<name> /patches/<name>`, nothing else may be copied or added
-    to that destination or to `/patches/` itself, and a `RUN` must run `git apply` on `/patches/<name>` with at most
-    `--verbose`, joined to the rest of the `RUN` only by `&&`, so that a failed apply fails the build. A Dockerfile that
-    changes the escape character counts no patch at all.
+    dropped, heredoc bodies of `COPY`/`RUN` skipped). Its `xray-builder` stage must `COPY patches/<name> /patches/<name>`,
+    nothing else may be copied or added to that destination or to `/patches/` itself, and a single `RUN` must run
+    `git apply` on `/patches/<name>` with at most `--verbose`, joined to the rest of the `RUN` only by `&&`, so that a
+    failed apply fails the build. The parser fails closed: it reads the command only up to an unquoted shell `#`
+    comment, and it counts nothing when the stage has a `SHELL` instruction, when a `WORKDIR` moves off the source
+    after the patch is copied, when the apply's `RUN` contains a `cd` or `pushd`, or when any command other than the
+    single recognised apply touches `/patches/<name>` (a reverse apply, `rm`, a redirect, a refetch, an exec-form
+    command, a second apply). The shipped binary must come from the stage that applied the patch: a `COPY` that
+    installs a file named `xray` into the image from a stage other than `xray-builder` counts no patch. A Dockerfile
+    that changes the escape character counts no patch at all.
   It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
   sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
@@ -980,6 +986,13 @@ Add one line to `.github/upstream-waivers.txt`:
 - The reason is mandatory and must say why, for example
   `superseded: the fork fixed this in <fork sha>` or `not-applicable: upstream release tooling`. A `pending` reason
   names the release or project that will take it.
+- A waiver for work that lives only on a branch must say so with a `branch:<ref>` token (for example `branch:pr-61`).
+  The node commit and node merge checks then grant `WAIVED` only while every upstream ref that contains the commit is
+  one of the named branches. The day upstream merges that branch into another ref, deletes it and tags a release, the
+  commit becomes reachable from a mainline ref or a tag, and the item turns `UNPORTED` with a message naming the refs
+  that now reach it. Several `branch:` tokens are allowed. A waiver whose reason says the upstream work is unmerged
+  (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:` token is a malformed line, so
+  the scope cannot be forgotten; the check exits 2. A malformed `branch:` token also exits 2.
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
@@ -1005,9 +1018,13 @@ bash scripts/upstream_drift.sh
   - The check follows the `rel="next"` Link header of each response, the cursor pagination both advisory endpoints
     use. An earlier `&page=N` was ignored by the API, and it looped forever at 100 or more advisories.
   - A next link outside the API URL, or a listing longer than the bound, stops the run with an error.
-- `bash scripts/upstream_drift_test.sh` runs the check against 24 synthetic repositories: ours-merges, evil and
-  side-dropping merges, waiver dates, patch scoping, a large patch, and advisory paging through a stubbed curl. It needs
-  no network, and each case runs under `CASE_TIME_LIMIT` seconds (default 60).
+- `bash scripts/upstream_drift_test.sh` runs the check against synthetic repositories: ours-merges, evil and
+  side-dropping merges, waiver dates, patch scoping, the Dockerfile apply shapes (shell comments, heredoc bodies, a
+  no-op `SHELL`, a moved `WORKDIR`, a `cd`, reverse applies and refetches, an exec-form revert, a binary copied from
+  another stage), branch-scoped waivers before and after a merge, a large patch, and advisory paging through a stubbed
+  curl. It needs no network, and each case runs under `CASE_TIME_LIMIT` seconds (default 60). The harness counts the
+  cases it declares against the cases it runs and fails loudly if it stops early, so a silent abort can never read as a
+  pass.
 - `UPSTREAM_URL`, `UPSTREAM_SLUG` and `UPSTREAM_WAIVERS` override the defaults.
 - A shallow clone is refused, because commits behind the shallow boundary are invisible, which makes the result wrong
   in both directions. `DRIFT_ALLOW_SHALLOW=1` runs anyway with a warning, for a quick local look only. Some local
