@@ -25,7 +25,7 @@ var writeScopes = map[string]map[string][]string{
 	"image-branch.yml":    {"image": {"packages", "id-token"}},
 	"image-manual.yml":    {"image": {"packages", "id-token"}},
 	"image.yml":           {"build": {"packages", "id-token"}},
-	"publish-release.yml": {"image": {"packages", "id-token"}, "publish": {"contents", "packages"}},
+	"publish-release.yml": {"image": {"packages", "id-token"}, "publish": {"contents", "packages"}, "latest": {"packages"}},
 	"release-guard.yml":   {"refuse-hand-published": {"contents"}},
 }
 

@@ -10,3 +10,4 @@
 /scripts/test_workflow_policy.sh @Free-Guy-IR
 /scripts/test_image_tag_policy.sh @Free-Guy-IR
 /scripts/test_workflow_steps.sh @Free-Guy-IR
+/scripts/release_tag_commit.sh @Free-Guy-IR

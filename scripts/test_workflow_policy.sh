@@ -193,7 +193,7 @@ must_refuse "local composite action" upstream-drift.yml \
 for owned in /.github/workflows/ /.github/actions/ /.github/CODEOWNERS /.github/upstream-waivers.txt \
   /scripts/workflow_policy.sh /scripts/workflowgate/ /scripts/workflow_gates.lock /scripts/image_tag_policy.sh \
   /scripts/upstream_drift.sh /scripts/test_workflow_policy.sh /scripts/test_image_tag_policy.sh \
-  /scripts/test_workflow_steps.sh; do
+  /scripts/test_workflow_steps.sh /scripts/release_tag_commit.sh; do
   if awk -v path="$owned" '$1 == path && NF > 1 { found = 1 } END { exit !found }' .github/CODEOWNERS; then
     printf 'ok   CODEOWNERS covers %s\n' "$owned"
   else

@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Turn a release published outside Publish Release back into a draft
         env:
@@ -22,14 +23,26 @@ jobs:
         run: |
           gh release edit --draft=true -- "${TAG}"
           how="gh workflow run publish-release.yml --ref ${TAG}"
-          msg="${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again. To publish it correctly, run the Publish Release workflow by workflow_dispatch from the tag ${TAG}: ${how}"
+          run_note=""
+          if runs=$(gh run list --workflow publish-release.yml --branch "${TAG}" --limit 1 --json databaseId,status,conclusion,url); then
+            url=$(jq -r '.[0].url // empty' <<< "${runs}")
+            state=$(jq -r '.[0] // {} | [.status, .conclusion] | map(select(. != null and . != "")) | join(", ")' <<< "${runs}")
+            if [ -n "${url}" ]; then
+              run_note="The latest Publish Release run for ${TAG} is ${url} (${state}). If it already uploaded the assets and tagged the image, re-run its failed jobs, or its publish job, once it has finished; that reuses its image. "
+            fi
+          fi
+          msg="${ACTOR} published ${TAG} outside the Publish Release workflow, so it is a draft again. ${run_note}Otherwise run the Publish Release workflow by workflow_dispatch from the tag ${TAG}: ${how}"
           echo "::error title=Release turned back into a draft::${msg}"
           {
             echo "## Release turned back into a draft"
             echo
-            echo "${ACTOR} published ${TAG} outside the Publish Release workflow, so it had no tested assets or image. It is a draft again."
+            echo "${ACTOR} published ${TAG} outside the Publish Release workflow, so it is a draft again."
             echo
-            echo "To publish it correctly, run the Publish Release workflow by workflow_dispatch from the tag ${TAG}:"
+            if [ -n "${run_note}" ]; then
+              echo "${run_note}"
+              echo
+            fi
+            echo "Otherwise run the Publish Release workflow by workflow_dispatch from the tag ${TAG}:"
             echo
             echo '```'
             echo "${how}"

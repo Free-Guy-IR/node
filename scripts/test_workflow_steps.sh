@@ -509,6 +509,7 @@ expect fd-pub log 'not a draft any more'
 run_step fd-two "$WF_RELEASE" publish "$FD" 1 "${base[@]}" TAG=v0.6.21 GH_RELEASES="$F/rel_two.json"
 
 TC="Check that the tag still points at the tested commit"
+export CASE_WD=$root
 run_step tc-light "$WF_RELEASE" publish "$TC" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
 run_step tc-annot "$WF_RELEASE" publish "$TC" 0 "${base[@]}" TAG=v0.6.21 DIGEST="$DIG" GH_REF="{\"object\":{\"type\":\"tag\",\"sha\":\"$TAGOBJ\"}}" GH_TAGOBJ="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
 expect tc-annot stub "git/tags/$TAGOBJ"
@@ -516,6 +517,7 @@ run_step tc-moved "$WF_RELEASE" publish "$TC" 1 "${base[@]}" TAG=v0.6.21 DIGEST=
 expect tc-moved log 'Tag moved::v0.6.21 now points at commit 2222'
 run_step tc-nodigest "$WF_RELEASE" publish "$TC" 1 "${base[@]}" TAG=v0.6.21 DIGEST="" GH_REF="{\"object\":{\"type\":\"commit\",\"sha\":\"$SHA\"}}"
 expect tc-nodigest log 'No image digest'
+unset CASE_WD
 
 VC="Verify the asset checksums"
 mkdir -p "$F/vc-ok/dist" "$F/vc-bad/dist" "$F/vc-empty/dist"
@@ -584,6 +586,14 @@ run_step pb-unreadable "$WF_RELEASE" publish "$PB" nz "${base[@]}" TAG=v0.6.21 R
 reject pb-unreadable stub 'release edit'
 unset CASE_WD
 
+for needed in "$WF_BRANCH image tests,drift" "$WF_MANUAL image tags,tests,drift" "$WF_RELEASE image tests,drift" "$WF_RELEASE publish assets,image"; do
+  read -r wf job deps <<<"$needed"
+  if awk -F'\t' -v wf="$wf" -v job="$job" -v deps="$deps" '$1 == wf && $2 == job && $3 == deps { found = 1 } END { exit !found }' "$H/steps/jobs"; then
+    ok
+  else
+    bad "$wf job $job does not need exactly $deps"
+  fi
+done
 if grep -qxF "$(printf '%s\t%s\t%s\t%s\t%s' "$WF_RELEASE" latest publish publish-release-latest -)" "$H/steps/jobs"; then
   ok
 else

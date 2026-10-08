@@ -103,10 +103,16 @@ policy check and the upstream drift check.
 
 The workflow refuses a branch, and a tag whose release is already published. It runs every gate on the tag's commit
 and builds the binaries and the multi-arch image. Then one job checks that the draft exists and the tag has not moved,
-uploads the zips and their `.sha256` files, tags the signed image `ghcr.io/free-guy-ir/node:<tag>` (and `:latest`
-unless the draft is a pre-release), and publishes the draft. If a gate fails, the draft stays a draft without assets:
-re-run the workflow after a transient failure, otherwise fix the cause on a new commit and release that under the next
-version.
+uploads the zips and their `.sha256` files and tags the signed image `ghcr.io/free-guy-ir/node:<tag>`; if `:<tag>`
+already holds another image it fails, because release image tags are never repointed. Right before publishing it reads
+the tag and the draft again, and refuses when the tag moved or the release was published meanwhile; right after
+publishing it reads the tag once more and turns the release back into a draft when the tag moved. Last, a job that only
+one Publish Release run at a time may enter points `:latest` at the image of GitHub's latest release, so overlapping
+runs and re-runs of older releases never move `:latest` backwards.
+
+If a gate fails, the draft stays a draft without assets: re-run the workflow after a transient failure, otherwise fix
+the cause on a new commit and release that under the next version. If a step fails after the image was tagged, re-run
+that run's failed jobs, which reuse its image; a new run builds a new image and is refused.
 
 ## Release Guard
 
@@ -117,6 +123,11 @@ workflow_dispatch from the release tag:
 ```bash
 gh workflow run publish-release.yml --ref vX.Y.Z
 ```
+
+When a Publish Release run exists for that tag, the Release Guard message names it. Publish Release refuses to publish
+a release that stopped being a draft during the run, so a human publish that lands before its last check fails the run;
+re-run its failed jobs once the release is a draft again. A human publish that lands after that check is still turned
+back into a draft by Release Guard while the run reports success; then re-run that run's publish job.
 
 A release event runs the workflow files of the tagged commit, so Release Guard covers only tags whose commit
 contains `.github/workflows/release-guard.yml`. Older tags and branches carry the old ungated `docker-build.yml`,
@@ -129,8 +140,8 @@ delete them, keeps new release tags on reviewed commits.
 
 ## Image tags
 
-- `:<release tag>` and `:latest` are moved only by Publish Release. `:latest` points at the most recently published
-  non-prerelease release. Release image tags are immutable.
+- `:<release tag>` and `:latest` are moved only by Publish Release. `:latest` points at the image of GitHub's latest
+  release, the most recently published non-prerelease release. Release image tags are immutable.
 - `:main`, `:dev` and the other branch tags are moved by the branch build on every push, and only while the branch
   still points at the built commit.
 - **Build and Push Docker Image (Manual)** rebuilds an image by hand and never moves `:latest`. From `main` it moves
