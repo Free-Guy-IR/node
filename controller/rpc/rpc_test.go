@@ -98,7 +98,7 @@ func TestMain(m *testing.M) {
 		fatalf("Failed to read config file: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctxWithSession, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctxWithSession, sharedNodeStartTimeout())
 	_, err = client.Start(ctx, &common.Backend{
 		Type:      common.BackendType_XRAY,
 		Config:    string(configFile),

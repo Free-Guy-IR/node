@@ -79,7 +79,7 @@ func TestMain(m *testing.M) {
 
 	url := fmt.Sprintf("https://%s", addr)
 
-	createAuthenticatedRequest := func(method, endpoint string, data proto.Message, response proto.Message) error {
+	authenticatedRequest := func(httpClient *http.Client, method, endpoint string, data proto.Message, response proto.Message) error {
 		body, err := proto.Marshal(data)
 		if err != nil {
 			return err
@@ -94,7 +94,7 @@ func TestMain(m *testing.M) {
 			req.Header.Set("Content-Type", "application/x-protobuf")
 		}
 
-		do, err := client.Do(req)
+		do, err := httpClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -105,6 +105,10 @@ func TestMain(m *testing.M) {
 			return err
 		}
 		return nil
+	}
+
+	createAuthenticatedRequest := func(method, endpoint string, data proto.Message, response proto.Message) error {
+		return authenticatedRequest(client, method, endpoint, data, response)
 	}
 
 	createAuthenticatedStreamingRequest := func(method, endpoint string) (io.ReadCloser, error) {
@@ -190,8 +194,10 @@ func TestMain(m *testing.M) {
 		Users:  []*common.User{user1, user2},
 	}
 
+	startClient := *client
+	startClient.Timeout = sharedNodeStartTimeout()
 	var baseInfoResp common.BaseInfoResponse
-	if err = createAuthenticatedRequest("POST", "/start", backendStartReq, &baseInfoResp); err != nil {
+	if err = authenticatedRequest(&startClient, "POST", "/start", backendStartReq, &baseInfoResp); err != nil {
 		fatalf("Failed to start backend: %v", err)
 	}
 

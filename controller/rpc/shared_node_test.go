@@ -2,12 +2,29 @@ package rpc
 
 import (
 	"errors"
+	"flag"
 	"net"
 	"strconv"
 	"syscall"
+	"time"
 )
 
-const serviceBindAttempts = 5
+const (
+	serviceBindAttempts           = 5
+	sharedNodeStartWithoutTimeout = 10 * time.Minute
+)
+
+func sharedNodeStartTimeout() time.Duration {
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	if f := flag.Lookup("test.timeout"); f != nil {
+		if timeout, ok := f.Value.(flag.Getter).Get().(time.Duration); ok && timeout > 0 {
+			return timeout
+		}
+	}
+	return sharedNodeStartWithoutTimeout
+}
 
 func listenOnAnUnusedLoopbackPort(listen func(addr string) error) (string, error) {
 	var err error
