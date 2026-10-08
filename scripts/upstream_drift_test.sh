@@ -669,6 +669,25 @@ xray_fixture xray-patch-odd-eval "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch && eval true" "$xray_makefile" X1
 check xray-patch-odd-eval 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-file-is-a-symlink "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+rm "$tmp/xray-patch-file-is-a-symlink/fork/patches/xray-fix.patch"
+ln -s "$(printf 'xray-real.patch\nUpstream: %s' "$(sha_of "$tmp/xray-patch-file-is-a-symlink/xray-up" X1)")" \
+  "$tmp/xray-patch-file-is-a-symlink/fork/patches/xray-fix.patch"
+git -C "$tmp/xray-patch-file-is-a-symlink/fork" add -A
+commit "$tmp/xray-patch-file-is-a-symlink/fork" -m "turn the patch into a symlink"
+check xray-patch-file-is-a-symlink 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-declared-twice "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-pin-declared-twice "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice/xray-up" X1)"
+check xray-pin-declared-twice 2 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-declared-twice-lowercase "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-pin-declared-twice-lowercase "arg XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice-lowercase/xray-up" X1)"
+check xray-pin-declared-twice-lowercase 2 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
