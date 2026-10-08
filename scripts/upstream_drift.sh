@@ -73,11 +73,22 @@ max_waiver_days=30
 : >"$work/waivers"
 : >"$work/pending"
 : >"$work/expired"
+: >"$work/waiver-branches"
 line_no=0
 while IFS= read -r line || [ -n "$line" ]; do
   line_no=$((line_no + 1))
   printf '%s\n' "$line" | grep -Eq "^([0-9a-f]{40}|$ghsa_re) ($categories): [^[:space:]].{8,}$" ||
     die "$waiver_file:$line_no: expected '<40-hex sha or GHSA id> <rejected|superseded|pending|not-applicable|allowed-merge>: <reason>', got: $line"
+  branch_tokens=$(printf '%s\n' "$line" | tr -s '[:space:]' '\n' | { grep -i '^branch:' || true; })
+  if [ -n "$branch_tokens" ]; then
+    bad_branch=$(printf '%s\n' "$branch_tokens" | { grep -Evx 'branch:[A-Za-z0-9._/-]+' || true; })
+    [ -z "$bad_branch" ] ||
+      die "$waiver_file:$line_no: a branch scope must be written branch:<ref>, got: $bad_branch"
+  fi
+  if printf '%s\n' "$line" | grep -Eiq 'not merged|never merged|revisit if upstream merges'; then
+    [ -n "$branch_tokens" ] ||
+      die "$waiver_file:$line_no: a waiver that says the upstream work is unmerged must scope it with a branch:<ref> token, so the check turns the item UNPORTED the day it is merged into any other ref; got: $line"
+  fi
   case "$line" in
     *" pending: "*)
       tokens=$(printf '%s\n' "${line#* pending: }" | tr -s '[:space:]' '\n')
@@ -106,6 +117,8 @@ while IFS= read -r line || [ -n "$line" ]; do
       ;;
   esac
   printf '%s\n' "$line" >>"$work/waivers"
+  [ -z "$branch_tokens" ] ||
+    printf '%s %s\n' "${line%% *}" "$(printf '%s\n' "$branch_tokens" | sed 's/^[Bb][Rr][Aa][Nn][Cc][Hh]://' | tr '\n' ' ')" >>"$work/waiver-branches"
 done <"$waiver_file"
 duplicates=$({ cut -d' ' -f1 "$work/waivers"; cut -d' ' -f1 "$work/expired"; } | sort | uniq -d | tr '\n' ' ')
 [ -z "$duplicates" ] || die "$waiver_file lists these ids more than once: $duplicates"
@@ -113,6 +126,19 @@ duplicates=$({ cut -d' ' -f1 "$work/waivers"; cut -d' ' -f1 "$work/expired"; } |
 
 waiver_for() {
   awk -v id="$1" '$1 == id { $1 = ""; sub(/^ /, ""); print; exit }' "$work/waivers"
+}
+
+waiver_branch_scope() {
+  awk -v id="$1" '$1 == id { $1 = ""; sub(/^ /, ""); print; exit }' "$work/waiver-branches"
+}
+
+node_scope_violations() {
+  allowed=" $2 "
+  { git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
+      awk -v a="$allowed" 'index(a, " " $0 " ") == 0 { print "branch " $0 }'
+    git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/tags/" |
+      awk '{ print "tag " $0 }'
+  } | paste -sd ',' - | sed 's/,/, /g'
 }
 
 trailer_tokens() {
@@ -546,6 +572,12 @@ check_node() {
       status=EMPTY
       detail="changes no file, nothing to port"
       empty=$((empty + 1))
+    elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
+      { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
+      status=UNPORTED
+      detail="the waiver scopes this to branch $scope, but the commit is now reachable from $outside; it was merged or released, so review it and either port it or rewrite the waiver without the branch: scope"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ]; then
       status=WAIVED
       detail=$waiver
@@ -585,6 +617,11 @@ check_node() {
     if [ -n "$trailer" ]; then
       status=PORTED
       detail="referenced by an Upstream/cherry-pick trailer ($trailer)"
+    elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
+      { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
+      status=UNPORTED
+      detail="the waiver scopes this to branch $scope, but the merge is now reachable from $outside; review it and either port it or rewrite the waiver without the branch: scope"
+      count_unported
     elif [ -n "$waiver" ]; then
       status=WAIVED
       detail=$waiver
