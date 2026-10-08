@@ -229,6 +229,13 @@ check pending-bad-date nonzero
 pending pending-bad-issue 'taken with the next release issue:none'
 check pending-bad-issue nonzero
 
+xray_final='FROM scratch
+COPY --from=xray-builder /out/xray /usr/local/bin/xray'
+
+xray_tail="RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+$xray_final"
+
 xray_patch() {
   f=$tmp/$1/fork
   mkdir -p "$f/patches"
@@ -240,7 +247,7 @@ xray_patch() {
   } >"$f/patches/$2"
   printf 'build_xray:\n\tfor patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done\n' >"$f/Makefile"
   if [ "$5" = applied ]; then
-    printf 'FROM scratch AS xray-builder\nCOPY patches/%s /patches/%s\nRUN git apply --verbose /patches/%s\n' "$2" "$2" "$2" >>"$f/Dockerfile"
+    printf 'FROM scratch AS xray-builder\nCOPY patches/%s /patches/%s\nRUN git apply --verbose /patches/%s\n%s\n' "$2" "$2" "$2" "$xray_tail" >>"$f/Dockerfile"
   fi
   git -C "$f" add -A
   commit "$f" -m "carry $2"
@@ -316,9 +323,18 @@ xray_fixture() {
     printf 'FROM scratch AS singbox-builder\nARG SINGBOX_VERSION=v1.0.0\n\n'
     printf 'FROM scratch AS xray-builder\nARG XRAY_COMMIT=%s\n' "$(sha_of "$s/xray-up" X0)"
     printf '%s\n' "$2"
+    printf '%s\n' "${5-$xray_tail}"
   } >"$f/Dockerfile"
   git -C "$f" add -A
   commit "$f" -m "carry xray-fix.patch"
+}
+
+xray_prepend() {
+  f=$tmp/$1/fork
+  { printf '%s\n' "$2"; cat "$f/Dockerfile"; } >"$f/Dockerfile.new"
+  mv "$f/Dockerfile.new" "$f/Dockerfile"
+  git -C "$f" add -A
+  commit "$f" -m "add a stage in front"
 }
 
 xray_makefile_commented='# build_xray:
@@ -442,6 +458,142 @@ printf 'FROM scratch\nCOPY --from=builder /out/xray /usr/local/bin/xray\n' >>"$t
 git -C "$tmp/xray-patch-binary-from-other-stage/fork" add -A
 commit "$tmp/xray-patch-binary-from-other-stage/fork" -m "ship the xray binary from a different stage"
 check xray-patch-binary-from-other-stage 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-checkout-after-apply "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && git checkout -- ." "$xray_makefile" X1
+check xray-patch-checkout-after-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-failure-ignored-later "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && true || true" "$xray_makefile" X1
+check xray-patch-failure-ignored-later 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-built-before-apply "$xray_copy
+RUN CGO_ENABLED=0 go build -o /out/xray ./main
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_final"
+check xray-patch-built-before-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-source-copied-over "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch
+COPY orig/core.go /xray-src/core.go" "$xray_makefile" X1
+check xray-patch-source-copied-over 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-prebuilt-binary "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -o /out/xray ./main
+COPY prebuilt/xray /out/xray
+
+$xray_final"
+check xray-patch-prebuilt-binary 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-final-stage-replaces-binary "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+RUN curl -fsSL -o /usr/local/bin/xray https://example.com/xray"
+check xray-patch-final-stage-replaces-binary 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-final-stage-copies-nothing "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -o /out/xray ./main
+
+FROM scratch
+RUN true"
+check xray-patch-final-stage-copies-nothing 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-env-in-builder "$xray_copy
+ENV GOFLAGS=-overlay=/overlay.json
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-env-in-builder 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-arg-in-builder "$xray_copy
+ARG GOFLAGS=-overlay=/overlay.json
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-arg-in-builder 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-reverted-in-a-substitution "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && test -z \"\$(git checkout -- .)\"" "$xray_makefile" X1
+check xray-patch-reverted-in-a-substitution 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-build-with-a-mount "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN --mount=type=cache,target=/xray-src CGO_ENABLED=0 go build -o /out/xray ./main
+
+$xray_final"
+check xray-patch-build-with-a-mount 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-build-with-an-overlay "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -overlay=/overlay.json -o /out/xray ./main
+
+$xray_final"
+check xray-patch-build-with-an-overlay 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-executable-path-overridden "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+ENV XRAY_EXECUTABLE_PATH=/opt/xray-stock"
+check xray-patch-executable-path-overridden 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-replaced-through-a-glob "$xray_copy
+RUN git init -q . && cp /tmp/evil /patches/xray-fix.pat?h && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-replaced-through-a-glob 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-applied-twice "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-applied-twice 1 DRIFT_COMPONENTS="node xray"
+
+xray_real_body=$(cat <<'BODY'
+ARG TARGETOS
+ARG TARGETARCH
+RUN apk update && apk add --no-cache git
+WORKDIR /xray-src
+COPY patches/xray-fix.patch /patches/xray-fix.patch
+RUN git init -q . \
+ && git remote add origin https://github.com/XTLS/Xray-core.git \
+ && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
+ && git checkout -q FETCH_HEAD \
+ && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
+ && git apply --verbose /patches/xray-fix.patch \
+ && grep -qF "if dest.Port == 0 && port != \"\" {" proxy/dokodemo/dokodemo.go \
+ && ! grep -rqE "(^|[^.[:alnum:]_])stats[.]GetOrRegister(Counter|OnlineMap)[(]" app proxy \
+ && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
+ && grep -B1 -F "close(bind.closedCh)" proxy/wireguard/bind.go | grep -qF "default:" \
+ && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \
+ && grep -q "google.golang.org/grpc v1.83.2$" go.mod
+BODY
+)
+xray_real_tail=$(cat <<'TAIL'
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags "-s -w -buildid=" \
+    -o /out/xray ./main
+
+FROM scratch
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
+TAIL
+)
+xray_fixture xray-patch-real-build-shape "$xray_real_body" "$xray_makefile" X1 "$xray_real_tail"
+check xray-patch-real-build-shape 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-hash-inside-words "$xray_copy
+RUN git init -q . && test a#b = a#b && test \"c #d\" = \"c #d\" && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-hash-inside-words 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-workdir-before-copy "WORKDIR /xray-src
+$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-workdir-before-copy 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-after-a-heredoc-elsewhere "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-patch-after-a-heredoc-elsewhere 'FROM scratch AS notes
+COPY <<EOF /notes.txt
+hello
+EOF'
+check xray-patch-after-a-heredoc-elsewhere 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-heredoc-fakes-a-stage "$xray_copy
+RUN true" "$xray_makefile" X1
+xray_prepend xray-patch-heredoc-fakes-a-stage 'FROM scratch AS notes
+COPY <<EOF /notes.txt
+FROM scratch AS xray-builder
+COPY patches/xray-fix.patch /patches/xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch
+RUN CGO_ENABLED=0 go build -o /out/xray ./main
+EOF'
+check xray-patch-heredoc-fakes-a-stage 1 DRIFT_COMPONENTS="node xray"
 
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
