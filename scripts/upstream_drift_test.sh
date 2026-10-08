@@ -418,6 +418,31 @@ xray_fixture xray-patch-replaced-before-apply "$xray_copy
 RUN curl -fsSL -o /patches/xray-fix.patch https://example.com/other.patch && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check xray-patch-replaced-before-apply 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-cd-before-apply "$xray_copy
+RUN cd /tmp && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-cd-before-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-workdir-after-copy "$xray_copy
+WORKDIR /tmp
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-workdir-after-copy 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-rm-after-apply "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch && rm /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-rm-after-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-exec-form-revert "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch
+RUN [\"git\", \"apply\", \"-R\", \"/patches/xray-fix.patch\"]" "$xray_makefile" X1
+check xray-patch-exec-form-revert 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-binary-from-other-stage "$xray_copy
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+printf 'FROM scratch\nCOPY --from=builder /out/xray /usr/local/bin/xray\n' >>"$tmp/xray-patch-binary-from-other-stage/fork/Dockerfile"
+git -C "$tmp/xray-patch-binary-from-other-stage/fork" add -A
+commit "$tmp/xray-patch-binary-from-other-stage/fork" -m "ship the xray binary from a different stage"
+check xray-patch-binary-from-other-stage 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
