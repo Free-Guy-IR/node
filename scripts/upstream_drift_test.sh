@@ -7,8 +7,22 @@ drift=${DRIFT_SCRIPT:-$repo_root/scripts/upstream_drift.sh}
 [ -f "$drift" ] || { printf 'upstream-drift-test: %s is missing\n' "$drift" >&2; exit 2; }
 drift=$(cd "$(dirname "$drift")" && pwd)/$(basename "$drift")
 
+self=${BASH_SOURCE[0]}
+declared=$(grep -c '^check ' "$self") || { printf 'upstream-drift-test: cannot count the cases declared in %s\n' "$self" >&2; exit 2; }
+ran=0
+finished=0
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/upstream-drift-test.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+finish() {
+  rc=$?
+  rm -rf "$tmp"
+  if [ "$finished" != 1 ]; then
+    printf 'upstream-drift-test: INCOMPLETE, the suite stopped after %d of %d cases with exit %s; this run proves nothing\n' "$ran" "$declared" "$rc"
+    [ "$rc" != 0 ] || rc=2
+  fi
+  exit "$rc"
+}
+trap finish EXIT
 
 export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.com
 export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.com
@@ -24,7 +38,7 @@ commit() {
 }
 
 sha_of() {
-  git -C "$1" log --all --format='%H %s' | awk -v s="$2" '$2 == s { print $1; exit }'
+  git -C "$1" log --all --format='%H %s' | awk -v s="$2" '$2 == s && !found { print $1; found = 1 }'
 }
 
 base() {
@@ -160,6 +174,7 @@ check() {
       failed=$((failed + 1))
       ;;
   esac
+  ran=$((ran + 1))
 }
 
 base clean
@@ -443,5 +458,10 @@ if grep -q 'attacker[.]example' "$tmp/advisories-foreign-next/stub.log"; then
   failed=$((failed + 1))
 fi
 
-printf 'upstream-drift-test: %d passed, %d failed\n' "$pass" "$failed"
+finished=1
+printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
+if [ "$ran" != "$declared" ]; then
+  printf 'upstream-drift-test: INCOMPLETE, %d cases ran but the suite declares %d\n' "$ran" "$declared"
+  exit 2
+fi
 [ "$failed" = 0 ]
