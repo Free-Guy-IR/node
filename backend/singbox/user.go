@@ -353,7 +353,7 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 			// would drop every session for nothing, so adopt the candidate
 			// (cheap, keeps other fields current) without one.
 			s.setConfig(candidate)
-		} else if reloadErr := s.hotReloadUsers(candidate); reloadErr == nil {
+		} else if reloadErr := s.hotReloadUsersUnlessShutDown(candidate); reloadErr == nil {
 			// The user set changed, but our custom sing-box lets us swap it live
 			// through the clash_api /inbounds/{tag}/users endpoint (like xray's
 			// HandlerService) - so the change takes effect with zero restart and
@@ -377,6 +377,15 @@ func (s *SingBox) flushBatch(b *singBoxPendingBatch) {
 
 	b.err = err
 	close(b.done)
+}
+
+func (s *SingBox) hotReloadUsersUnlessShutDown(candidate *Config) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.shutDown {
+		return errShutDown
+	}
+	return s.hotReloadUsers(candidate)
 }
 
 // hotReloadUsers pushes every indexed inbound's user set from the candidate

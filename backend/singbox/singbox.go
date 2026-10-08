@@ -14,6 +14,7 @@ package singbox
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 	"sync"
@@ -34,12 +35,15 @@ type SingBox struct {
 	cancelFunc context.CancelFunc
 	mu         sync.RWMutex
 	syncMu     sync.Mutex
+	shutDown   bool
 
 	batchMu sync.Mutex
 	batch   *singBoxPendingBatch
 
 	inbounds inboundLedger
 }
+
+var errShutDown = errors.New("sing-box has been shut down")
 
 // New builds and starts a sing-box process from sbConfig, syncs the initial
 // user set into it before the first start, dials its v2ray_api stats port, and
@@ -131,13 +135,24 @@ func (s *SingBox) Started() bool {
 }
 
 func (s *SingBox) Restart() error {
-	return s.restartCoreWithConfig(s.config)
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	return s.restartCoreWithConfig(s.activeConfig())
 }
 
 func (s *SingBox) restartCoreWithConfig(cfg *Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.shutDown {
+		return errShutDown
+	}
 	return s.core.Restart(cfg)
+}
+
+func (s *SingBox) activeConfig() *Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config
 }
 
 func (s *SingBox) setConfig(cfg *Config) {
@@ -149,6 +164,7 @@ func (s *SingBox) setConfig(cfg *Config) {
 func (s *SingBox) Shutdown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.shutDown = true
 
 	// Cancel context first to stop health checks and other goroutines.
 	s.cancelFunc()
