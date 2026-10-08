@@ -490,6 +490,23 @@ run_step rs-apierr "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/ta
 run_step rs-badname "$WF_RELEASE" resolve "$RS" 1 "${base[@]}" GITHUB_REF=refs/tags/v1+x GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1+x CURL_STATUS=404
 reject rs-badname stub curl
 
+RJ_REFS='refs/remotes/origin/main\nrefs/remotes/origin/release/v0.6.21\n'
+RJ_ENV=("${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=404 GIT_REFS="$RJ_REFS")
+run_job rj-unmerged "$WF_RELEASE" resolve 1 "${RJ_ENV[@]}" GIT_CONTAINS=""
+expect rj-unmerged log 'neither main nor a release'
+run_job rj-main "$WF_RELEASE" resolve 0 "${RJ_ENV[@]}" GIT_CONTAINS="refs/remotes/origin/main"
+expect rj-main summary 'is on main'
+run_job rj-release-branch "$WF_RELEASE" resolve 0 "${RJ_ENV[@]}" GIT_CONTAINS="refs/remotes/origin/release/v0.6.21"
+expect rj-release-branch summary 'is on release/v0.6.21'
+run_job rj-no-branches "$WF_RELEASE" resolve 1 "${base[@]}" GITHUB_REF=refs/tags/v0.6.21 GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.6.21 CURL_STATUS=404 GIT_REFS="" GIT_CONTAINS=""
+run_job rj-refs-fail "$WF_RELEASE" resolve nz "${RJ_ENV[@]}" GIT_REFS_RC=1 GIT_CONTAINS="refs/remotes/origin/main"
+reject rj-refs-fail stub 'merge-base'
+if awk -F'\t' -v wf="$WF_RELEASE" '$1 == wf && $2 == "publish" && $5 == "release" { found = 1 } END { exit !found }' "$H/steps/jobs"; then
+  ok
+else
+  bad "$WF_RELEASE job publish does not run in the environment release"
+fi
+
 FD="Find the draft release for this tag"
 printf '[{"id":120,"tag_name":"v0.6.20","draft":false,"prerelease":false}]\n[{"id":123,"tag_name":"v0.6.21","draft":true,"prerelease":false}]\n' >"$F/rel_pages.json"
 printf '[{"id":123,"tag_name":"v0.6.21","draft":true,"prerelease":true}]' >"$F/rel_pre.json"
