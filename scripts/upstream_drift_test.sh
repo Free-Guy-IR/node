@@ -595,6 +595,80 @@ RUN CGO_ENABLED=0 go build -o /out/xray ./main
 EOF'
 check xray-patch-heredoc-fakes-a-stage 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-builder-on-a-poisoned-stage "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-patch-builder-on-a-poisoned-stage 'FROM scratch AS poison
+RUN ln -sf /bin/true /usr/local/bin/git'
+perl -pi -e 's/^FROM scratch AS xray-builder$/FROM poison AS xray-builder/' "$tmp/xray-patch-builder-on-a-poisoned-stage/fork/Dockerfile"
+git -C "$tmp/xray-patch-builder-on-a-poisoned-stage/fork" add -A
+commit "$tmp/xray-patch-builder-on-a-poisoned-stage/fork" -m "build xray on the poisoned stage"
+check xray-patch-builder-on-a-poisoned-stage 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-syntax-directive "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-patch-syntax-directive '# syntax=example.com/another-frontend'
+check xray-patch-syntax-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-uppercase-escape-directive "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-patch-uppercase-escape-directive '# ESCAPE=`'
+check xray-patch-uppercase-escape-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-final-run-replaces-through-a-glob "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+RUN cp /opt/xray-stock /usr/local/bin/xr?y"
+check xray-patch-final-run-replaces-through-a-glob 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-final-copy-into-a-directory "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+COPY --from=builder /out/xray /usr/local/bin/"
+check xray-patch-final-copy-into-a-directory 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-two-xray-builder-stages "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+FROM scratch AS xray-builder
+RUN true
+
+$xray_final"
+check xray-patch-two-xray-builder-stages 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-odd-volume "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch
+VOLUME /xray-src" "$xray_makefile" X1
+check xray-patch-odd-volume 1 DRIFT_COMPONENTS="node xray"
+if ! grep -q 'is not one the check can follow: xray-builder has a VOLUME instruction' "$tmp/xray-patch-odd-volume/out"; then
+  printf 'FAIL     %-28s no note names the instruction the check refused\n' xray-patch-odd-volume
+  failed=$((failed + 1))
+fi
+if grep -q 'is not one the check can follow' "$tmp/xray-patch-real-build-shape/out"; then
+  printf 'FAIL     %-28s the real build shape was refused\n' xray-patch-real-build-shape
+  failed=$((failed + 1))
+fi
+
+xray_fixture xray-patch-odd-go-generate "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && go generate ./..." "$xray_makefile" X1
+check xray-patch-odd-go-generate 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-odd-sh-c "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && sh -c 'git checkout -- .'" "$xray_makefile" X1
+check xray-patch-odd-sh-c 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-odd-label "$xray_copy
+LABEL stage=xray
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-odd-label 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-odd-make "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN make build_xray
+
+$xray_final"
+check xray-patch-odd-make 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-odd-eval "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && eval true" "$xray_makefile" X1
+check xray-patch-odd-eval 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
