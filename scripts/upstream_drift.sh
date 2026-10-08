@@ -141,7 +141,29 @@ makefile_applies_xray_patches() {
 }
 
 dockerfile_applies_patch() {
-  printf '%s\n' "$dockerfile_text" | awk -v name="$1" '
+  printf '%s\n' "$dockerfile_text" | awk -v name="$1" -v q="'" '
+    function strip_comment(c,   out, i, ch, prev, sq, dq) {
+      out = ""
+      prev = ""
+      sq = 0
+      dq = 0
+      for (i = 1; i <= length(c); i++) {
+        ch = substr(c, i, 1)
+        if (sq) { out = out ch; if (ch == q) sq = 0; prev = ch; continue }
+        if (dq) { out = out ch; if (ch == "\"") dq = 0; prev = ch; continue }
+        if (ch == q) { sq = 1; out = out ch; prev = ch; continue }
+        if (ch == "\"") { dq = 1; out = out ch; prev = ch; continue }
+        if (ch == "#" && (prev == "" || prev == " " || prev == "\t")) break
+        out = out ch
+        prev = ch
+      }
+      return out
+    }
+    function first_word(c) {
+      sub(/^[ \t]+/, "", c)
+      if (match(c, /[ \t]/)) return substr(c, 1, RSTART - 1)
+      return c
+    }
     function is_apply(c,   words, k, j, path) {
       sub(/^[ \t]+/, "", c)
       sub(/[ \t]+$/, "", c)
@@ -155,7 +177,7 @@ dockerfile_applies_patch() {
       }
       return path == "/patches/" name
     }
-    function handle(s,   w, n, i, kw, args, nargs, from_flag, dest, body, rest, c, op, prev) {
+    function handle(s,   w, n, i, kw, args, nargs, from_flag, from_val, dest, bn, rest, c, op, prev, fw) {
       sub(/^[ \t]+/, "", s)
       n = split(s, w, /[ \t]+/)
       kw = toupper(w[1])
@@ -164,25 +186,34 @@ dockerfile_applies_patch() {
         for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
         return
       }
-      if (stage != "xray-builder") return
       if (kw == "COPY" || kw == "ADD") {
         nargs = 0
         from_flag = 0
+        from_val = ""
         for (i = 2; i <= n; i++) {
           if (substr(w[i], 1, 2) == "--") {
-            if (substr(w[i], 1, 6) == "--from") from_flag = 1
+            if (substr(w[i], 1, 7) == "--from=") { from_flag = 1; from_val = tolower(substr(w[i], 8)) }
+            else if (w[i] == "--from") { from_flag = 1; from_val = tolower(w[i + 1]); i++ }
             continue
           }
           args[++nargs] = w[i]
         }
         dest = args[nargs]
+        bn = dest
+        sub(/.*\//, "", bn)
+        if (bn == "xray" && from_flag && from_val != "xray-builder") tainted = 1
+        if (stage != "xray-builder") return
         if (dest !~ /^\/patches(\/|$)/) return
+        seen_patch_copy = 1
         if (kw == "COPY" && !from_flag && nargs == 2 && args[1] == "patches/" name && dest == "/patches/" name) copied = 1
         else if (dest == "/patches/" name || dest ~ /^\/patches\/?$/) tainted = 1
         return
       }
+      if (stage != "xray-builder") return
+      if (kw == "SHELL") { tainted = 1; return }
+      if (kw == "WORKDIR") { if (seen_patch_copy) tainted = 1; return }
       if (kw != "RUN") return
-      rest = substr(s, 4)
+      rest = strip_comment(substr(s, 4))
       prev = "start"
       while (rest != "") {
         if (match(rest, /&&|[|][|]|;|[|]|&/)) {
@@ -194,9 +225,34 @@ dockerfile_applies_patch() {
           op = "end"
           rest = ""
         }
-        if ((prev == "start" || prev == "&&") && (op == "end" || op == "&&") && is_apply(c)) applied = 1
+        fw = first_word(c)
+        if (fw == "cd" || fw == "pushd" || fw == "popd") tainted = 1
+        if (index(c, "/patches/" name) > 0) {
+          if ((prev == "start" || prev == "&&") && (op == "end" || op == "&&") && is_apply(c)) {
+            if (applied) tainted = 1
+            else applied = 1
+          } else {
+            tainted = 1
+          }
+        }
         prev = op
       }
+    }
+    BEGIN { in_hd = 0; nterm = 0 }
+    in_hd {
+      t = $0
+      sub(/^[ \t]+/, "", t)
+      sub(/[ \t]+$/, "", t)
+      for (hi = 1; hi <= nterm; hi++) {
+        if (term[hi] != "" && t == term[hi]) {
+          term[hi] = ""
+          left = 0
+          for (hj = 1; hj <= nterm; hj++) if (term[hj] != "") left = 1
+          if (!left) { in_hd = 0; nterm = 0 }
+          break
+        }
+      }
+      next
     }
     /^#[ \t]*escape[ \t]*=/ && !seen_instruction { odd_escape = 1 }
     /^[ \t]*#/ { next }
@@ -207,8 +263,22 @@ dockerfile_applies_patch() {
       continued = sub(/\\[ \t]*$/, "", line)
       inst = (inst == "") ? line : inst " " line
       if (!continued) {
+        tmp = inst
+        nterm = 0
+        while ((p = index(tmp, "<<")) > 0) {
+          tmp = substr(tmp, p + 2)
+          if (substr(tmp, 1, 1) == "-") tmp = substr(tmp, 2)
+          if (substr(tmp, 1, 1) == "\"" || substr(tmp, 1, 1) == q) tmp = substr(tmp, 2)
+          word = ""
+          while (tmp != "" && substr(tmp, 1, 1) ~ /[A-Za-z0-9_]/) {
+            word = word substr(tmp, 1, 1)
+            tmp = substr(tmp, 2)
+          }
+          if (word != "") term[++nterm] = word
+        }
         handle(inst)
         inst = ""
+        if (nterm > 0) in_hd = 1
       }
     }
     END {
