@@ -11,7 +11,8 @@ reason. An item is any of these:
 - a security-looking commit on any active branch of the four third-party upstreams;
 - a third-party release published after our pin.
 
-State as of 2026-09-24, release 0.6.21.
+State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-checked on 2026-10-07 (see
+[Node state on 2026-10-07](#node-state-on-2026-10-07)); the third-party sections still describe 2026-09-24.
 
 ## Fork point
 
@@ -37,6 +38,8 @@ State as of 2026-09-24, release 0.6.21.
 | `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead (2026-09-24); the node stays on grpc 1.83.2. The Go vulnerability database still lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), although the fix is verified in v1.84.0 `http2_server.go`, so the bump would turn govulncheck red. Waived as `pending` until the database entry is corrected. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24; ported in 0.6.21 by `40006fe`, which carries `Upstream: be2c445f7f486043d0efc4dfbe408c4a382869f8` |
 | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445` on 2026-09-24; ported in 0.6.21 by `f9c4f05` (merged into release/v0.6.21 at `01eed71`), which carries `Upstream: 4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` |
+| `3a3d5c58efff747a12ac57b014802f4f855896df` | deps: gopsutil 4.26.8 to 4.26.9 (#95) | new on upstream `dev` on 2026-10-01; ported in 0.6.21 by `53044cc`, which carries `Upstream: 3a3d5c58efff747a12ac57b014802f4f855896df`. Same module bumps and the same `go.sum` lines as upstream (purego v0.11.1, perfstat `88456608a4f6`, go-sysconf v0.4.0, numcpus v0.12.0) |
+| `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
@@ -135,25 +138,54 @@ Before porting it, all of this has to be true:
    - surfacing a failed xray user removal: the fork already does this, with a session revoke;
    - `Xray.Restart()` under `syncMu`: not in the fork yet.
 
+## Superseded: #86, `Started()` under the core mutex
+
+Upstream `7be885f` (#86, merged into `dev` on 2026-10-04) closes the data race between `Core.Started()` and the
+process watcher: `Started()` now takes `c.mu`, reads a `waitDone` channel instead of `ProcessState`, and `Start` and
+`Stop` call an unlocked `startedLocked()`.
+
+The fork closed the same race on 2026-09-10 and refuses the lock:
+
+- `9495ea7` first made `Started()` take `c.mu`, as #86 does. `cc27180` replaced that with a lock-free design:
+  `Start` and `Stop` publish an immutable `{cmd, waitDone}` snapshot into an `atomic.Pointer[coreState]` under `c.mu`,
+  and `Started()` reads the snapshot without any lock. Liveness comes from `waitDone`, which the watcher closes right
+  after `cmd.Wait()` returns, never from `ProcessState`.
+- `Started()` is called on every REST and gRPC request (middleware), by the health checks and by the panel status
+  endpoint. `Stop()` holds `c.mu` across the kill, a wait of up to 5 s on `waitDone`, `killProcessTree` and
+  `verifyProcessDead`. With #86 every one of those callers waits behind a stopping core.
+
+What the fork takes from #86 is its tests, which hold for both designs:
+
+- `backend/xray/core_started_test.go` keeps upstream's helper process and both tests. The helper publishes the
+  snapshot (`publishStateLocked()`) after it installs the child, because the fork's `Started()` reads only the
+  snapshot.
+- `TestCoreStartedProcessExit` checks the fork's stronger contract: `Started()` must answer within 2 s while the test
+  holds `c.mu`. Upstream checks `startedLocked()` there instead, because its `Started()` would block.
+- The `-race` CI step `go test -race ./backend/xray -run '^TestCoreStarted' -count=10` runs in the `test` job of
+  `run-tests.yml`, as upstream added it.
+- Mutants of `core.go` that the tests kill under `-race`: #86's own design (`Started()` takes `c.mu`): "Started
+  blocked while the core mutex was held", 3 of 3 runs; the pre-0.6.6 `ProcessState` read: DATA RACE, 3 of 3 runs; a
+  snapshot that ignores `waitDone`: "exited child reports running", 3 of 3 runs.
+
 Other open upstream work that was reviewed:
 
-- PR #86, "xray: synchronize process status checks": the fork has had an equivalent fix since node 0.6.6 (a
-  lock-free `coreState` snapshot and a `waitDone` channel in `backend/xray/core.go`).
+- PR #86 was merged as `7be885f`; see above.
 
 ## Other upstream branches
 
-The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-09-24 the branches were:
+The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-10-07 the branches were:
 
 | branch | head | status in the fork |
 |---|---|---|
 | `main` | `e9a9ba286413c404854b80c847b588b620426660` | merged (`v0.5.4`) |
-| `dev` | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | see the table above |
+| `dev` | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | see the table above |
 | `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` | fully in the fork's history, nothing to list |
 | `chunck` | `c194114eb1971d2e252fa1d117d655122c356d35` | `c194114` is a branch-only prototype; upstream squash-merged chunked user sync as `4f8568b` (#23), which the fork has. Superseded, waived |
 | `debug` | `8047fad98ec7e9955a405a97bf90a2411d8d6678` | `af0846e` and `8047fad` add diagnostic logging and were never merged upstream. Not applicable, waived |
 | `fix/xray-api` | `d09e5064d02555735ee815c8483dc88c42a8f669` | `2ae8ca9` and `d09e506` are pre-squash commits of `2cecc87` (#31), which the fork has. Superseded, waived |
 | `refactor/inbound-map-storage` | `72f7b4f0d0acde96cc642d2dd73defe5540921e6` | `0c44dc6` and `72f7b4f` are pre-squash commits of `c3f9e61` (#24), which the fork has. Superseded, waived |
 | `pr-61` | `4eb26fbd00387c88a4bcaf5c1d9e9e8dc4604b62` | 15 commits of the open PR #61. Rejected, waived (see below) |
+| `masque` | `b7442879ef0f67b692474e0e668d65f29df8de49` | new on 2026-10-01, an open feature branch that is not on `dev`. `243b818` adds a MASQUE proxy type with new panel-node fields in `common/service.proto`; `f0877ce` moves xray-core to the `v26.9.30` prerelease for native MASQUE accounts; `b744287` merges `dev` into it, and its own changes are the `go.mod`/`go.sum` resolution. Not ported: it changes the panel-node protocol and needs an Xray pin move past the fork's patched `v26.3.27`. Waived as `pending` until 2026-11-06, so the check fails again if it is not decided by then |
 
 All 42 upstream tags, `v0.0.1` to `v0.5.4`, are in the fork's history.
 
@@ -333,7 +365,14 @@ Heads checked:
 
 **mtg**
 
-- Nothing after the pin: no commit, no advisory, no release.
+- The node pins the fork `Free-Guy-IR/mtg` master. The drift check reads upstream `9seconds/mtg`, whose `master`
+  carries `d2722ef5` (PR #549, "doctor: validate fronting domain TLS certificate"). It is not reachable from the
+  fork pin and its message matches the `expired`/`untrusted` keywords, so it is flagged. It is waived as
+  `not-applicable`: it changes only `internal/cli/doctor.go`, the `mtg doctor` self-diagnostic command. The node
+  links the mtg library packages (`mtglib`, `network/v2`, `antireplay`, `ipblocklist`, `mtglib/obfuscation`) and
+  never builds or runs the `doctor` CLI, so the fronting-domain certificate probe is unreachable at the node's
+  runtime.
+- No mtg advisory and no mtg release after the pin.
 
 **node**
 
@@ -343,6 +382,22 @@ Heads checked:
 - `be2c445` (#93) and `4a9d0cf` (#90) are ported by `40006fe` and `f9c4f05`. The node section of the run of 2026-09-25 lists
   33 upstream commits outside the target: 7 ported, 1 empty, 25 waived, 0 unported. It also lists 5 fork commits with
   an upstream parent, all allowlisted, and 1 upstream merge with no changes of its own.
+
+### Node state on 2026-10-07
+
+Heads checked with `git ls-remote https://github.com/PasarGuard/node.git` on 2026-10-07:
+
+- `dev` `7be885ff5410ac7fdb92fa21cf7901a416be5f05`, `main` `e9a9ba286413c404854b80c847b588b620426660` (`v0.5.4`, still
+  the newest of the 42 tags);
+- `api-key` `11baa23f1caf`, `chunck` `c194114eb197`, `debug` `8047fad98ec7`, `fix/xray-api` `d09e5064d025`, `pr-61`
+  `4eb26fbd0038`, `refactor/inbound-map-storage` `72f7b4f0d0ac`, all unchanged since 2026-09-30;
+- `masque` `b7442879ef0f67b692474e0e668d65f29df8de49`, a new branch.
+
+New upstream commits since 2026-09-24:
+
+- `3a3d5c5` (#95, gopsutil 4.26.9) on `dev`: ported by `53044cc`.
+- `7be885f` (#86) on `dev`: tests and CI step ported, the `core.go` change superseded and waived.
+- `243b818`, `f0877ce` and the merge `b744287` on `masque`: pending, waived until 2026-11-06.
 
 0.6.21 takes five server-side Xray fixes early as patches. Each fix was written test-first: its test fails on the pin
 and passes with the fix.
