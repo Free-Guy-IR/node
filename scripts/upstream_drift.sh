@@ -246,7 +246,7 @@ dockerfile_program='
     segop[ns] = "end"
     return 1
   }
-  function classify(c,   w, nw, k, cmd, j, path, a) {
+  function classify(c,   w, nw, k, cmd, j, path, a, pinned) {
     sub(/^[ \t]+/, "", c)
     sub(/[ \t]+$/, "", c)
     nw = split(c, w, /[ \t]+/)
@@ -272,10 +272,37 @@ dockerfile_program='
     if (cmd == "grep" || cmd == "test") return "read"
     if (cmd == "true" && nw == k) return "read"
     if (cmd == "go" && w[k + 1] == "build") return build_args(w, nw, k + 2)
-    if (cmd == "apk" && (w[k + 1] == "update" || w[k + 1] == "add")) return "setup"
+    if (cmd == "apk") {
+      if (w[k + 1] == "update") {
+        for (j = k + 2; j <= nw; j++) if (w[j] !~ /^(-q|--quiet|--no-cache)$/) return "other"
+        return "setup"
+      }
+      if (w[k + 1] == "add") {
+        for (j = k + 2; j <= nw; j++) if (w[j] !~ /^(-q|--quiet|--no-cache|--update|-U)$/ && w[j] !~ /^[a-z0-9][a-z0-9._+-]*$/) return "other"
+        return "setup"
+      }
+      return "other"
+    }
     if (cmd != "git") return "other"
-    if (w[k + 1] == "init" || w[k + 1] == "remote" || w[k + 1] == "fetch" || w[k + 1] == "checkout") {
-      for (j = k + 2; j <= nw; j++) if (w[j] ~ /^-(c|u)$|^--(upload-pack|config|exec|template|separate-git-dir|git-dir|work-tree)/) return "other"
+    if (w[k + 1] == "init") {
+      for (j = k + 2; j <= nw; j++) if (w[j] !~ /^(-q|--quiet|\.)$/) return "other"
+      return "setup"
+    }
+    if (w[k + 1] == "remote") {
+      if (nw != k + 4 || w[k + 2] != "add" || w[k + 3] != "origin" || w[k + 4] !~ /^https:\/\/[A-Za-z0-9._\/-]+$/) return "other"
+      return "setup"
+    }
+    if (w[k + 1] == "fetch") {
+      pinned = 0
+      for (j = k + 2; j <= nw; j++) {
+        if (w[j] ~ /^"?\$\{?XRAY_COMMIT\}?"?$/) { pinned++; continue }
+        if (w[j] !~ /^(-q|--quiet|--no-tags|origin|[0-9]+|--depth|--depth=[0-9]+)$/) return "other"
+      }
+      if (pinned != 1) return "other"
+      return "setup"
+    }
+    if (w[k + 1] == "checkout") {
+      for (j = k + 2; j <= nw; j++) if (w[j] !~ /^(-q|--quiet|--detach|FETCH_HEAD)$/) return "other"
       return "setup"
     }
     if (w[k + 1] != "apply") return "other"
@@ -476,8 +503,8 @@ dockerfile_applies_patch() {
 
 : >"$work/applied-xray-patches"
 : >"$work/xray-patch-headers"
+xray_build_note=$(printf '%s\n' "$dockerfile_text" | awk -v name= -v explain=1 -v q="'" "$dockerfile_program")
 if makefile_applies_xray_patches; then
-  xray_build_note=$(printf '%s\n' "$dockerfile_text" | awk -v name= -v explain=1 -v q="'" "$dockerfile_program")
   [ -z "$xray_build_note" ] ||
     printf 'upstream-drift: xray: no patch header counts, because the Dockerfile'"'"'s xray build is not one the check can follow: %s\n' "$xray_build_note"
   git ls-tree -r "$target_sha" -- patches/ | awk -F'\t' '$1 ~ /^100(644|755) blob / { print $2 }' >"$work/patch-files"
@@ -983,6 +1010,11 @@ if enabled xray; then
     die "Dockerfile ARG XRAY_COMMIT is not a full commit sha: '$xray_commit'"
   check_thirdparty xray XTLS/Xray-core github.com/xtls/xray-core main \
     "$xray_commit" "Dockerfile ARG XRAY_COMMIT" "" ""
+  if [ -n "$xray_build_note" ]; then
+    printf '%-8s xray build: %s\n' UNPORTED "$xray_build_note"
+    printf '         the check cannot follow the xray build in the Dockerfile, so it cannot verify that the image builds the pin with the patches applied; write it in the shape docs/upstream-parity.md describes, or teach the check the new shape\n'
+    count_unported
+  fi
 fi
 
 if enabled sing-box; then
