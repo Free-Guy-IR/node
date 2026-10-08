@@ -688,6 +688,46 @@ RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefil
 xray_prepend xray-pin-declared-twice-lowercase "arg XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice-lowercase/xray-up" X1)"
 check xray-pin-declared-twice-lowercase 2 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-build-fetches-another-ref "$xray_copy
+RUN git init -q . && git fetch -q --depth 1 origin main && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-fetches-another-ref 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-followed-with-nothing-to-port "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+perl -pi -e "s/^ARG XRAY_COMMIT=.*/ARG XRAY_COMMIT=$(sha_of "$tmp/xray-build-followed-with-nothing-to-port/xray-up" X1)/" \
+  "$tmp/xray-build-followed-with-nothing-to-port/fork/Dockerfile"
+git -C "$tmp/xray-build-followed-with-nothing-to-port/fork" add -A
+commit "$tmp/xray-build-followed-with-nothing-to-port/fork" -m "pin the newest commit"
+check xray-build-followed-with-nothing-to-port 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-refused-with-nothing-to-port "$xray_copy
+LABEL stage=xray
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+perl -pi -e "s/^ARG XRAY_COMMIT=.*/ARG XRAY_COMMIT=$(sha_of "$tmp/xray-build-refused-with-nothing-to-port/xray-up" X1)/" \
+  "$tmp/xray-build-refused-with-nothing-to-port/fork/Dockerfile"
+git -C "$tmp/xray-build-refused-with-nothing-to-port/fork" add -A
+commit "$tmp/xray-build-refused-with-nothing-to-port/fork" -m "pin the newest commit"
+check xray-build-refused-with-nothing-to-port 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-overwritten-by-a-redirect "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && grep -c x go.mod > core.go" "$xray_makefile" X1
+check xray-patch-overwritten-by-a-redirect 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-apply-piped-into-a-check "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch | grep -q x" "$xray_makefile" X1
+check xray-patch-apply-piped-into-a-check 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-applied-after-the-build "$xray_copy
+COPY patches/xray-other.patch /patches/xray-other.patch
+RUN git init -q . && git apply --verbose /patches/xray-other.patch
+RUN CGO_ENABLED=0 go build -o /out/xray ./main
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_final"
+check xray-patch-applied-after-the-build 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-source-from-patches "$xray_copy
+RUN git init -q . && git fetch -q /patches/xray-source HEAD && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-source-from-patches 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
