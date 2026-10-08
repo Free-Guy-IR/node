@@ -3,11 +3,19 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/pasarguard/node/config"
 )
+
+const oldSharedNodeStartDeadline = 5 * time.Second
 
 func runASecondCopyOfThisTestBinary(t *testing.T, env ...string) {
 	t.Helper()
@@ -31,4 +39,18 @@ func runASecondCopyOfThisTestBinary(t *testing.T, env ...string) {
 
 func TestASecondCopyOfThisPackageStartsItsOwnSharedNodeWhileTheFirstRuns(t *testing.T) {
 	runASecondCopyOfThisTestBinary(t)
+}
+
+func TestTheSharedNodeWaitsForACoreThatStartsSlowerThanTheOldDeadline(t *testing.T) {
+	realXray, err := filepath.Abs(config.NewTestConfig(t.TempDir(), uuid.New()).XrayExecutablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowXray := filepath.Join(t.TempDir(), "xray")
+	delay := int((oldSharedNodeStartDeadline + time.Second).Seconds())
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" != version ]; then sleep %d; fi\nexec \"$PG_NODE_TEST_REAL_XRAY\" \"$@\"\n", delay)
+	if err := os.WriteFile(slowXray, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runASecondCopyOfThisTestBinary(t, "XRAY_EXECUTABLE_PATH="+slowXray, "PG_NODE_TEST_REAL_XRAY="+realXray)
 }
