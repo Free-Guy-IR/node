@@ -14,6 +14,12 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout the full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Require a release tag that is not published yet
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,6 +49,33 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Require the tag commit to be on main or a release branch
+        run: |
+          if ! git for-each-ref --format='%(refname)' refs/remotes/origin/main 'refs/remotes/origin/release/**' > "$RUNNER_TEMP/branches"; then
+            echo "::error title=Cannot list the branches::git for-each-ref failed, so the tag commit cannot be checked against main and the release branches"
+            exit 1
+          fi
+          refs=()
+          while IFS= read -r ref; do
+            [ -n "${ref}" ] && refs+=("${ref}")
+          done < "$RUNNER_TEMP/branches"
+          if [ "${#refs[@]}" = 0 ]; then
+            echo "::error title=No branches to check::no origin/main or origin/release/** refs are present; the checkout must fetch them with fetch-depth 0"
+            exit 1
+          fi
+          on=""
+          for ref in "${refs[@]}"; do
+            if git merge-base --is-ancestor "${GITHUB_SHA}" "${ref}"; then
+              on="${ref#refs/remotes/origin/}"
+              break
+            fi
+          done
+          if [ -z "${on}" ]; then
+            echo "::error title=Tag is not on a released branch::${GITHUB_REF_NAME} (${GITHUB_SHA}) is on neither main nor a release/** branch, so its workflow files are not the reviewed ones; tag a commit that is on main or a release/** branch"
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is on ${on}; releasing ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     needs: resolve
@@ -203,6 +236,7 @@ jobs:
   publish:
     needs: [assets, image]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
       packages: write
@@ -213,6 +247,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Find the draft release for this tag
         id: draft
         run: |
@@ -227,21 +266,19 @@ jobs:
             echo "::error title=Release already published::the release for ${TAG} is not a draft any more"
             exit 1
           fi
+          id=$(jq -r '.[0].id' "$RUNNER_TEMP/matches.json")
+          if ! [[ ${id} =~ ^[0-9]+$ ]]; then
+            echo "::error title=No release id::the draft release for ${TAG} has the id '${id}'"
+            exit 1
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
           echo "prerelease=$(jq -r '.[0].prerelease' "$RUNNER_TEMP/matches.json")" >> "$GITHUB_OUTPUT"
 
       - name: Check that the tag still points at the tested commit
         run: |
-          object=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
-          type=$(jq -r .object.type <<< "${object}")
-          sha=$(jq -r .object.sha <<< "${object}")
-          for _ in 1 2 3 4 5; do
-            [ "${type}" = tag ] || break
-            object=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}")
-            type=$(jq -r .object.type <<< "${object}")
-            sha=$(jq -r .object.sha <<< "${object}")
-          done
-          if [ "${type}" != commit ] || [ "${sha}" != "${GITHUB_SHA}" ]; then
-            echo "::error title=Tag moved::${TAG} now points at ${type} ${sha}, but the gates tested ${GITHUB_SHA}"
+          now=$(bash scripts/release_tag_commit.sh "${TAG}")
+          if [ "${now}" != "commit ${GITHUB_SHA}" ]; then
+            echo "::error title=Tag moved::${TAG} now points at ${now}, but the gates tested ${GITHUB_SHA}"
             exit 1
           fi
           if ! [[ ${DIGEST} =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -283,21 +320,112 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Tag the tested image
-        env:
-          PRERELEASE: ${{ steps.draft.outputs.prerelease }}
         run: |
-          tags=("${TAG}")
-          if [ "${PRERELEASE}" = false ]; then
-            tags+=(latest)
+          existing=""
+          if manifest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/inspect.err"); then
+            existing=$(jq -r .digest <<< "${manifest}")
+          elif ! grep -Eqi ': not found|manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+            echo "::error title=Registry lookup failed::cannot tell whether ${IMAGE}:${TAG} exists: $(tr '\n' ' ' < "$RUNNER_TEMP/inspect.err")"
+            exit 1
           fi
-          args=()
-          for tag in "${tags[@]}"; do
-            args+=(--tag "${IMAGE}:${tag}")
-          done
-          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
-          echo "Tagged ${IMAGE}@${DIGEST} as ${tags[*]}." >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "${existing}" ]; then
+            docker buildx imagetools create --tag "${IMAGE}:${TAG}" "${IMAGE}@${DIGEST}"
+            echo "Tagged ${IMAGE}@${DIGEST} as ${TAG}." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${existing}" = "${DIGEST}" ]; then
+            echo "${IMAGE}:${TAG} already points at ${DIGEST}, the image this run built." >> "$GITHUB_STEP_SUMMARY"
+          else
+            msg="${IMAGE}:${TAG} already points at ${existing}, and this run built ${DIGEST}. Release image tags are never repointed. If an earlier Publish Release run for ${TAG} set it, re-run that run's failed jobs, which reuse its own image; otherwise release this commit under the next version."
+            echo "::error title=Release image tag already taken::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Publish the release
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
         run: |
+          now=$(bash scripts/release_tag_commit.sh "${TAG}")
+          if [ "${now}" != "commit ${GITHUB_SHA}" ]; then
+            echo "::error title=Tag moved::${TAG} now points at ${now}, but the gates tested ${GITHUB_SHA}; the release stays a draft"
+            exit 1
+          fi
+          release=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")
+          if [ "$(jq -r .draft <<< "${release}")" != true ]; then
+            echo "::error title=Release published while this run was in progress::the release for ${TAG} is no longer a draft, so it was published outside this run, and Release Guard turns it back into a draft. Once it is a draft again, re-run this run's failed jobs; they reuse this run's image and assets."
+            exit 1
+          fi
           gh release edit "${TAG}" --draft=false
-          echo "Published ${TAG} at ${GITHUB_SHA} with $(find dist -type f | wc -l | tr -d ' ') asset files." >> "$GITHUB_STEP_SUMMARY"
+          after=$(bash scripts/release_tag_commit.sh "${TAG}") || after="an unreadable object"
+          if [ "${after}" != "commit ${GITHUB_SHA}" ]; then
+            gh release edit "${TAG}" --draft=true
+            echo "::error title=Tag moved while publishing::${TAG} now points at ${after}, but the gates tested ${GITHUB_SHA}; the release is a draft again"
+            exit 1
+          fi
+          echo "Published ${TAG} at ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+
+  latest:
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-release-latest
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/free-guy-ir/node
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Log in to the Container registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Point :latest at the image of the latest release
+        run: |
+          status=$(curl -sS -o "$RUNNER_TEMP/latest.json" -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/latest")
+          case "${status}" in
+            200) ;;
+            404)
+              echo "The repository has no published non-prerelease release, so :latest stays where it is." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+              ;;
+            *)
+              echo "::error title=Latest release lookup failed::GitHub returned HTTP ${status} for the latest release; :latest stays where it is"
+              exit 1
+              ;;
+          esac
+          latest=$(jq -r .tag_name "$RUNNER_TEMP/latest.json")
+          if ! [[ ${latest} =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error title=Latest release tag is not an image tag::'${latest}'; :latest stays where it is"
+            exit 1
+          fi
+          if ! manifest=$(docker buildx imagetools inspect "${IMAGE}:${latest}" --format '{{json .Manifest}}'); then
+            echo "::error title=No image for the latest release::${IMAGE}:${latest} cannot be read, so :latest stays where it is"
+            exit 1
+          fi
+          wanted=$(jq -r .digest <<< "${manifest}")
+          if ! [[ ${wanted} =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=No digest for the latest release::${IMAGE}:${latest} has the digest '${wanted}'"
+            exit 1
+          fi
+          current=""
+          if manifest=$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Manifest}}' 2>"$RUNNER_TEMP/inspect.err"); then
+            current=$(jq -r .digest <<< "${manifest}")
+          elif ! grep -Eqi ': not found|manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+            echo "::error title=Registry lookup failed::cannot read ${IMAGE}:latest: $(tr '\n' ' ' < "$RUNNER_TEMP/inspect.err")"
+            exit 1
+          fi
+          if [ "${current}" = "${wanted}" ]; then
+            echo ":latest already points at ${latest} (${wanted})." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${wanted}"
+          echo "Moved :latest from ${current:-nothing} to ${latest} (${wanted})." >> "$GITHUB_STEP_SUMMARY"

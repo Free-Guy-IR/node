@@ -71,7 +71,7 @@ jobs:
             body="The drift check stopped with exit ${DRIFT_STATUS:-unknown} before it finished: a fetch, a GitHub API call, a pin, the waiver file or the script itself failed, so parity is unknown (the upstream-drift: lines in the previous step)."
             fix="Fix the error shown there, or re-run the job if it was a transient network or API failure."
           fi
-          block="A red drift check blocks every image build and every release upload by design: docker-build-dev, docker-build and release need this job. This run belongs to workflow '${CALLER}'."
+          block="A red drift check blocks every image build and every release upload by design: image-branch, image-manual and publish-release need this job. This run belongs to workflow '${CALLER}'."
           fix="${fix} See docs/upstream-parity.md, section 'The drift check'."
           echo "::error title=${title}::${body} ${block} ${fix}"
           {

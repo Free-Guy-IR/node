@@ -1,6 +1,13 @@
 /.github/workflows/ @Free-Guy-IR
+/.github/actions/ @Free-Guy-IR
 /.github/CODEOWNERS @Free-Guy-IR
 /.github/upstream-waivers.txt @Free-Guy-IR
 /scripts/workflow_policy.sh @Free-Guy-IR
+/scripts/workflowgate/ @Free-Guy-IR
+/scripts/workflow_gates.lock @Free-Guy-IR
 /scripts/image_tag_policy.sh @Free-Guy-IR
 /scripts/upstream_drift.sh @Free-Guy-IR
+/scripts/test_workflow_policy.sh @Free-Guy-IR
+/scripts/test_image_tag_policy.sh @Free-Guy-IR
+/scripts/test_workflow_steps.sh @Free-Guy-IR
+/scripts/release_tag_commit.sh @Free-Guy-IR

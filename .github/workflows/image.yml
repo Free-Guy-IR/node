@@ -54,7 +54,7 @@ jobs:
           fi
           if [ -n "${TAGS}" ]; then
             read -r -a tags <<< "${TAGS}"
-            bash scripts/image_tag_policy.sh "${tags[@]}"
+            bash scripts/image_tag_policy.sh --branch "${BRANCH}" "${tags[@]}"
           fi
 
       - name: Log in to the Container registry
