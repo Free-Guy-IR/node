@@ -458,6 +458,8 @@ check pending-issue-without-number 2
 branch_scope() {
   base "$1"
   s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
   git -C "$s/upw" checkout -q -b pr-61
   printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
   git -C "$s/upw" add -A
