@@ -218,7 +218,7 @@ upstream months after our pin, and nothing had noticed them. The drift check the
 
 ### Pins
 
-The script reads every pin from the checked commit, never from a hardcoded value:
+The script reads every pin from the checked commit, never from a hardcoded value. A key it reads that the Dockerfile declares with a value more than once (`ARG` in any case, also in a multi-argument line) stops the run with exit 2, because docker would use the declaration of the stage that builds, which need not be the one the check read:
 
 | component | upstream | pin read from | pin on 2026-09-24 | line branch |
 |---|---|---|---|---|
@@ -295,17 +295,30 @@ Why the rules look like this:
   first `diff --git`. Lines inside the diff are ignored. A header counts only for a file that the build really applies:
   - the Makefile must apply `patches/xray-*.patch` on a line that is not a comment, without `--check`, `--stat`,
     `--numstat`, `--summary`, `-R` or `--reverse`, and without ignoring the failure (`|| true`);
+  - the patch must be a regular file in the tree; a symlink under `patches/` never counts, because its blob is the
+    link text while docker copies the file the link points at;
   - the Dockerfile at the checked commit is read the way docker reads it (continuation lines joined, comment lines
-    dropped, heredoc bodies of `COPY`/`RUN` skipped). Its `xray-builder` stage must `COPY patches/<name> /patches/<name>`,
-    nothing else may be copied or added to that destination or to `/patches/` itself, and a single `RUN` must run
-    `git apply` on `/patches/<name>` with at most `--verbose`, joined to the rest of the `RUN` only by `&&`, so that a
-    failed apply fails the build. The parser fails closed: it reads the command only up to an unquoted shell `#`
-    comment, and it counts nothing when the stage has a `SHELL` instruction, when a `WORKDIR` moves off the source
-    after the patch is copied, when the apply's `RUN` contains a `cd` or `pushd`, or when any command other than the
-    single recognised apply touches `/patches/<name>` (a reverse apply, `rm`, a redirect, a refetch, an exec-form
-    command, a second apply). The shipped binary must come from the stage that applied the patch: a `COPY` that
-    installs a file named `xray` into the image from a stage other than `xray-builder` counts no patch. A Dockerfile
-    that changes the escape character counts no patch at all.
+    dropped, heredoc bodies of `COPY`/`RUN` skipped), and the xray build is accepted only when the check can follow
+    it end to end. This is an allowlist, not a list of known tricks: anything it does not recognise fails closed, and
+    the run then prints one line, `upstream-drift: xray: no patch header counts, because the Dockerfile's xray build
+    is not one the check can follow: <instruction>`, naming the first instruction it refused. What it accepts:
+    - no parser directive (`# syntax=`, `# escape=` in any case) before the first instruction;
+    - exactly one stage named `xray-builder`, built on an external image, never on another stage of the file;
+    - in that stage only `ARG` (names `TARGET*`, `BUILD*`, `XRAY_*`), one `WORKDIR` before the patches are copied,
+      `COPY patches/<name> /patches/<name>`, and shell-form `RUN` without flags;
+    - each `RUN` is split on its operators outside quotes, `$(...)` substitutions included, and may join commands
+      only with `&&` and `|`. Before the first apply it may set up the source (`git init`, `git remote`, `git fetch`,
+      `git checkout`, `apk`); then `git apply --verbose /patches/<name>` exactly, once per patch, reached only through
+      `&&`; read-only checks (`grep`, `test`, `true`, also in pipelines; a substitution may run only these and
+      `git rev-parse HEAD`); and `go build` after every apply, without `-overlay`, `-toolexec`, `-modfile`, `-mod`,
+      `-C` or `-pgo`. Any other command, a redirection, a subshell, a backquote, a `;`, `||` or `&`, a setup command
+      after an apply, or any mention of `/patches` outside an exact apply fails closed;
+    - outside that stage, every `COPY` of a file named `xray` comes from `xray-builder`, no `RUN` touches
+      `bin/xray`, nothing sets `XRAY_EXECUTABLE_PATH`, the last stage installs xray from `xray-builder`, and after
+      that `COPY` the stage only copies files to explicit paths and sets `ENV`, `ENTRYPOINT`, `CMD`, `LABEL`,
+      `EXPOSE`, `USER`, `WORKDIR`, `HEALTHCHECK` or `STOPSIGNAL`.
+    The real Dockerfile matches this shape. A change to the xray build that the check does not recognise turns every
+    patch-ported item `UNPORTED` until the parser is taught the new shape, which is the intended direction of failure.
   It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
   sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
