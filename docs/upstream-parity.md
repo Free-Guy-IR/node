@@ -622,7 +622,9 @@ job's own read-only `GITHUB_TOKEN`, for the API rate limit, and it pushes nothin
 same read-only token, so the check needs no secret.
 
 `upstream-drift.yml` and `run-tests.yml` are also reusable workflows (`workflow_call`). `run-tests.yml` holds the test
-suite, the real-kernel WireGuard tests, the MTProto fronting leg, govulncheck and the workflow policy check. Every
+suite, the controller and backend tests under the race detector, the Xray patch tests under the race detector, the
+replay of the image build's Xray patch guards (`make test_xray_guards`), the real-kernel WireGuard tests, the MTProto
+fronting leg, govulncheck and the workflow policy check. Every
 workflow that publishes something calls both of them first, on the same commit, and its publishing jobs `needs:` both:
 
 | workflow | trigger | gated jobs | what it publishes |
