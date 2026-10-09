@@ -307,8 +307,10 @@ Why the rules look like this:
     - in that stage only `ARG` (names `TARGET*`, `BUILD*`, `XRAY_*`), one `WORKDIR` before the patches are copied,
       `COPY patches/<name> /patches/<name>`, and shell-form `RUN` without flags;
     - each `RUN` is split on its operators outside quotes, `$(...)` substitutions included, and may join commands
-      only with `&&` and `|`. Before the first apply it may set up the source (`git init`, `git remote`, `git fetch`,
-      `git checkout`, `apk`); then `git apply --verbose /patches/<name>` exactly, once per patch, reached only through
+      only with `&&` and `|`. Before the first apply it may set up the source, down to the arguments: `git init`
+      of `.`, `git remote add origin https://...`, `git fetch` of exactly one `XRAY_COMMIT` reference with only quiet,
+      depth and no-tags flags, `git checkout` of `FETCH_HEAD`, and `apk` with plain package names, so the source is
+      always the pinned commit; then `git apply --verbose /patches/<name>` exactly, once per patch, reached only through
       `&&`; read-only checks (`grep`, `test`, `true`, also in pipelines; a substitution may run only these and
       `git rev-parse HEAD`); and `go build` after every apply, without `-overlay`, `-toolexec`, `-modfile`, `-mod`,
       `-C` or `-pgo`. Any other command, a redirection, a subshell, a backquote, a `;`, `||` or `&`, a setup command
@@ -317,8 +319,10 @@ Why the rules look like this:
       `bin/xray`, nothing sets `XRAY_EXECUTABLE_PATH`, the last stage installs xray from `xray-builder`, and after
       that `COPY` the stage only copies files to explicit paths and sets `ENV`, `ENTRYPOINT`, `CMD`, `LABEL`,
       `EXPOSE`, `USER`, `WORKDIR`, `HEALTHCHECK` or `STOPSIGNAL`.
-    The real Dockerfile matches this shape. A change to the xray build that the check does not recognise turns every
-    patch-ported item `UNPORTED` until the parser is taught the new shape, which is the intended direction of failure.
+    The real Dockerfile matches this shape. A change to the xray build that the check does not recognise adds an
+    `UNPORTED xray build` item that names the refused instruction, and also turns every patch-ported item `UNPORTED`,
+    until the Dockerfile is written in this shape or the parser learns the new one. That is the intended direction of
+    failure: the run never passes on an xray build it could not follow.
   It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
   sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
