@@ -728,6 +728,45 @@ xray_fixture xray-build-source-from-patches "$xray_copy
 RUN git init -q . && git fetch -q /patches/xray-source HEAD && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check xray-build-source-from-patches 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-reverted-in-backquotes "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && test -z \"\`git checkout -- .\`\"" "$xray_makefile" X1
+check xray-patch-reverted-in-backquotes 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-setup-after-apply "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch && git checkout -q FETCH_HEAD" "$xray_makefile" X1
+check xray-build-setup-after-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-goflags-assignment "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN GOFLAGS=-overlay=/overlay.json go build -o /out/xray ./main
+
+$xray_final"
+check xray-build-goflags-assignment 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-fetches-no-ref "$xray_copy
+RUN git init -q . && git fetch -q --depth 1 origin && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-fetches-no-ref 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-checks-out-another-commit "$xray_copy
+RUN git init -q . && git fetch -q --depth 1 origin \${XRAY_COMMIT} && git checkout -q main && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-checks-out-another-commit 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-init-in-the-parent "$xray_copy
+RUN git init -q .. && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-init-in-the-parent 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-remote-to-a-local-repo "$xray_copy
+RUN git init -q . && git remote add origin file:///opt/xray && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-remote-to-a-local-repo 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-apk-untrusted-package "$xray_copy
+RUN apk add --allow-untrusted /tmp/git.apk
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-apk-untrusted-package 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-fetch-by-the-pin "$xray_copy
+RUN git init -q . && git remote add origin https://github.com/XTLS/Xray-core.git && git fetch -q --depth 1 origin \${XRAY_COMMIT} && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-fetch-by-the-pin 0 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
