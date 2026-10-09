@@ -7,6 +7,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pasarguard/node/backend/xray/api"
@@ -148,15 +149,32 @@ func (x *Xray) lockSync(ctx context.Context) func() {
 }
 
 type userSync struct {
-	since   time.Time
-	cancel  context.CancelFunc
-	aborted bool
+	cancel   context.CancelCauseFunc
+	progress atomic.Int64
+	aborted  bool
+}
+
+type syncHolderKey struct{}
+
+var errSyncAbortedForRestart = errors.New("user sync cancelled so a health restart can recover the core")
+
+func noteCoreProgress(ctx context.Context) {
+	if holder, ok := ctx.Value(syncHolderKey{}).(*userSync); ok {
+		holder.progress.Store(time.Now().UnixNano())
+	}
+}
+
+func abortedForRestart(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errSyncAbortedForRestart)
 }
 
 func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func()) {
 	unlock := x.lockSync(ctx)
-	syncCtx, cancel := context.WithCancel(ctx)
-	holder := &userSync{since: time.Now(), cancel: cancel}
+	holder := &userSync{}
+	holder.progress.Store(time.Now().UnixNano())
+	syncCtx, cancel := context.WithCancelCause(ctx)
+	holder.cancel = cancel
+	syncCtx = context.WithValue(syncCtx, syncHolderKey{}, holder)
 
 	x.holderMu.Lock()
 	x.syncHolder = holder
@@ -168,7 +186,7 @@ func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func()) {
 			x.syncHolder = nil
 		}
 		x.holderMu.Unlock()
-		cancel()
+		cancel(nil)
 		unlock()
 	}
 }
@@ -180,35 +198,39 @@ func (x *Xray) stuckSyncLimit() time.Duration {
 	return defaultStuckGrace
 }
 
-func (x *Xray) abortStuckUserSync() {
+func (x *Xray) abortStuckUserSync() bool {
 	x.holderMu.Lock()
 	defer x.holderMu.Unlock()
 
 	holder := x.syncHolder
 	if holder == nil || holder.aborted {
-		return
+		return false
 	}
-	held := time.Since(holder.since)
-	if held < x.stuckSyncLimit() {
-		return
+	idle := time.Since(time.Unix(0, holder.progress.Load()))
+	if idle < x.stuckSyncLimit() {
+		return false
 	}
 	holder.aborted = true
-	log.Printf("a user sync held the sync lock for %s while the core waits for a health restart, cancelling it", held.Round(time.Second))
-	holder.cancel()
+	log.Printf("a user sync made no core progress for %s while the core waits for a health restart, cancelling it", idle.Round(time.Second))
+	holder.cancel(errSyncAbortedForRestart)
+	return true
 }
 
-func (x *Xray) lockSyncForRestart() func() {
+func (x *Xray) lockSyncForRestart() (func(), bool) {
 	locked := make(chan func(), 1)
 	go func() { locked <- x.lockSync(context.Background()) }()
 
 	ticker := time.NewTicker(stuckSyncPoll)
 	defer ticker.Stop()
+	aborted := false
 	for {
 		select {
 		case unlock := <-locked:
-			return unlock
+			return unlock, aborted
 		case <-ticker.C:
-			x.abortStuckUserSync()
+			if x.abortStuckUserSync() {
+				aborted = true
+			}
 		}
 	}
 }
@@ -222,9 +244,16 @@ func pushAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound
 	var revokeErr error
 	if step == coreReplace {
 		revokeErr = revokeInboundUser(ctx, handler, inbound.Tag, email)
+		noteCoreProgress(ctx)
 	}
-	if err := handler.AddInboundUser(ctx, inbound.Tag, accountForAPI(inbound, account)); err != nil {
-		inbound.dropAccount(email)
+	err := handler.AddInboundUser(ctx, inbound.Tag, accountForAPI(inbound, account))
+	noteCoreProgress(ctx)
+	if err != nil {
+		if abortedForRestart(ctx) {
+			inbound.markUnsettled(email)
+		} else {
+			inbound.dropAccount(email)
+		}
 		return errors.Join(revokeErr, err)
 	}
 	if revokeErr != nil {
@@ -236,7 +265,9 @@ func pushAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound
 }
 
 func revokeLeavingUser(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, email string) error {
-	if err := revokeInboundUser(ctx, handler, inbound.Tag, email); err != nil {
+	err := revokeInboundUser(ctx, handler, inbound.Tag, email)
+	noteCoreProgress(ctx)
+	if err != nil {
 		inbound.markUnsettled(email)
 		return err
 	}
@@ -307,6 +338,7 @@ func (x *Xray) applyConfigWithRestart(ctx context.Context, candidate *Config) er
 		}
 		return err
 	}
+	noteCoreProgress(ctx)
 
 	if err := x.checkXrayStatus(ctx); err != nil {
 		if restoreErr := x.restorePreviousConfig(previous); restoreErr != nil {

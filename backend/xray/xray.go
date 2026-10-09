@@ -132,15 +132,15 @@ func (x *Xray) Started() bool {
 }
 
 func (x *Xray) Restart() error {
-	unlock := x.lockSyncForRestart()
+	unlock, _ := x.lockSyncForRestart()
 	defer unlock()
 	return x.restartCoreWithConfig(x.activeConfig())
 }
 
 func (x *Xray) RestartUnlessReplaced(observed *coreState) (bool, error) {
-	unlock := x.lockSyncForRestart()
+	unlock, cancelledSync := x.lockSyncForRestart()
 	defer unlock()
-	if current := x.core.state.Load(); current != observed && startedFromState(current) {
+	if current := x.core.state.Load(); !cancelledSync && current != observed && startedFromState(current) {
 		return false, nil
 	}
 	return true, x.restartCoreWithConfig(x.activeConfig())
