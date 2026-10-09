@@ -767,6 +767,45 @@ xray_fixture xray-build-fetch-by-the-pin "$xray_copy
 RUN git init -q . && git remote add origin https://github.com/XTLS/Xray-core.git && git fetch -q --depth 1 origin \${XRAY_COMMIT} && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check xray-build-fetch-by-the-pin 0 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-build-comment-lines-in-the-stage "# the xray source
+$xray_copy
+RUN git init -q . \\
+# the fork patches
+ && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-comment-lines-in-the-stage 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-applied-without-copy "RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-applied-without-copy 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-copied-from-another-stage "COPY --from=builder patches/xray-fix.patch /patches/xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-copied-from-another-stage 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-directory-copied-onto-patches "$xray_copy
+COPY other-patches/ /patches/
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-directory-copied-onto-patches 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-trailing-comment-on-the-apply "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch # take the fork fix" "$xray_makefile" X1
+check xray-build-trailing-comment-on-the-apply 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-heredoc-body-is-not-read "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-build-heredoc-body-is-not-read 'FROM scratch AS notes
+COPY <<EOF /notes.txt
+RUN cp /opt/xray-stock /usr/local/bin/xray
+EOF'
+check xray-build-heredoc-body-is-not-read 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-never-built "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_final"
+check xray-build-never-built 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-fetch-with-an-upload-pack "$xray_copy
+RUN git init -q . && git fetch -q --upload-pack=true origin \${XRAY_COMMIT} && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-build-fetch-with-an-upload-pack 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
@@ -813,6 +852,44 @@ base branch-scope-malformed-token
 printf '%s rejected: upstream PR #61 branch, open, not merged; revisit if upstream merges it branch:\n' \
   "$(sha_of "$tmp/branch-scope-malformed-token/upw" U1)" >>"$tmp/branch-scope-malformed-token/waivers"
 check branch-scope-malformed-token 2
+
+branch_scope branch-scope-tagged-on-the-branch open
+git -C "$tmp/branch-scope-tagged-on-the-branch/upw" tag v9.9.9 pr-61
+check branch-scope-tagged-on-the-branch 1
+
+branch_scope_merge() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b side
+  printf 'package main\n\nfunc c() int { return 3 }\n' >"$s/upw/c.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "S1 add c"
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" S1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" S1)" >/dev/null
+  git -C "$s/upw" checkout -q main
+  git -C "$s/upw" checkout -q -b pr-61
+  git -C "$s/upw" merge -q --no-ff --no-commit side >/dev/null 2>&1
+  printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "M1 merge side with a telemt backend"
+  git -C "$s/upw" checkout -q main
+  git -C "$s/upw" branch -q -D side
+  printf '%s rejected: upstream merge on the open PR #61 branch pr-61 (open, not merged) collides with the fork mtproto backend; revisit if upstream merges it branch:pr-61\n' \
+    "$(sha_of "$s/upw" M1)" >>"$s/waivers"
+  if [ "$2" = merged ]; then
+    git -C "$s/upw" merge -q --no-ff --no-edit pr-61
+    git -C "$s/upw" branch -q -D pr-61
+    git -C "$s/upw" tag v9.9.9
+  fi
+}
+
+branch_scope_merge branch-scope-merge-on-branch open
+check branch-scope-merge-on-branch 0
+
+branch_scope_merge branch-scope-merge-after-merge merged
+check branch-scope-merge-after-merge 1
 
 stub_curl
 base advisories-endless
