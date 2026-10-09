@@ -848,6 +848,21 @@ printf '%s rejected: upstream PR, open, not merged; revisit if upstream merges i
   "$(sha_of "$tmp/branch-scope-lint-unmerged/upw" U1)" >>"$tmp/branch-scope-lint-unmerged/waivers"
 check branch-scope-lint-unmerged 2
 
+base branch-scope-lint-not-merged-only
+printf '%s rejected: upstream PR 7 is open and not merged into a release\n' \
+  "$(sha_of "$tmp/branch-scope-lint-not-merged-only/upw" U1)" >>"$tmp/branch-scope-lint-not-merged-only/waivers"
+check branch-scope-lint-not-merged-only 2
+
+base branch-scope-lint-never-merged-only
+printf '%s not-applicable: diagnostic logging on a debug branch, never merged into a release\n' \
+  "$(sha_of "$tmp/branch-scope-lint-never-merged-only/upw" U1)" >>"$tmp/branch-scope-lint-never-merged-only/waivers"
+check branch-scope-lint-never-merged-only 2
+
+base branch-scope-lint-revisit-only
+printf '%s rejected: collides with the fork mtproto backend; revisit if upstream merges it\n' \
+  "$(sha_of "$tmp/branch-scope-lint-revisit-only/upw" U1)" >>"$tmp/branch-scope-lint-revisit-only/waivers"
+check branch-scope-lint-revisit-only 2
+
 base branch-scope-malformed-token
 printf '%s rejected: upstream PR #61 branch, open, not merged; revisit if upstream merges it branch:\n' \
   "$(sha_of "$tmp/branch-scope-malformed-token/upw" U1)" >>"$tmp/branch-scope-malformed-token/waivers"
