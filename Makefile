@@ -169,7 +169,9 @@ test_xray_guards:
 
 test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
-	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow|TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations|TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled' ./app/proxyman/inbound/ ./proxy/shadowsocks/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestConcurrentBindReleaseAndRevoke|TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased|TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered' ./app/proxyman/sessionrevoke/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow|TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations|TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled|TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered' ./app/proxyman/inbound/ ./proxy/shadowsocks/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=3 -run 'TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered|TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered' ./app/proxyman/inbound/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic|TestSniffQUICHugeTokenLengthNoPanic' ./common/protocol/quic/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/

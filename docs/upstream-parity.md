@@ -518,7 +518,13 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
   - the Shadowsocks UDP loop stops reading and dispatching once the flow's context is cancelled, so the packets
     already queued in the flow are dropped and not forwarded;
   - when a flow ends, the worker removes it from its table only if the table still points to that flow, under the
-    worker lock. Before, the cleanup of a revoked flow could remove the newer flow the same source had already opened.
+    worker lock. Before, the cleanup of a revoked flow could remove the newer flow the same source had already opened;
+  - a released session is never registered again (U-N15). Shadowsocks 2022 dispatches a UDP flow from the goroutine
+    that sing's NAT table starts for it, so that dispatch can land after the flow's `Process` returned and the worker
+    called `Release`. The first version of this fix then registered the session with nothing left to release it: 47
+    of 50 such flows stayed in the registry for the life of the process, and every revoke of the user walked them.
+    `Release` now marks the session and a later dispatch on it is not registered. The revoke checks still run first,
+    so a released session whose user was revoked is still refused and closed.
 - **Stock core:** unchanged. On the stock Xray core a removed or rotated Shadowsocks AEAD user keeps an open UDP flow
   until it has been idle for 2 minutes; the r2-B test reproduces this on the stock v26.3.27 core as well.
 - **Residuals:**
@@ -528,6 +534,10 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
      forms again on the next packet with the users that remain.
   2. Shadowsocks 2022 UDP flows were already cut before this fix by its own user update; hysteria runs over QUIC and is
      not handled by the UDP worker.
+  3. The two Shadowsocks 2022 late-dispatch tests run without `-race`: the same late dispatch trips a data race in
+     `common/singbridge/packet.go`, where `PacketConnWrapper.Close` releases `cached` while `ReadPacket` writes it. That
+     code comes from upstream through `xray-ss2022-dispatch.patch`, the race was there before this fix, and it is
+     tracked as its own finding. The synthetic late-dispatch test below carries the `-race` signal for this fix.
 - **Tests:**
   - `TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow` (`app/proxyman/inbound`): a revoke closes the flow, the next
     flow with the revoked user is refused and removed, a later flow of the same source with the new credential is kept
@@ -542,6 +552,17 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
     identity check, the missing `Release`, and either Shadowsocks context check.
   - The node test `TestRotatingOrRemovingAShadowsocksUserCutsItsUDPFlow` (`backend/xray`, from r2-B) runs the real
     core: it fails on the core without this fix and passes with it.
+  - `TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered` (`app/proxyman/inbound`), under `-race`: a proxy
+    dispatches only after its `Process` returned and the worker released the flow, and no session may stay registered.
+    It fails 10 of 10 on the first version of the fix.
+  - `TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered` and
+    `TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered`: 50 real Shadowsocks 2022 flows
+    each, ended by a bad or a replayed datagram. 48 to 50 of 50 stayed registered on the first version, none now.
+  - `TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered` (`app/proxyman/sessionrevoke`), under `-race`:
+    4000 dispatches that arrive after their release race a revoke loop; all 4000 stayed registered on the first
+    version.
+  - `TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased` fails when the released check is moved above
+    the revoke checks, which would let a revoked user's late dispatch through.
 - **Removal condition:** none while the node relies on `RevokeUserOperation`; it goes with the session revoke patch.
 
 ### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)

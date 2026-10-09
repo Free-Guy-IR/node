@@ -847,10 +847,10 @@ index 0000000..15360a5
 +}
 diff --git a/app/proxyman/sessionrevoke/session.go b/app/proxyman/sessionrevoke/session.go
 new file mode 100644
-index 0000000..e15de0b
+index 0000000..3f27372
 --- /dev/null
 +++ b/app/proxyman/sessionrevoke/session.go
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,230 @@
 +package sessionrevoke
 +
 +import (
@@ -878,13 +878,14 @@ index 0000000..e15de0b
 +}
 +
 +type Session struct {
-+	tag    string
-+	conn   io.Closer
-+	cancel context.CancelFunc
-+	key    userKey
-+	user   *protocol.MemoryUser
-+	bound  bool
-+	closed bool
++	tag      string
++	conn     io.Closer
++	cancel   context.CancelFunc
++	key      userKey
++	user     *protocol.MemoryUser
++	bound    bool
++	released bool
++	closed   bool
 +}
 +
 +const minPruneThreshold = 1024
@@ -976,6 +977,7 @@ index 0000000..e15de0b
 +	active.Lock()
 +	defer active.Unlock()
 +
++	s.released = true
 +	if !s.bound {
 +		return
 +	}
@@ -1005,6 +1007,9 @@ index 0000000..e15de0b
 +			s.closeLocked()
 +			return errors.New("user ", user.Email, " was revoked")
 +		}
++	}
++	if s.released {
++		return nil
 +	}
 +	if s.bound {
 +		return nil
@@ -1078,10 +1083,10 @@ index 0000000..e15de0b
 +}
 diff --git a/app/proxyman/sessionrevoke/session_test.go b/app/proxyman/sessionrevoke/session_test.go
 new file mode 100644
-index 0000000..2b3ba41
+index 0000000..9560f9a
 --- /dev/null
 +++ b/app/proxyman/sessionrevoke/session_test.go
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,416 @@
 +package sessionrevoke
 +
 +import (
@@ -1443,6 +1448,61 @@ index 0000000..2b3ba41
 +		t.Fatalf("%d sessions leaked in the registry", len(members))
 +	}
 +}
++
++func TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased(t *testing.T) {
++	user := memoryUser("late-revoked@revoke-test")
++	stalled := authenticateWithoutDispatch(t, "in-late-revoked", user)
++	stalled.session.Release()
++	Revoke("in-late-revoked", user.Email, user)
++
++	if err := stalled.dispatch(); err == nil {
++		t.Fatal("a revoked user's dispatch that arrived after its flow was released was let through")
++	}
++	if stalled.wrapped.dispatched != 0 {
++		t.Fatal("the revoked late dispatch reached the inner dispatcher")
++	}
++	if !stalled.conn.isClosed(time.Second) {
++		t.Fatal("the connection of the revoked late dispatch was not closed")
++	}
++}
++
++func TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered(t *testing.T) {
++	const tag, email = "in-late-race", "late-race@revoke-test"
++	var flows sync.WaitGroup
++	for i := 0; i < 8; i++ {
++		flows.Add(1)
++		go func() {
++			defer flows.Done()
++			for j := 0; j < 500; j++ {
++				ctx, cancel := context.WithCancel(context.Background())
++				ctx = session.ContextWithInbound(ctx, &session.Inbound{Tag: tag, User: memoryUser(email)})
++				s := Track(tag, newFakeConn(), cancel)
++				s.Release()
++				_ = s.Wrap(&fakeDispatcher{}).DispatchLink(ctx, net.TCPDestination(net.LocalHostIP, 80), &transport.Link{})
++				cancel()
++			}
++		}()
++	}
++	done := make(chan struct{})
++	go func() {
++		flows.Wait()
++		close(done)
++	}()
++	for revoking := true; revoking; {
++		select {
++		case <-done:
++			revoking = false
++		default:
++			Revoke(tag, email, nil)
++		}
++	}
++
++	active.Lock()
++	defer active.Unlock()
++	if members := active.sessions[newUserKey(tag, email)]; len(members) != 0 {
++		t.Fatalf("%d sessions whose flows had already been released were registered by a late dispatch", len(members))
++	}
++}
 diff --git a/proxy/shadowsocks/server.go b/proxy/shadowsocks/server.go
 index 360ea38..fef51d7 100644
 --- a/proxy/shadowsocks/server.go
@@ -1584,5 +1644,222 @@ index 0000000..1c150d4
 +	case <-finished:
 +	case <-time.After(2 * time.Second):
 +		t.Fatal("the flow kept reading after its context was cancelled")
++	}
++}
+diff --git a/app/proxyman/inbound/udp_late_bind_leak_test.go b/app/proxyman/inbound/udp_late_bind_leak_test.go
+new file mode 100644
+index 0000000..e545398
+--- /dev/null
++++ b/app/proxyman/inbound/udp_late_bind_leak_test.go
+@@ -0,0 +1,211 @@
++package inbound
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/base64"
++	gonet "net"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
++	M "github.com/sagernet/sing/common/metadata"
++	"github.com/xtls/xray-core/app/proxyman/sessionrevoke"
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++type pipeLinkDispatcher struct{}
++
++func (pipeLinkDispatcher) Type() interface{} { return routing.DispatcherType() }
++func (pipeLinkDispatcher) Start() error      { return nil }
++func (pipeLinkDispatcher) Close() error      { return nil }
++
++func (pipeLinkDispatcher) Dispatch(ctx context.Context, _ net.Destination) (*transport.Link, error) {
++	reader, writer := pipe.New()
++	go func() {
++		<-ctx.Done()
++		common.Interrupt(reader)
++		common.Interrupt(writer)
++	}()
++	return &transport.Link{Reader: reader, Writer: writer}, nil
++}
++
++func (pipeLinkDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
++	return nil
++}
++
++type capturedDatagrams struct {
++	gonet.Conn
++	mu      sync.Mutex
++	written [][]byte
++}
++
++func (c *capturedDatagrams) Write(b []byte) (int, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.written = append(c.written, append([]byte(nil), b...))
++	return len(b), nil
++}
++
++func (c *capturedDatagrams) Close() error { return nil }
++
++func ss2022ClientDatagram(t *testing.T, key string) []byte {
++	t.Helper()
++	method, err := shadowaead_2022.NewWithPassword("2022-blake3-aes-128-gcm", key, nil)
++	common.Must(err)
++	capture := &capturedDatagrams{}
++	if _, err := method.DialPacketConn(capture).WriteTo([]byte("probe"), M.ParseSocksaddrHostPort("127.0.0.1", 53).UDPAddr()); err != nil {
++		t.Fatal(err)
++	}
++	capture.mu.Lock()
++	defer capture.mu.Unlock()
++	if len(capture.written) != 1 {
++		t.Fatalf("the client wrote %d datagrams, want 1", len(capture.written))
++	}
++	return capture.written[0]
++}
++
++func randomKey() string {
++	key := make([]byte, 16)
++	common.Must2(rand.Read(key))
++	return base64.StdEncoding.EncodeToString(key)
++}
++
++func startSS2022Worker(t *testing.T, tag, email, serverKey, userKey string) *udpWorker {
++	t.Helper()
++	inbound, err := shadowsocks_2022.NewMultiServer(context.Background(), &shadowsocks_2022.MultiUserServerConfig{
++		Method:  "2022-blake3-aes-128-gcm",
++		Key:     serverKey,
++		Users:   []*protocol.User{{Email: email, Account: serial.ToTypedMessage(&shadowsocks_2022.Account{Key: userKey})}},
++		Network: []net.Network{net.Network_UDP},
++	})
++	common.Must(err)
++	w := &udpWorker{
++		proxy:      inbound,
++		address:    net.LocalHostIP,
++		tag:        tag,
++		stream:     &internet.MemoryStreamConfig{},
++		dispatcher: pipeLinkDispatcher{},
++		ctx:        context.WithValue(context.Background(), "cone", true),
++	}
++	common.Must(w.Start())
++	t.Cleanup(func() { w.Close() })
++	return w
++}
++
++func waitNoActiveFlows(t *testing.T, w *udpWorker) {
++	t.Helper()
++	deadline := time.Now().Add(10 * time.Second)
++	for {
++		w.Lock()
++		open := len(w.activeConn)
++		w.Unlock()
++		if open == 0 {
++			return
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("%d flows stayed open", open)
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
++func assertNoSessionOutlivesItsFlows(t *testing.T, second func(first []byte) []byte) {
++	serverKey, userKey := randomKey(), randomKey()
++	email := "late-bind@revoke-test"
++	tag := "udp-late-bind-" + t.Name()
++	w := startSS2022Worker(t, tag, email, serverKey, userKey)
++
++	const flows = 50
++	for i := 0; i < flows; i++ {
++		source := net.UDPDestination(net.LocalHostIP, net.Port(42000+i))
++		first := ss2022ClientDatagram(t, serverKey+":"+userKey)
++		valid := buf.New()
++		common.Must2(valid.Write(first))
++		next := buf.New()
++		common.Must2(next.Write(second(first)))
++		w.callback(valid, source, net.Destination{})
++		w.callback(next, source, net.Destination{})
++	}
++	waitNoActiveFlows(t, w)
++	time.Sleep(time.Second)
++
++	if tracked := sessionrevoke.Revoke(tag, email, nil); tracked != 0 {
++		t.Fatalf("%d of %d ended Shadowsocks 2022 UDP flows left a revocable session registered that nothing will ever release", tracked, flows)
++	}
++}
++
++func TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered(t *testing.T) {
++	assertNoSessionOutlivesItsFlows(t, func([]byte) []byte { return make([]byte, 64) })
++}
++
++func TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered(t *testing.T) {
++	assertNoSessionOutlivesItsFlows(t, func(first []byte) []byte { return append([]byte(nil), first...) })
++}
++
++type lateDispatchProxy struct {
++	user       *protocol.MemoryUser
++	proceed    chan struct{}
++	release    chan struct{}
++	dispatched chan error
++}
++
++func (p *lateDispatchProxy) Network() []net.Network { return []net.Network{net.Network_UDP} }
++
++func (p *lateDispatchProxy) Process(ctx context.Context, _ net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
++	first, err := buf.NewPacketReader(conn).ReadMultiBuffer()
++	if err != nil {
++		return err
++	}
++	buf.ReleaseMulti(first)
++	session.InboundFromContext(ctx).User = p.user
++	go func() {
++		<-p.release
++		_, err := dispatcher.Dispatch(ctx, net.UDPDestination(net.LocalHostIP, 53))
++		p.dispatched <- err
++	}()
++	<-p.proceed
++	return nil
++}
++
++func TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered(t *testing.T) {
++	user := &protocol.MemoryUser{Email: "late-dispatch@revoke-test"}
++	p := &lateDispatchProxy{user: user, proceed: make(chan struct{}), release: make(chan struct{}), dispatched: make(chan error, 1)}
++	w := startTestUDPWorker(t, "udp-late-dispatch", p)
++	source := net.UDPDestination(net.LocalHostIP, net.Port(40004))
++
++	sendProbe(w, source)
++	deadline := time.Now().Add(2 * time.Second)
++	for registeredConn(w, source) == nil {
++		if time.Now().After(deadline) {
++			t.Fatal("the flow was never registered")
++		}
++		time.Sleep(time.Millisecond)
++	}
++	close(p.proceed)
++	for registeredConn(w, source) != nil {
++		if time.Now().After(deadline) {
++			t.Fatal("the flow whose Process returned stayed registered")
++		}
++		time.Sleep(time.Millisecond)
++	}
++
++	close(p.release)
++	receive(t, p.dispatched, "the late dispatch")
++
++	if tracked := sessionrevoke.Revoke(w.tag, user.Email, nil); tracked != 0 {
++		t.Fatalf("%d sessions of a UDP flow whose Process had already returned stayed registered after a late dispatch", tracked)
 +	}
 +}

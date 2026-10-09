@@ -126,6 +126,9 @@ RUN git init -q . \
  && grep -qF "func (op *RevokeUserOperation) ApplyInbound(ctx context.Context, handler inbound.Handler) error {" app/proxyman/sessionrevoke/operation.go \
  && grep -qF "if err := manager.RemoveUser(ctx, op.Email); err != nil {" app/proxyman/sessionrevoke/operation.go \
  && grep -qF "closed := Revoke(handler.Tag(), op.Email, current)" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "released bool" app/proxyman/sessionrevoke/session.go \
+ && grep -qF "s.released = true" app/proxyman/sessionrevoke/session.go \
+ && grep -qF "if s.released {" app/proxyman/sessionrevoke/session.go \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \
  && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
  && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
