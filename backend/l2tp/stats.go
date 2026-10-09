@@ -57,6 +57,9 @@ func (o *L2TP) collectLocked() []stats.Sample {
 	if o.counted.since > 0 && !o.counted.bootKnown {
 		o.counted.noteBoot(currentBootID())
 	}
+	if o.counted.awaitsSeen() {
+		o.counted.noteSeen(scan)
+	}
 	resolved := o.counted.takeStartedBeforeFallback(sessions)
 
 	perUser := make(map[string][]l2tpSession)

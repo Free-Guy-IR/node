@@ -165,15 +165,16 @@ otherwise it puts it back. The user sync terminates a session only when its pppd
 
 ## Counted-state file
 
-Still `v2`: the lines below are unchanged, and this release adds one optional `since` line. One file per
-inbound tag, written atomically, mode `0600`.
+Still `v2`: the lines below are unchanged, and this release adds the optional `prior` and `since` lines. One
+file per inbound tag, written atomically, mode `0600`.
 
 ```
 v2
 <ifname> <pid> <started> <rx> <tx>
 consumed <ifname> <pid> <started> <rx> <tx>
 final <final record file name>
-since <T> [<boot>:<centis> [<later boot>...]]
+prior <final record file name>
+since <T> [<boot>:<centis> [<later boot>...] [+]]
 ...
 ```
 
@@ -184,11 +185,15 @@ since <T> [<boot>:<centis> [<later boot>...]]
   A renegotiated session is listed again under its consumed identity and keeps counting from it.
 - `final <name>` names a final record that was present when the state was unreadable and counts as
   already counted.
-- `since <T> [<boot>:<centis> [<later boot>...]]` (optional, added in this release, header still `v2`) is
-  an unreadable-state fallback whose window is still open (below): its wall time `T`, its boot time, and
-  the boots the node started in after it while the window stayed open. A malformed, zero, negative or
-  repeated `since` line, a malformed boot time or a later boot holding `:` makes the file unreadable. A
-  reader without this line type falls back as for any unreadable file.
+- `prior <name>` (optional, added in this release) names a final record that was present, and not named
+  `final`, when the open window first listed the final records (below). An empty name or one holding a
+  space or `/` makes the file unreadable.
+- `since <T> [<boot>:<centis> [<later boot>...] [+]]` (optional, added in this release, header still `v2`)
+  is an unreadable-state fallback whose window is still open (below): its wall time `T`, its boot time,
+  the boots the node started in after it while the window stayed open, and `+` once the window has listed
+  the final records present at the fallback. A malformed, zero, negative or repeated `since` line, a
+  malformed boot time or a later boot holding `:` makes the file unreadable. A reader without these line
+  types falls back as for any unreadable file.
 - Missing file: nothing has been counted in this container yet.
 - Present but unreadable, wrong version or malformed line: the reader logs one line and falls back:
   - every live session it can list and whose counters (and interface index) it can read is counted up to
@@ -201,10 +206,17 @@ since <T> [<boot>:<centis> [<later boot>...]]
     started at or after it; a final record without identity and without a watermark is taken as counted;
   - "started before the fallback" is decided on boot time when both the record and the fallback carry
     one: same boot, strictly earlier uptime; a live session of any other boot is after (a live session is
-    of the current boot); a final record of a boot the node started in after the fallback is after, and
-    one of another boot is before; a final record of a boot the window cannot place yet (the boot id could
-    not be read) waits unbilled, and the boot id is read again at every poll. Records without a boot time
-    fall back to the wall clock: `started` strictly before `T`;
+    of the current boot); a final record of a boot the node started in after the fallback is after. A
+    final record of any other boot, one the window cannot place, is before if it was present when the
+    window first listed the final records (named `prior`) or the window has not listed them yet, and after
+    otherwise: it was written after that listing, so its session ran in a boot after the fallback whose id
+    the node could not read or did not keep. While the node cannot read its own boot id, such a final
+    record waits unbilled, and the boot id is read again at every poll. Records without a boot time fall
+    back to the wall clock: `started` strictly before `T`;
+  - the window lists the final records present at the fallback at the load that builds it or, when they
+    cannot be listed then, at the first later load or poll that can list them; every final record listed
+    then, readable or not, that is not named `final` is named `prior`. A `prior` name is dropped when its
+    record is billed or taken as counted, and every one when the window closes;
   - the window closes after 360 consecutive clean polls: every session listed and resolved, no listing,
     read or removal failure, no unreadable or waiting final record.
 
@@ -275,3 +287,10 @@ The unreadable-state fallback under-bills by design ("counting only growth from 
 session present at the fallback moved after the previous process last counted it and before the fallback
 first sees it are not billed. When its session file could not be read at the fallback, that includes its
 growth until the file can first be read.
+
+A final record of a boot after the fallback that the window cannot place is also taken as counted when it
+was already present the first time the window could list the final records. That needs the final records
+to be unlistable at the fallback and until that boot's session had ended, and that boot's id to be
+unreadable for the whole life of its process (or the write of the boot noted at its load to have failed).
+It is never billed twice: a final record present at that first listing is billed whole only when its own
+boot time places it after the fallback.

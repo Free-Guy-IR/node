@@ -18,6 +18,7 @@ Not part of the identity, but recorded by ip-up next to it:
 |-------|--------|----------|
 | ifindex | `/sys/class/net/<ifname>/ifindex` | counting a session, and reading final counters, only while the interface is still its own |
 | proc | `<boot_id>:<pppd starttime>` | telling one pppd process apart from a later one on the same pid (renegotiation, liveness, reaping) |
+| mono | `<boot_id>:<uptime in centiseconds>` at the session start, kept across a renegotiation | deciding on boot time, not wall time, whether a session or final record started before an unreadable-state fallback |
 
 ## L2TP per-pppd record
 
@@ -35,15 +36,17 @@ provably gone for 360 consecutive polls.
 
 Lifecycle: created at the first poll that sees the session; updated by every poll; marked consumed when
 the session's final record is counted (a renegotiated session keeps counting from it); removed after the
-grace once the session is neither listed nor held by a pending final record. Persisted after every poll
-that changed it; loaded by `New`. The file format stays `v2`, with one optional `since <T>` line for an
-open unreadable-state fallback window: see
+grace once the session is neither listed nor held by a pending final record. Persisted after every load
+or poll that changed it; loaded by `New`. The file format stays `v2`. An open unreadable-state fallback
+window adds one `since <T> [<boot>:<centis> [<later boot>...] [+]]` line (its wall time, its boot time,
+the boots the node started in after it, and `+` once it has listed the final records present at the
+fallback) and one `prior <final record file name>` line per final record present at that listing: see
 [contracts/l2tp-counted-state.md](contracts/l2tp-counted-state.md).
 
 ## L2TP final record
 
-`user`, `tag`, `ifname`, `pid`, `started`, `proc`, `rx`, `tx` (`pid`, `started` and `proc` omitted when
-unknown); file name `<ifname>.<shell pid>.<epoch>` as today. States: present -> billed and removed; or
+`user`, `tag`, `ifname`, `pid`, `started`, `proc`, `mono`, `rx`, `tx` (`pid`, `started`, `proc` and `mono`
+omitted when unknown); file name `<ifname>.<shell pid>.<epoch>` as today. States: present -> billed and removed; or
 unreadable -> retried every poll -> billed, or set aside as `.<name>.unreadable` after 360 polls; or
 unusable (no user, no interface, no counters, malformed number) -> set aside at once. Never deleted
 unbilled.

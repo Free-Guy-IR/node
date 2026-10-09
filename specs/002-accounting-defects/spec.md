@@ -203,7 +203,8 @@ server-to-client amount and check the labels and that the per-user sum is unchan
   (other than `ENOENT`) holds the counted state it covers, so nothing is billed twice once it can be read.
 - L2TP: the counted state is unreadable while a listing or read also fails: only sessions and final
   records that started strictly before that moment are taken as counted; later ones are billed from zero,
-  and the state is written at once and at every poll, so a restart continues where it stopped.
+  also the final records of a boot after it whose boot id could never be read, and the state is written
+  at once and at every load or poll that changes it, so a restart or a reboot continues where it stopped.
 - WireGuard: a peer that never completed a handshake but has non-zero counters is accounted; its
   online status stays offline.
 - WireGuard: a user sync whose kernel call fails does not restart any counter; the flush taken before

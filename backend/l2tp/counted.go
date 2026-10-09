@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,7 +22,9 @@ const (
 
 	countedConsumedPrefix = "consumed "
 	countedFinalPrefix    = "final "
+	countedPriorPrefix    = "prior "
 	countedSincePrefix    = "since "
+	countedSeenMark       = "+"
 )
 
 type sessionIdentity struct {
@@ -47,15 +50,18 @@ type countedState struct {
 	sinceMono  monoStamp
 	sinceBoots []string
 	sinceClean int
+	sinceSeen  bool
+	sincePrior map[string]bool
 	bootKnown  bool
 }
 
 func newCountedState() *countedState {
 	return &countedState{
-		entries:  make(map[sessionIdentity]countedBytes),
-		misses:   make(map[sessionIdentity]int),
-		consumed: make(map[sessionIdentity]bool),
-		counted:  make(map[string]bool),
+		entries:    make(map[sessionIdentity]countedBytes),
+		misses:     make(map[sessionIdentity]int),
+		consumed:   make(map[sessionIdentity]bool),
+		counted:    make(map[string]bool),
+		sincePrior: make(map[string]bool),
 	}
 }
 
@@ -101,6 +107,11 @@ func (c *countedState) raise(id sessionIdentity, b countedBytes) {
 
 func (c *countedState) consume(rec finalRecord) countedBytes {
 	name := filepath.Base(rec.path)
+	prior := c.sincePrior[name]
+	if prior {
+		delete(c.sincePrior, name)
+		c.dirty = true
+	}
 	if c.counted[name] {
 		delete(c.counted, name)
 		c.dirty = true
@@ -112,7 +123,7 @@ func (c *countedState) consume(rec finalRecord) countedBytes {
 	id, ok := c.match(rec)
 	if !ok {
 		final := countedBytes{rx: rec.rx, tx: rec.tx}
-		if c.startedBeforeFallback(rec) {
+		if c.startedBeforeFallback(rec, prior) {
 			if rec.hasIdentity {
 				c.markConsumed(rec.identity, final)
 			}
@@ -246,12 +257,18 @@ func (c *countedState) encode() []byte {
 	for _, name := range names {
 		b.WriteString(countedFinalPrefix + name + "\n")
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.sincePrior)) {
+		b.WriteString(countedPriorPrefix + name + "\n")
+	}
 	if c.since > 0 {
 		fmt.Fprintf(&b, "%s%d", countedSincePrefix, c.since)
 		if c.sinceMono.ok {
 			b.WriteString(" " + c.sinceMono.String())
 			for _, boot := range c.sinceBoots {
 				b.WriteString(" " + boot)
+			}
+			if c.sinceSeen {
+				b.WriteString(" " + countedSeenMark)
 			}
 		}
 		b.WriteByte('\n')
@@ -276,6 +293,13 @@ func decodeCountedState(data []byte) (*countedState, error) {
 			c.counted[name] = true
 			continue
 		}
+		if name, ok := strings.CutPrefix(line, countedPriorPrefix); ok {
+			if name == "" || strings.ContainsAny(name, " /") {
+				return nil, fmt.Errorf("line %d: malformed prior final record name %q", i+2, name)
+			}
+			c.sincePrior[name] = true
+			continue
+		}
 		if at, ok := strings.CutPrefix(line, countedSincePrefix); ok {
 			fields := strings.Split(at, " ")
 			since, err := strconv.ParseInt(fields[0], 10, 64)
@@ -290,6 +314,10 @@ func decodeCountedState(data []byte) (*countedState, error) {
 				}
 			}
 			for _, boot := range fields[min(len(fields), 2):] {
+				if boot == countedSeenMark {
+					c.sinceSeen = true
+					continue
+				}
 				if boot == "" || strings.Contains(boot, ":") {
 					return nil, fmt.Errorf("line %d: malformed later boot %q", i+2, at)
 				}
@@ -388,15 +416,19 @@ func (c *countedState) startedBefore(started int64, mono monoStamp, live bool) b
 	return started < c.since
 }
 
-func (c *countedState) startedBeforeFallback(rec finalRecord) bool {
+func (c *countedState) startedBeforeFallback(rec finalRecord, prior bool) bool {
+	if c.since > 0 && rec.hasIdentity && c.sinceSeen && !prior && c.unplaced(rec.mono) {
+		return false
+	}
 	return c.since > 0 && (!rec.hasIdentity || c.startedBefore(rec.identity.started, rec.mono, false))
 }
 
+func (c *countedState) unplaced(mono monoStamp) bool {
+	return c.sinceMono.ok && mono.ok && mono.boot != c.sinceMono.boot && !slices.Contains(c.sinceBoots, mono.boot)
+}
+
 func (c *countedState) undecided(rec finalRecord) bool {
-	if c.since == 0 || c.bootKnown || !c.sinceMono.ok || !rec.hasIdentity || !rec.mono.ok {
-		return false
-	}
-	if rec.mono.boot == c.sinceMono.boot || slices.Contains(c.sinceBoots, rec.mono.boot) {
+	if c.since == 0 || c.bootKnown || !rec.hasIdentity || !c.unplaced(rec.mono) {
 		return false
 	}
 	_, known := c.match(rec)
@@ -436,6 +468,8 @@ func (c *countedState) settleFallback(clean bool) {
 		c.sinceMono = monoStamp{}
 		c.sinceBoots = nil
 		c.sinceClean = 0
+		c.sinceSeen = false
+		clear(c.sincePrior)
 		c.dirty = true
 	}
 }
@@ -448,10 +482,37 @@ func (o *L2TP) loadCountedLocked() {
 		counted = presentAsCounted(tag, wallClock().Unix(), currentMono())
 	}
 	counted.noteBoot(currentBootID())
+	if counted.awaitsSeen() {
+		counted.noteSeen(scanFinalRecords(tag))
+	}
 	if counted.dirty && counted.save(tag) == nil {
 		counted.dirty = false
 	}
 	o.counted = counted
+}
+
+func (c *countedState) awaitsSeen() bool {
+	return c.since > 0 && c.sinceMono.ok && !c.sinceSeen
+}
+
+func (c *countedState) noteSeen(scan finalScan) {
+	if scan.listErr != nil {
+		return
+	}
+	paths := make([]string, 0, len(scan.records)+len(scan.unreadable))
+	for _, rec := range scan.records {
+		paths = append(paths, rec.path)
+	}
+	for _, u := range scan.unreadable {
+		paths = append(paths, u.path)
+	}
+	for _, path := range paths {
+		if name := filepath.Base(path); !c.counted[name] {
+			c.sincePrior[name] = true
+		}
+	}
+	c.sinceSeen = true
+	c.dirty = true
 }
 
 func (c *countedState) noteBoot(boot string) {
