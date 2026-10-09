@@ -215,11 +215,13 @@ since <T> [<boot>:<centis> [<later boot>...]]
   it stopped. For records without a boot time (written by the previous scripts, or when `/proc/uptime`
   could not be read), the wall-clock rule keeps the old exposure: a clock stepped back or ahead across
   `T` misjudges them.
-- The fallback state is written when it is built, and again at every poll that changes it, including while
-  its window is open, so a restart never falls back again over what was counted; a restart during an open
-  window continues it with the same `T`.
-- Written only when the content changed during a poll. A failed write logs once per failure streak, keeps
-  the in-memory state and is retried at the next changing poll.
+- The fallback state is written when it is built, and again at every load or poll that changes it, including
+  while its window is open, so a restart never falls back again over what was counted; a restart during an
+  open window continues it with the same `T`. A load that notes a later boot writes it at once, so a crash
+  and reboot before the first poll do not forget that boot.
+- Written only when the content changed during a load or a poll. A failed write keeps the in-memory state
+  and is retried at the next changing poll; a poll's failed write logs once per failure streak, and a
+  failed write at a load is logged by the poll that retries it.
 - A watermark that is neither listed nor held gains one miss per poll and is dropped after 360 misses;
   misses restart at zero after a load. Held means: matched by an unremovable final record, of the same
   interface and pid as an unremovable identity final without `proc` that has no watermark of its own, or
