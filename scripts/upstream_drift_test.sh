@@ -811,6 +811,30 @@ xray_fixture xray-build-fetch-with-an-upload-pack "$xray_copy
 RUN git init -q . && git fetch -q --upload-pack=true origin \${XRAY_COMMIT} && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check xray-build-fetch-with-an-upload-pack 1 DRIFT_COMPONENTS="node xray"
 
+xray_branch_scope() {
+  xray_fixture "$1" "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+  s=$tmp/$1
+  git -C "$s/xray-up" checkout -q -b side
+  printf 'package core\n\nvar raced = true\n' >"$s/xray-up/race.go"
+  git -C "$s/xray-up" add -A
+  commit "$s/xray-up" -m "XB fix a race on the side branch"
+  git -C "$s/xray-up" checkout -q main
+  printf '%s superseded: pre-squash commit on upstream branch side, folded into a later main commit branch:side\n' \
+    "$(sha_of "$s/xray-up" XB)" >>"$s/waivers"
+  if [ "$2" = merged ]; then
+    git -C "$s/xray-up" merge -q --no-ff --no-edit side
+    git -C "$s/xray-up" branch -q -D side
+  fi
+  git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+}
+
+xray_branch_scope xray-branch-scope-on-branch open
+check xray-branch-scope-on-branch 0 DRIFT_COMPONENTS="node xray"
+
+xray_branch_scope xray-branch-scope-after-merge merged
+check xray-branch-scope-after-merge 1 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
