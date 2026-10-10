@@ -1004,8 +1004,8 @@ Add one line to `.github/upstream-waivers.txt`:
   `superseded: the fork fixed this in <fork sha>` or `not-applicable: upstream release tooling`. A `pending` reason
   names the release or project that will take it.
 - A waiver for work that lives only on a branch must say so with a `branch:<ref>` token (for example `branch:pr-61`).
-  The node commit and node merge checks then grant `WAIVED` only while every upstream ref that contains the commit is
-  one of the named branches. The day upstream merges that branch into another ref, deletes it and tags a release, the
+  The node commit and node merge checks, and the security-looking commit check of every third-party component, then
+  grant `WAIVED` only while every upstream ref that contains the commit is one of the named branches. The day upstream merges that branch into another ref, deletes it and tags a release, the
   commit becomes reachable from a mainline ref or a tag, and the item turns `UNPORTED` with a message naming the refs
   that now reach it. Several `branch:` tokens are allowed. A waiver whose reason says the upstream work is unmerged
   (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:` token is a malformed line, so

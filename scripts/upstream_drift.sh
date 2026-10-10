@@ -882,6 +882,15 @@ tpgit() {
   git --git-dir="$tp_gd" "$@"
 }
 
+tp_scope_violations() {
+  allowed=" $2 "
+  { tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
+      awk -v a="$allowed" 'index(a, " " $0 " ") == 0 { print "branch " $0 }'
+    tpgit for-each-ref --format='%(refname:strip=2)' --contains "$1" refs/tags/ |
+      awk '{ print "tag " $0 }'
+  } | paste -sd ',' - | sed 's/,/, /g'
+}
+
 security_log() {
   tpgit log --no-merges --format=%H --regexp-ignore-case --extended-regexp \
     --grep='GHSA-[[:alnum:]]{4}-' --grep='CVE-[0-9]{4}-' --grep='security' --grep='vulnerab' \
@@ -947,6 +956,12 @@ check_thirdparty() {
     if [ -n "$trailer" ]; then
       status=PORTED
       detail="referenced by an Upstream/cherry-pick trailer ($trailer)"
+    elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
+      { outside=$(tp_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
+      status=UNPORTED
+      detail="the waiver scopes this to branch $scope, but the commit is now reachable from $outside; review it and either port it or rewrite the waiver without the branch: scope"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ]; then
       status=WAIVED
       detail=$waiver
