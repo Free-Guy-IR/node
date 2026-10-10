@@ -435,3 +435,87 @@ func TestHealthRestartsCancellingStuckSyncsNeverLeaveTheCoreBehindTheNode(t *tes
 	h.requireWrittenMatchesLocal(t)
 	requireCoreMatchesLocal(t, h.x, h.core)
 }
+
+func TestAHealthRestartRacingASlowSyncAndNodePushesLosesNoUpdate(t *testing.T) {
+	h := newRestartHarness(t, syncTestInbounds)
+	h.x.stuckGrace = 2 * time.Second
+	audit := &restartAudit{h: h}
+	h.x.syncEntered = audit.entered
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	gone := versionedUser("3.gone", "setup", "vless", "trojan")
+	pushed := versionedUser("2.pushed", "setup", "vless", "vmess")
+	if err := h.x.UpdateUsers(withCall(ctx, "setup"), []*common.User{gone, pushed}); err != nil {
+		t.Fatal(err)
+	}
+	audit.settle()
+	if _, problems := audit.take(); len(problems) != 0 {
+		t.Fatal(problems)
+	}
+
+	reached := make(chan struct{})
+	var once sync.Once
+	h.core.setFault(func(op, tag, email string) (bool, error) {
+		if op == addOperation && strings.HasSuffix(email, ".slow") {
+			once.Do(func() { close(reached) })
+			time.Sleep(300 * time.Millisecond)
+		}
+		return false, nil
+	})
+
+	slow := make([]*common.User, 0, 8)
+	for index := range 8 {
+		slow = append(slow, versionedUser(fmt.Sprintf("%d.slow", index+10), "bulk", syncTestTags...))
+	}
+	rotated := versionedUser("2.pushed", "rotated", "vless", "vmess")
+	revoked := versionedUser("3.gone", "disabled")
+
+	results := make(map[string]chan error)
+	run := func(id string, call func() error) {
+		done := make(chan error, 1)
+		results[id] = done
+		go func() { done <- call() }()
+	}
+	run("slow", func() error { return h.x.UpdateUsers(withCall(ctx, "slow"), slow) })
+	select {
+	case <-reached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the slow sync never reached the core")
+	}
+	run("health", h.x.Restart)
+	run("push-rotate", func() error { return h.x.SyncUser(withCall(ctx, "push-rotate"), rotated) })
+	run("push-revoke", func() error { return h.x.SyncUser(withCall(ctx, "push-revoke"), revoked) })
+
+	for id, done := range results {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s failed while a health restart raced a slow but answering sync: %v", id, err)
+			}
+		case <-time.After(3 * time.Minute):
+			t.Fatalf("%s never returned", id)
+		}
+	}
+
+	for _, user := range slow {
+		requireHeldAccount(t, h.x, user, syncTestTags...)
+	}
+	requireHeldAccount(t, h.x, rotated, "vless", "vmess")
+	for tag, users := range localState(h.x) {
+		if _, held := users["3.gone"]; held {
+			t.Fatalf("the revoked user is still held on %s", tag)
+		}
+	}
+
+	h.core.setFault(nil)
+	if err := h.x.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	audit.settle()
+	if _, problems := audit.take(); len(problems) != 0 {
+		t.Fatal(strings.Join(problems, "\n"))
+	}
+	h.requireWrittenMatchesLocal(t)
+	requireCoreMatchesLocal(t, h.x, h.core)
+}
