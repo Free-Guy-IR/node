@@ -168,23 +168,23 @@ test_xray_guards:
 	python3 scripts/xray_guard_replay.py "$(CURDIR)/Dockerfile" "$(CURDIR)/patches" "$(XRAY_GUARD_SRC)" "$(XRAY_COMMIT)" "$(XRAY_GUARD_ONLY)"
 
 test_xray_patches:
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 ./app/proxyman/sessionrevoke/...
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestConcurrentBindReleaseAndRevoke|TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased|TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered' ./app/proxyman/sessionrevoke/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow|TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations|TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled|TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered' ./app/proxyman/inbound/ ./proxy/shadowsocks/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered|TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered' ./app/proxyman/inbound/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestReadPacketRacingCloseOnTheSameWrapper|TestReadPacketAfterCloseNeitherReadsTheLinkNorDelivers|TestAReadHeldInTheLinkDuringCloseReleasesWhatItGetsAndDeliversNothing|TestConcurrentReadsWritesAndClosesNeverUseAReleasedBuffer' ./common/singbridge/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic|TestSniffQUICHugeTokenLengthNoPanic' ./common/protocol/quic/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestSniffQUICShortInitialNoPanic|TestSniffQUICHugeTokenLengthNoPanic' ./common/protocol/quic/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=10 -run 'TestDialWithRemoteAddr|TestAStreamDownBodySetWhileAReadWaitsIsDeliveredWhole|TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce|TestConcurrentClosesRacingTheResponseCloseItsBodyOnceAndWakeTheWaitingRead|TestAFailedStreamDownMarksTheClientClosedWhileOthersPollIt|TestUploadWriterCountsEachWriteWhileTheUploaderReleasesItsBuffers|TestUploadWriterDeliversLargeWritesExactlyOnceToAConcurrentUploader|TestConcurrentStreamsOpenReadAndCloseWithoutLosingOrDuplicatingData' ./transport/internet/splithttp/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce|TestRepeatedOrListTrustedHeaderFallsBackToThePeer' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking|TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked' ./app/dispatcher/ ./app/router/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -race=false -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic|TestAClosedHandlerNeverBuildsANewTunnel|TestProcessTCPWhileClosingDoesNotRaceOrPanic|TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock|TestClosingABindTwiceDoesNotPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
 
 install_wg: update_os

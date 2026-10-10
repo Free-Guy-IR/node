@@ -524,6 +524,15 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
 `shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
 (r2-B review).
 
+Every `go test` line of `make test_xray_patches` states its own race mode: `-race` with `CGO_ENABLED=1`, or
+`-race=false`. CI runs the target as `CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches`. A `-race` or `-race=false`
+on the command line wins over `GOFLAGS`, so CI and a plain local run use the same mode on every line, and `GOFLAGS`
+cannot switch a line's mode without anyone noticing. Only the two router stall tests,
+`TestAddingALargeDomainRuleDoesNotStallRoutePicking` and `TestRemovingAWebhookRuleDoesNotStallRoutePicking`, run with
+`-race=false`. They bound route-pick latency (200 ms and 500 ms), and those bounds were set without the race
+detector. The router's race freedom is covered by the `-race` line for `TestRuleAndBalancerUpdatesRaceWithRoutePicking`
+and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
+
 ### FORK DEVIATION: trusted forwarder CIDRs and the trusted header's own value (patches/xray-xff-trusted-header.patch)
 
 - **Builds on:** upstream 711aea4e34b0a00073d2fea6577f28a5d7c9b5eb (#6309), carried as patches/xray-trusted-xff.patch. The new patch applies after it in lexical order (Makefile glob and Dockerfile).
