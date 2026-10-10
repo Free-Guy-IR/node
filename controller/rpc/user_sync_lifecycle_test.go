@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"testing"
 
@@ -43,14 +44,32 @@ func (s *scriptedUserStream) SendAndClose(*common.Empty) error {
 	return nil
 }
 
-func freeLoopbackPort(t *testing.T) int {
+const (
+	firstTestPort = 20000
+	testPortSpan  = 10000
+)
+
+func unusedListenPort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 1000 {
+		port := firstTestPort + rand.IntN(testPortSpan)
+		if listenPortIsFree(port) {
+			return port
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatalf("no port between %d and %d is free on both 127.0.0.1 and the wildcard", firstTestPort, firstTestPort+testPortSpan-1)
+	return 0
+}
+
+func listenPortIsFree(port int) bool {
+	for _, addr := range []*net.TCPAddr{{IP: net.IPv4(127, 0, 0, 1), Port: port}, {Port: port}} {
+		l, err := net.ListenTCP("tcp", addr)
+		if err != nil {
+			return false
+		}
+		_ = l.Close()
+	}
+	return true
 }
 
 func TestSyncUserStreamRefusesAMessageThatArrivesAfterTheCoreIsGone(t *testing.T) {
@@ -59,7 +78,7 @@ func TestSyncUserStreamRefusesAMessageThatArrivesAfterTheCoreIsGone(t *testing.T
 
 	data := &common.Backend{
 		Type:   common.BackendType_MTPROTO,
-		Config: fmt.Sprintf(`{"instances":[{"tag":"stream","port":%d,"mode":"plain"}]}`, freeLoopbackPort(t)),
+		Config: fmt.Sprintf(`{"instances":[{"tag":"stream","port":%d,"mode":"plain"}]}`, unusedListenPort(t)),
 	}
 	if err := s.StartBackend(context.Background(), data); err != nil {
 		t.Fatalf("StartBackend: %v", err)

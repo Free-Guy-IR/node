@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -264,12 +263,7 @@ func TestAuthenticatedMessageAboveTheReceiveLimitIsRefused(t *testing.T) {
 func TestChunkedSyncOfTheLargestPanelPassesTheApiKeyCheck(t *testing.T) {
 	client, key := authenticatedClient(t)
 
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	port := unusedListenPort(t)
 
 	ctx, cancel := context.WithTimeout(withKey(key.String()), 60*time.Second)
 	defer cancel()

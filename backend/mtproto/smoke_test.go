@@ -17,16 +17,6 @@ import (
 	"github.com/pasarguard/node/config"
 )
 
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to find a free TCP port: %v", err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
 // TestLiveSmoke_MTProtoStartsAndDomainFronts is the mtproto analogue of
 // backend/openvpn/smoke_test.go's live smoke test, adapted for what's
 // practical to automate here: driving a REAL second openvpn process as a
@@ -40,7 +30,7 @@ func freeTCPPort(t *testing.T) int {
 // package's actual reason for existing) is verified against a real
 // Telegram client as part of the project's end-to-end test phase, not here.
 func TestLiveSmoke_MTProtoStartsAndDomainFronts(t *testing.T) {
-	port := freeTCPPort(t)
+	port := unusedListenPorts(t, 1)[0]
 
 	raw := fmt.Sprintf(`{"instances": [{"tag": "main", "port": %d, "fake_tls_domain": "httpbin.org"}]}`, port)
 
