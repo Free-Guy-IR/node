@@ -42,7 +42,7 @@ ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
 ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
-.PHONY: clean build build_xray test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard
+.PHONY: clean build build_xray test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard
 
 build:
 	CGO_ENABLED=0 go build -o $(OUTPUT) $(PARAMS) $(MAIN)
@@ -156,19 +156,34 @@ build_xray:
 	cd "$(XRAY_SRC)" && echo "xray $(XRAY_COMMIT) needs go $$(sed -n 's/^go //p' go.mod); building with $$(GOTOOLCHAIN=local go version)"
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$(XRAY_OUTPUT)" ./main
 
+XRAY_GUARD_SRC ?= $(CURDIR)/xray-guard-src
+
+test_xray_guards:
+	test -n "$(XRAY_COMMIT)" && test -n "$(XRAY_GUARD_SRC)"
+	rm -rf "$(XRAY_GUARD_SRC)"
+	git init -q "$(XRAY_GUARD_SRC)"
+	git -C "$(XRAY_GUARD_SRC)" remote add origin $(XRAY_REPO)
+	git -C "$(XRAY_GUARD_SRC)" fetch -q --depth 1 origin $(XRAY_COMMIT)
+	git -C "$(XRAY_GUARD_SRC)" checkout -q FETCH_HEAD
+	python3 scripts/xray_guard_replay.py "$(CURDIR)/Dockerfile" "$(CURDIR)/patches" "$(XRAY_GUARD_SRC)" "$(XRAY_COMMIT)" "$(XRAY_GUARD_ONLY)"
+
 test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 ./app/proxyman/sessionrevoke/...
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic' ./common/protocol/quic/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestConcurrentBindReleaseAndRevoke|TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased|TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered' ./app/proxyman/sessionrevoke/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow|TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations|TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled|TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered' ./app/proxyman/inbound/ ./proxy/shadowsocks/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=3 -run 'TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered|TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered' ./app/proxyman/inbound/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestSniffQUICShortInitialNoPanic|TestSniffQUICHugeTokenLengthNoPanic' ./common/protocol/quic/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestForgedXForwardedForIgnoredWithoutTrust|TestDialWithRemoteAddr' ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestApplyTrustedXForwardedFor|TestRemoteAddrFromContext' ./common/protocol/http/ ./transport/internet/grpc/encoding/
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTrustedHeaderScenarios|TestInvalidCIDRListLogsOnce|TestRepeatedOrListTrustedHeaderFallsBackToThePeer' ./common/protocol/http/ ./transport/internet/grpc/encoding/ ./transport/internet/websocket/ ./transport/internet/httpupgrade/ ./transport/internet/splithttp/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestBuildReqMsgsOverlongNameDoesNotPanic|Test_buildReqMsgs' ./app/dns/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestReadResponseAndHandle100Continue' ./proxy/http/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestInvalidDestinationIsRejectedWithoutPanic' ./proxy/shadowsocks_2022/
-	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking' ./app/dispatcher/ ./app/router/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -run 'TestPerUserStatsCountEveryByteOnceUnderConcurrentFirstTrafficAndReset|TestRuleAndBalancerUpdatesRaceWithRoutePicking|TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked' ./app/dispatcher/ ./app/router/
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
-	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
+	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic|TestAClosedHandlerNeverBuildsANewTunnel|TestProcessTCPWhileClosingDoesNotRaceOrPanic|TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock|TestClosingABindTwiceDoesNotPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
 
 install_wg: update_os
 ifeq ($(UNAME_S),Linux)

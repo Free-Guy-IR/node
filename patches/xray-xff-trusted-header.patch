@@ -49,10 +49,10 @@ index 448bd1a..cedacb0 100644
  // RemoveHopByHopHeaders removes hop by hop headers in http header list.
 diff --git a/common/protocol/http/trusted_forwarder.go b/common/protocol/http/trusted_forwarder.go
 new file mode 100644
-index 0000000..c82b5a8
+index 0000000..7545ba2
 --- /dev/null
 +++ b/common/protocol/http/trusted_forwarder.go
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,107 @@
 +package http
 +
 +import (
@@ -83,6 +83,10 @@ index 0000000..c82b5a8
 +		prefix, err := netip.ParsePrefix(field)
 +		if err != nil {
 +			errors.LogError(context.Background(), `XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured: `, err)
++			return nil
++		}
++		if prefix.Addr().Is4In6() {
++			errors.LogError(context.Background(), `XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured: `, field, ` is an IPv4-mapped IPv6 prefix, which never matches because peers are compared as IPv4; write it as an IPv4 CIDR`)
 +			return nil
 +		}
 +		prefixes = append(prefixes, prefix.Masked())
@@ -158,10 +162,10 @@ index 0000000..c82b5a8
 +}
 diff --git a/common/protocol/http/trusted_forwarder_test.go b/common/protocol/http/trusted_forwarder_test.go
 new file mode 100644
-index 0000000..7ea1d46
+index 0000000..89c2678
 --- /dev/null
 +++ b/common/protocol/http/trusted_forwarder_test.go
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,119 @@
 +package http_test
 +
 +import (
@@ -246,6 +250,8 @@ index 0000000..7ea1d46
 +		{cidrs: "127.0.0.1/32, not-a-cidr", source: "127.0.0.1:12345", invalidLogs: "1"},
 +		{cidrs: "127.0.0.1", source: "127.0.0.1:12345", invalidLogs: "1"},
 +		{cidrs: "127.0.0.1/32", source: "[fd00::7]:0", invalidLogs: "0"},
++		{cidrs: "::ffff:127.0.0.1/128", source: "127.0.0.1:12345", invalidLogs: "1"},
++		{cidrs: "127.0.0.1/32, ::ffff:127.0.0.0/104", source: "127.0.0.1:12345", invalidLogs: "1"},
 +	}
 +	sources := regexp.MustCompile(`source=(\S+)`)
 +	logs := regexp.MustCompile(`invalid_cidr_logs=(\d+)`)
@@ -275,6 +281,71 @@ index 0000000..7ea1d46
 +			match := logs.FindStringSubmatch(string(out))
 +			if match == nil || match[1] != test.invalidLogs {
 +				t.Fatalf("invalid CIDR error logs %v, want %s\n%s", match, test.invalidLogs, out)
++			}
++		})
++	}
++}
+diff --git a/common/protocol/http/trusted_repeated_header_test.go b/common/protocol/http/trusted_repeated_header_test.go
+new file mode 100644
+index 0000000..232f085
+--- /dev/null
++++ b/common/protocol/http/trusted_repeated_header_test.go
+@@ -0,0 +1,59 @@
++package http_test
++
++import (
++	"fmt"
++	gonet "net"
++	"net/http"
++	"os"
++	"os/exec"
++	"strings"
++	"testing"
++
++	. "github.com/xtls/xray-core/common/protocol/http"
++)
++
++const repeatedHeaderChild = "XRAY_TRUSTED_REPEATED_HEADER_CHILD"
++
++func TestRepeatedOrListTrustedHeaderFallsBackToThePeer(t *testing.T) {
++	cases := map[string][]string{
++		"repeated lines": {"fd00::7", "fd00::8"},
++		"comma list":     {"fd00::7, fd00::8"},
++		"empty value":    {""},
++		"repeated xff":   nil,
++	}
++	if name := os.Getenv(repeatedHeaderChild); name != "" {
++		header := http.Header{}
++		trusted := []string{"CF-Connecting-IP"}
++		if name == "repeated xff" {
++			trusted = []string{"X-Forwarded-For"}
++			header.Add("X-Forwarded-For", "fd00::7")
++			header.Add("X-Forwarded-For", "fd00::8")
++		} else {
++			for _, value := range cases[name] {
++				header.Add("CF-Connecting-IP", value)
++			}
++		}
++		peer := &gonet.TCPAddr{IP: gonet.ParseIP("127.0.0.1"), Port: 12345}
++		fmt.Println("source=" + ApplyTrustedXForwardedFor(header, trusted, peer).String())
++		return
++	}
++	for name := range cases {
++		t.Run(name, func(t *testing.T) {
++			env := []string{repeatedHeaderChild + "=" + name, "XRAY_TRUSTED_FORWARDER_CIDRS=127.0.0.1/32"}
++			for _, kv := range os.Environ() {
++				if !strings.HasPrefix(kv, "XRAY_TRUSTED_FORWARDER_CIDRS=") && !strings.HasPrefix(kv, repeatedHeaderChild+"=") {
++					env = append(env, kv)
++				}
++			}
++			cmd := exec.Command(os.Args[0], "-test.run=^TestRepeatedOrListTrustedHeaderFallsBackToThePeer$", "-test.count=1")
++			cmd.Env = env
++			out, err := cmd.CombinedOutput()
++			if err != nil {
++				t.Fatalf("child failed: %v\n%s", err, out)
++			}
++			if !strings.Contains(string(out), "source=127.0.0.1:12345") {
++				t.Fatalf("a %s trusted header did not fall back to the TCP peer:\n%s", name, out)
 +			}
 +		})
 +	}
@@ -313,10 +384,10 @@ index 4f2c821..0b87b67 100644
  			t.Fatalf("unexpected remote address: %v", addr)
 diff --git a/testing/trustedheader/trustedheader.go b/testing/trustedheader/trustedheader.go
 new file mode 100644
-index 0000000..e57a0b1
+index 0000000..c5be527
 --- /dev/null
 +++ b/testing/trustedheader/trustedheader.go
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,191 @@
 +package trustedheader
 +
 +import (
@@ -426,6 +497,19 @@ index 0000000..e57a0b1
 +	{
 +		Name:    "invalid CIDR entry fails closed",
 +		CIDRs:   cidrs("127.0.0.1/32, not-a-cidr"),
++		Trusted: cfConnectingIP,
++		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
++	},
++	{
++		Name:    "IPv4-mapped CIDR entry fails closed",
++		CIDRs:   cidrs("127.0.0.1/32, ::ffff:127.0.0.0/104"),
++		Trusted: cfConnectingIP,
++		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
++	},
++	{
++		Name:    "IPv4-mapped CIDR entry fails closed for an IPv6 peer",
++		CIDRs:   cidrs("::1/128, ::ffff:127.0.0.1/128"),
++		IPv6:    true,
 +		Trusted: cfConnectingIP,
 +		Header:  map[string]string{"X-Forwarded-For": "fd00::1", "CF-Connecting-IP": "fd00::7"},
 +	},

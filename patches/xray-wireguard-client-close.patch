@@ -22,6 +22,45 @@ index f4ec6f2..d3c050b 100644
  	}
  	return nil
  }
+diff --git a/proxy/wireguard/bind_close_test.go b/proxy/wireguard/bind_close_test.go
+new file mode 100644
+index 0000000..50cda4b
+--- /dev/null
++++ b/proxy/wireguard/bind_close_test.go
+@@ -0,0 +1,33 @@
++package wireguard
++
++import (
++	goerrors "errors"
++	gonet "net"
++	"testing"
++
++	"golang.zx2c4.com/wireguard/conn"
++)
++
++func TestClosingABindTwiceDoesNotPanic(t *testing.T) {
++	bind := &netBind{readQueue: make(chan *netReadInfo), workers: 1}
++	receivers, _, err := bind.Open(0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() {
++		if r := recover(); r != nil {
++			t.Fatalf("closing the bind a second time panicked: %v", r)
++		}
++	}()
++	if err := bind.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if err := bind.Close(); err != nil {
++		t.Fatal(err)
++	}
++	sizes := make([]int, 1)
++	endpoints := make([]conn.Endpoint, 1)
++	if _, err := receivers[0]([][]byte{make([]byte, 1)}, sizes, endpoints); !goerrors.Is(err, gonet.ErrClosed) {
++		t.Fatalf("a receive after Close returned %v, want net.ErrClosed", err)
++	}
++}
 diff --git a/proxy/wireguard/client.go b/proxy/wireguard/client.go
 index 3030ac7..c42d18b 100644
 --- a/proxy/wireguard/client.go
@@ -100,6 +139,183 @@ index 3030ac7..c42d18b 100644
  		if err != nil {
  			return errors.New("failed to create UDP connection").Base(err)
  		}
+diff --git a/proxy/wireguard/closed_handler_test.go b/proxy/wireguard/closed_handler_test.go
+new file mode 100644
+index 0000000..f822e30
+--- /dev/null
++++ b/proxy/wireguard/closed_handler_test.go
+@@ -0,0 +1,85 @@
++package wireguard
++
++import (
++	"bytes"
++	"context"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport"
++)
++
++func processTCPOnce(h *Handler) (err error, recovered any) {
++	defer func() {
++		recovered = recover()
++	}()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{
++		Target: net.TCPDestination(net.IPAddress([]byte{127, 0, 0, 1}), 443),
++	}})
++	return h.Process(ctx, &transport.Link{
++		Reader: buf.NewReader(bytes.NewReader(nil)),
++		Writer: buf.Discard,
++	}, refusingDialer{}), nil
++}
++
++func TestAClosedHandlerNeverBuildsANewTunnel(t *testing.T) {
++	h := newTestClient(t)
++	if _, r := processOnce(h); r != nil {
++		t.Fatalf("the first Process panicked: %v", r)
++	}
++	_ = h.Close()
++	waitClosed(t, h)
++	for range 3 {
++		if _, r := processOnce(h); r != nil {
++			t.Fatalf("Process after Close panicked: %v", r)
++		}
++	}
++	h.wgLock.Lock()
++	rebuilt := h.net != nil
++	h.wgLock.Unlock()
++	if rebuilt {
++		t.Fatal("Process after Close built a new tunnel that nothing will ever close")
++	}
++}
++
++func TestProcessTCPWhileClosingDoesNotRaceOrPanic(t *testing.T) {
++	h := newTestClient(t)
++	defer h.Close()
++
++	var first sync.Once
++	var firstPanic any
++	stop := make(chan struct{})
++	var workers sync.WaitGroup
++	for range 4 {
++		workers.Add(1)
++		go func() {
++			defer workers.Done()
++			for {
++				select {
++				case <-stop:
++					return
++				default:
++				}
++				if _, r := processTCPOnce(h); r != nil {
++					first.Do(func() { firstPanic = r })
++					return
++				}
++			}
++		}()
++	}
++	for range 50 {
++		time.Sleep(2 * time.Millisecond)
++		_ = h.Close()
++	}
++	close(stop)
++	workers.Wait()
++	if firstPanic != nil {
++		t.Fatalf("Process panicked while the handler was being closed: %v", firstPanic)
++	}
++}
+diff --git a/proxy/wireguard/closed_tunnel_dial_test.go b/proxy/wireguard/closed_tunnel_dial_test.go
+new file mode 100644
+index 0000000..135641d
+--- /dev/null
++++ b/proxy/wireguard/closed_tunnel_dial_test.go
+@@ -0,0 +1,80 @@
++package wireguard
++
++import (
++	"bytes"
++	"context"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/dns"
++	"github.com/xtls/xray-core/transport"
++)
++
++type heldLookup struct {
++	entered chan struct{}
++	release chan struct{}
++}
++
++func (*heldLookup) Type() interface{} { return dns.ClientType() }
++func (*heldLookup) Start() error      { return nil }
++func (*heldLookup) Close() error      { return nil }
++
++func (l *heldLookup) LookupIP(string, dns.IPOption) ([]net.IP, uint32, error) {
++	l.entered <- struct{}{}
++	<-l.release
++	return []net.IP{net.IP{10, 0, 0, 1}}, 0, nil
++}
++
++func TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock(t *testing.T) {
++	for _, network := range []net.Network{net.Network_TCP, net.Network_UDP} {
++		t.Run(network.SystemString(), func(t *testing.T) {
++			lookup := &heldLookup{entered: make(chan struct{}), release: make(chan struct{})}
++			h := newTestClient(t)
++			h.dns = lookup
++			h.conf.DomainStrategy = DeviceConfig_FORCE_IP4
++
++			type outcome struct {
++				err       error
++				recovered any
++			}
++			done := make(chan outcome, 1)
++			go func() {
++				var result outcome
++				defer func() {
++					result.recovered = recover()
++					done <- result
++				}()
++				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++				defer cancel()
++				ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{
++					Target: net.Destination{Network: network, Address: net.DomainAddress("wireguard-close.test"), Port: 443},
++				}})
++				result.err = h.Process(ctx, &transport.Link{
++					Reader: buf.NewReader(bytes.NewReader(nil)),
++					Writer: buf.Discard,
++				}, refusingDialer{})
++			}()
++
++			select {
++			case <-lookup.entered:
++			case <-time.After(5 * time.Second):
++				t.Fatal("Process never reached the DNS lookup after building its tunnel")
++			}
++			_ = h.Close()
++			waitClosed(t, h)
++			close(lookup.release)
++
++			select {
++			case result := <-done:
++				if result.recovered != nil {
++					t.Fatalf("a %s dial after Close panicked: %v", network.SystemString(), result.recovered)
++				}
++			case <-time.After(10 * time.Second):
++				t.Fatalf("a %s Process never returned after Close", network.SystemString())
++			}
++		})
++	}
++}
 diff --git a/proxy/wireguard/process_close_race_test.go b/proxy/wireguard/process_close_race_test.go
 new file mode 100644
 index 0000000..27fddcd

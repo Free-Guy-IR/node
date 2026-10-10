@@ -458,6 +458,14 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 
 ## Fork deviations in the Xray build
 
+The xray-builder stage of the Dockerfile applies every `patches/xray-*.patch` and greps the result after each one, so
+a patch that is missing, reordered or edited down fails the image build. `make test_xray_guards` proves that the
+guards cover every fix: it runs the stage's apply-and-guard chain on the pinned commit, then drops the diff of one
+non-test file from one patch at a time and requires the chain or the linux/amd64 build to fail. On 2026-09-30 all 55
+removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevoke/operation.go`, `singbridge/pipe.go`,
+`shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
+(r2-B review).
+
 ### FORK DEVIATION: trusted forwarder CIDRs and the trusted header's own value (patches/xray-xff-trusted-header.patch)
 
 - **Builds on:** upstream 711aea4e34b0a00073d2fea6577f28a5d7c9b5eb (#6309), carried as patches/xray-trusted-xff.patch. The new patch applies after it in lexical order (Makefile glob and Dockerfile).
@@ -474,6 +482,11 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   - Entries are comma-separated. Whitespace around each entry is trimmed, and empty entries between commas are ignored. A value made only of separators counts as empty, so nothing is trusted.
   - Any entry that is not a valid CIDR makes the whole setting fail closed: no header is trusted, and exactly one error is logged ("XRAY_TRUSTED_FORWARDER_CIDRS is not a valid CIDR list, so no trusted header will be honoured"). The core does not panic.
   - A bare IP without a prefix length counts as invalid.
+  - An entry written as an IPv4-mapped IPv6 prefix, for example `::ffff:127.0.0.1/128`, counts as invalid too, with
+    its own error log naming the entry. Peers are unmapped before the check, so such an entry could never match; before
+    this rule it parsed without error and silently trusted nothing (F-r2B-4). Write the IPv4 form, `127.0.0.1/32`.
+  - A peer on a unix socket listener is reported as `0.0.0.0` (Xray's `UnixConnWrapper`), so it is trusted only by an
+    entry that contains `0.0.0.0`, such as `0.0.0.0/32` or `0.0.0.0/0`.
 - **Why the environment and not config:** the node starts xray with `cmd.Env = append(os.Environ(), ...)` (backend/xray/core.go:269), so the container environment reaches the core with no Xray proto or panel change. The variable is per node and applies to every inbound of that node's xray.
 - **Residuals:**
   1. On CF-fronted inbounds that sit behind a local socat TLS terminator (the Cloudflare-fronting recipe), the TCP peer xray sees is 127.0.0.1. The CIDR check cannot tell Cloudflare from a direct client that connects to socat. Those ports must be firewalled to Cloudflare's published ranges at the host.
@@ -481,8 +494,11 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   3. `ApplyTrustedXForwardedFor` keeps its name and its upstream doc comment. The comment still says "overridden by X-Forwarded-For"; the code now takes the trusted header's value. Under the no-comment rule the comment was left untouched.
   4. `ParseXForwardedFor` stays in common/protocol/http/headers.go (from the 711aea4 carry). No transport calls it, and the build guard fails if one does.
 - **Tests:**
-  - `testing/trustedheader` holds 14 scenarios, run in websocket, httpupgrade, splithttp, grpc/encoding (Tun and TunMulti) and common/protocol/http. Each scenario re-executes the test binary with its own `XRAY_TRUSTED_FORWARDER_CIDRS`.
+  - `testing/trustedheader` holds 16 scenarios, among them two lists with an IPv4-mapped entry that must fail closed, run in websocket, httpupgrade, splithttp, grpc/encoding (Tun and TunMulti) and common/protocol/http. Each scenario re-executes the test binary with its own `XRAY_TRUSTED_FORWARDER_CIDRS`.
   - `TestInvalidCIDRListLogsOnce` covers 32 concurrent first uses; it passes under `-race`.
+  - `TestRepeatedOrListTrustedHeaderFallsBackToThePeer` (from the r2-B review) sends the trusted header as repeated
+    lines, as a comma list, empty, and repeated `X-Forwarded-For` lines as the trusted key; each must give the TCP peer.
+    It fails when the single-value check `len(found) == 1` is loosened to `>= 1`.
   - The upstream `TestDialWithRemoteAddr` (ws, httpupgrade, splithttp), `TestApplyTrustedXForwardedFor` and `TestRemoteAddrFromContext` now expect the TCP peer when the variable is unset.
   - All of these run in `make test_xray_patches`.
 - **Removal condition:** drop this patch only when upstream Xray takes the address from the trusted header's value and gates it on the peer address, or when the owner decides to accept upstream's first-entry behaviour.
@@ -490,7 +506,7 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 ### FORK DEVIATION: routing API data race fixed at the pin (patches/xray-router-race.patch)
 
 - **Upstream:** `598bde74122f5f0207c7c6a56ccb74fbbbe33fca` (#6678) fixes the race with a refactor of `app/router` that
-  does not apply to the pinned v26.3.27. The fork carries a minimal fix instead. The patch deliberately has no
+  does not apply to the pinned v26.3.27. The fork carries its own fix in the same shape. The patch deliberately has no
   `Upstream:` line, and the commit stays waived as `pending` for the parts of the refactor that are not carried.
 - **The race at the pin:**
   - `pickRouteInternal` ranged over `r.rules` without a lock, while `ReloadRules` (`AddRule`) appended to it and
@@ -499,20 +515,110 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
     balancers map while `ReloadRules` wrote it. A concurrent map read and write is a fatal runtime error.
   - The node calls `AddRoutingRule` and `RemoveRoutingRule` through `RoutingService` (`backend/xray/routing.go:60-73`)
     while traffic is routed.
+- **The first 0.6.21 fix stalled routing (F-r2B-2, fixed):** it made every route pick and balancer lookup take a read
+  lock, while `ReloadRules` built conditions and balancers and `RemoveRule` and `ReloadRules` closed webhooks under the
+  write lock. Every routing decision on the node then waited for the whole `AddRoutingRule`: with a 400000-domain rule
+  the slowest concurrent pick took 315 ms on a darwin test machine (the review measured 4.7 s against 112 ms on the pin),
+  and removing a webhook rule whose endpoint was slow held every pick for up to the webhook client's 5 s timeout
+  (1.9 s in the test).
 - **The fork fix**, in `app/router` only:
-  - `r.mu` becomes a `sync.RWMutex`;
-  - `pickRouteInternal` takes one snapshot of `r.rules` under the read lock and uses it for both passes;
-  - `ReloadRules` clips `r.rules` first, so an append always copies instead of writing into memory that a published
-    snapshot may share;
-  - balancer lookups go through one helper that takes the read lock.
-- **Not carried from upstream:** the `atomic.Pointer` rule and balancer sets, a `ReloadRules` that changes nothing on
-  error (at the pin a failed append reload still keeps the balancers it added), the inline webhook sweep, and the
-  removal of `OverrideBalancer`.
-- **Test:** `TestRuleAndBalancerUpdatesRaceWithRoutePicking` runs `AddRule` (a rule plus a balancer), `SetOverrideTarget`
-  and `RemoveRule` 300 times against four readers of `PickRoute`, `GetOverrideTarget` and `ListRule`, under `-race`.
-  It reports a data race on the pin, and none with the fix over 20 runs. The full `app/router` suite passes with and
-  without `-race`.
+  - the rules and balancers are one immutable table published through an `atomic.Pointer`. `PickRoute` takes one
+    snapshot and uses it for both passes; `ListRule`, `RuleExists` and the balancer lookups read the current table.
+    None of them takes a lock;
+  - `r.mu` stays a `sync.Mutex` and is taken only by `ReloadRules`, `RemoveRule` and `Close`, so concurrent writers
+    cannot lose each other's rules or balancers. A writer builds a new table from the current one, including the domain
+    matchers and balancers, and publishes it with one store. No published slice or map is ever written again;
+  - the webhooks of replaced (`ReloadRules` without append) or removed rules are closed after the mutex is released;
+  - a failed `ReloadRules` publishes nothing and closes the webhooks it created. At the pin a failed append kept the
+    balancers it had added, and a failed replace left an empty rule set;
+  - `Init` builds its table the same way and keeps the pin's semantics: no duplicate `ruleTag` check at startup.
+- **Not carried from upstream:** the inline webhook sweep and the removal of `OverrideBalancer`. Upstream closes the
+  old webhooks while it still holds the mutex; the fork closes them after releasing it.
+- **Kept from the pin:** a notifier that a route pick loaded just before its rule was removed may still be fired after
+  it is closed. That window exists at the pin and upstream as well.
+- **Tests**, all in `make test_xray_patches`:
+  - `TestRuleAndBalancerUpdatesRaceWithRoutePicking` runs `AddRule` (a rule plus a balancer), `SetOverrideTarget` and
+    `RemoveRule` 300 times against four readers of `PickRoute`, `GetOverrideTarget` and `ListRule`, under `-race`.
+  - `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked` runs eight writers that add 60 rules and balancers each
+    and remove every other rule, plus eight concurrent adds of one contested `ruleTag`, against four readers, under
+    `-race`. After each `AddRule` or `RemoveRule` returns, the writer's own pick must see the change. At the end exactly
+    one contested add has succeeded and no rule or balancer is lost or duplicated. With the writer mutex removed it
+    fails with lost balancers and eight accepted contested adds.
+  - `TestAddingALargeDomainRuleDoesNotStallRoutePicking` (from the r2-B review) adds a 400000-domain rule while picks
+    run: the slowest pick took 315 ms with the read-lock fix and at most 9 ms over six runs with this one (limit
+    200 ms).
+  - `TestRemovingAWebhookRuleDoesNotStallRoutePicking` (from the r2-B review) removes a rule whose webhook POST is
+    held by the endpoint: an unrelated pick took 1.9 s with the read-lock fix and passes with this one (limit 500 ms).
+    It fails again when the webhooks are closed before the mutex is released and picks take the mutex.
+  - The full `app/router` suite passes with and without `-race`.
+- **Mutants:** the pin's `slices.Clip` line, an equivalent mutant in the review, no longer exists. Every writer now
+  copies the rules into a new slice, so a published slice is never appended to.
 - **Removal condition:** drop the patch when the pin moves to a release that contains `598bde7` (v26.9.x).
+
+### FORK DEVIATION: a revoked user's UDP flows are cut too (patches/xray-session-revoke.patch)
+
+- **Upstream:** Xray has no session revoke. `RemoveUserOperation` removes a user from the inbound, and every
+  connection or flow the user already has keeps running. The fork's `RevokeUserOperation` (package
+  `app/proxyman/sessionrevoke`) closes them, and the node sends it when a user is removed or its credential changes.
+- **The gap in the first 0.6.21 patch (F-r2B-1, fixed):** only the TCP and unix socket workers passed their
+  dispatcher through the revocable wrapper. A UDP flow never registered with the revoke registry, so a revoke closed
+  nothing on UDP. The Shadowsocks (AEAD, not 2022) server keeps the user it decoded from a source's first packet and
+  checks the later packets of that source against that user only, and the UDP worker keeps a flow until it has been
+  idle for 2 minutes. A client that kept sending therefore kept its UDP flow after its user was removed or rotated:
+  40 and 39 echoes in 4 s after `SyncUser` in the r2-B node test.
+- **The fork fix:**
+  - the UDP worker wraps its dispatcher per flow like the TCP worker, so the flow's first dispatch binds it to its user
+    and a revoke cancels the flow's context and closes it. A new flow that still carries a revoked user object is
+    refused at dispatch;
+  - the Shadowsocks UDP loop stops reading and dispatching once the flow's context is cancelled, so the packets
+    already queued in the flow are dropped and not forwarded;
+  - when a flow ends, the worker removes it from its table only if the table still points to that flow, under the
+    worker lock. Before, the cleanup of a revoked flow could remove the newer flow the same source had already opened;
+  - a released session is never registered again (U-N15). Shadowsocks 2022 dispatches a UDP flow from the goroutine
+    that sing's NAT table starts for it, so that dispatch can land after the flow's `Process` returned and the worker
+    called `Release`. The first version of this fix then registered the session with nothing left to release it: 47
+    of 50 such flows stayed in the registry for the life of the process, and every revoke of the user walked them.
+    `Release` now marks the session and a later dispatch on it is not registered. The revoke checks still run first,
+    so a released session whose user was revoked is still refused and closed.
+- **Stock core:** unchanged. On the stock Xray core a removed or rotated Shadowsocks AEAD user keeps an open UDP flow
+  until it has been idle for 2 minutes; the r2-B test reproduces this on the stock v26.3.27 core as well.
+- **Residuals:**
+  1. A UDP flow is bound to the first user that dispatches on it. Shadowsocks AEAD decodes a source with one user
+     only, so this is exact there. For Shadowsocks 2022 several users could share one source address only behind a
+     relay that multiplexes them onto one UDP socket; revoking the first of them then cuts the shared flow, and it
+     forms again on the next packet with the users that remain.
+  2. Shadowsocks 2022 UDP flows were already cut before this fix by its own user update; hysteria runs over QUIC and is
+     not handled by the UDP worker.
+  3. The two Shadowsocks 2022 late-dispatch tests run without `-race`: the same late dispatch trips a data race in
+     `common/singbridge/packet.go`, where `PacketConnWrapper.Close` releases `cached` while `ReadPacket` writes it. That
+     code comes from upstream through `xray-ss2022-dispatch.patch`, the race was there before this fix, and it is
+     tracked as its own finding. The synthetic late-dispatch test below carries the `-race` signal for this fix.
+- **Tests:**
+  - `TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow` (`app/proxyman/inbound`): a revoke closes the flow, the next
+    flow with the revoked user is refused and removed, a later flow of the same source with the new credential is kept
+    when the old flow's cleanup runs, and no session stays registered.
+  - `TestRevokeRacingUDPPacketsNewFlowsAndReAddsCutsOnlyRevokedGenerations`, under `-race`: 16 sources send packets
+    without pause while one user's credential is revoked 31 times, with a new credential added between most revokes;
+    every flow of a revoked generation ends, the other
+    user's flows stay open, and each source ends with exactly one live flow, which is the one the worker routes to.
+  - `TestAUDPFlowStopsDispatchingOnceItsContextIsCancelled` (`proxy/shadowsocks`): packets read after the cancel are
+    not dispatched.
+  - Each of the four fix lines has its own failing mutant: the unwrapped UDP dispatcher, the cleanup without the
+    identity check, the missing `Release`, and either Shadowsocks context check.
+  - The node test `TestRotatingOrRemovingAShadowsocksUserCutsItsUDPFlow` (`backend/xray`, from r2-B) runs the real
+    core: it fails on the core without this fix and passes with it.
+  - `TestADispatchThatOutlivesItsUDPFlowLeavesNoSessionRegistered` (`app/proxyman/inbound`), under `-race`: a proxy
+    dispatches only after its `Process` returned and the worker released the flow, and no session may stay registered.
+    It fails 10 of 10 on the first version of the fix.
+  - `TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered` and
+    `TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered`: 50 real Shadowsocks 2022 flows
+    each, ended by a bad or a replayed datagram. 48 to 50 of 50 stayed registered on the first version, none now.
+  - `TestLateDispatchesRacingRevokeLeaveNoReleasedSessionRegistered` (`app/proxyman/sessionrevoke`), under `-race`:
+    4000 dispatches that arrive after their release race a revoke loop; all 4000 stayed registered on the first
+    version.
+  - `TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased` fails when the released check is moved above
+    the revoke checks, which would let a revoked user's late dispatch through.
+- **Removal condition:** none while the node relies on `RevokeUserOperation`; it goes with the session revoke patch.
 
 ### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)
 
@@ -551,6 +657,12 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   - `TestProcessWhileClosingDoesNotRaceOrPanic`: four workers run the real `Process` while the handler is closed 50
     times, under `-race`. On the pin it reported "close of closed channel", and then a data race at `client.go:87`
     against `:225`. With the fix, 10 runs pass under `-race`.
+  - Pins for each fix line, added after the r2-B review found them unpinned; each fails on its own mutant:
+    `TestAClosedHandlerNeverBuildsANewTunnel` (without the `h.closed` check a Process after Close builds a tunnel that
+    nothing closes), `TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock` (a DNS lookup held open while the
+    handler closes; a TCP or UDP dial through `h.net` then panics on the nil tunnel), `TestClosingABindTwiceDoesNotPanic`
+    (without the tolerant close, "close of closed channel"), and `TestProcessTCPWhileClosingDoesNotRaceOrPanic`, the
+    TCP twin of the race test.
 - **Removal condition:** drop the patch when the pin moves past `8626311`.
 
 ### FORK DEVIATION: Dockerfile.xray removed

@@ -105,17 +105,36 @@ RUN git init -q . \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
  && git apply --verbose /patches/xray-router-race.patch \
- && grep -qF "rules := r.rules" app/router/router.go \
- && grep -qF "r.rules = slices.Clip(r.rules)" app/router/router.go \
+ && grep -qF "table          atomic.Pointer[routeTable]" app/router/router.go \
+ && grep -qF "rules := r.snapshot().rules" app/router/router.go \
+ && grep -qF "next, err := r.extend(base, config)" app/router/router.go \
+ && grep -qF "closeRuleWebhooks(removed)" app/router/router.go \
  && grep -qF "func (r *Router) balancer(tag string) (*Balancer, bool) {" app/router/router.go \
- && ! grep -qF "r.balancers[tag]; ok" app/router/balancing.go \
+ && ! grep -qE "(^|[^[:alnum:]_])r[.](rules|balancers)([^[:alnum:]_]|$)" app/router/router.go app/router/balancing.go app/router/balancing_override.go \
+ && grep -qF "b, ok := r.balancer(balancer)" app/router/balancing_override.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
- && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "2" \
+ && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "3" \
+ && test "$(grep -c 'revocable.Release()' app/proxyman/inbound/worker.go)" = "3" \
+ && grep -qF "w.proxy.Process(ctx, net.Network_UDP, conn, revocable.Wrap(w.dispatcher))" app/proxyman/inbound/worker.go \
+ && grep -qF "if w.activeConn[id] == conn {" app/proxyman/inbound/worker.go \
+ && grep -qF "w.removeConn(id, conn)" app/proxyman/inbound/worker.go \
+ && grep -qF "for ctx.Err() == nil {" proxy/shadowsocks/server.go \
+ && grep -qF "buf.ReleaseMulti(mpayload[i:])" proxy/shadowsocks/server.go \
  && grep -q "retireUser(handler.Tag(), op.Email, um.GetUser(ctx, op.Email))" app/proxyman/command/command.go \
  && grep -q "RevokeUserOperation" app/proxyman/sessionrevoke/config.pb.go \
+ && grep -qF "message RevokeUserOperation {" app/proxyman/sessionrevoke/config.proto \
+ && grep -qF "func (op *RevokeUserOperation) ApplyInbound(ctx context.Context, handler inbound.Handler) error {" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "if err := manager.RemoveUser(ctx, op.Email); err != nil {" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "closed := Revoke(handler.Tag(), op.Email, current)" app/proxyman/sessionrevoke/operation.go \
+ && grep -qF "released bool" app/proxyman/sessionrevoke/session.go \
+ && grep -qF "s.released = true" app/proxyman/sessionrevoke/session.go \
+ && grep -qF "if s.released {" app/proxyman/sessionrevoke/session.go \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \
  && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
  && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
+ && grep -qF "conn.T = signal.CancelAfterInactivity(ctx, cancel, 300*time.Second)" common/singbridge/pipe.go \
+ && ! grep -qF "time.After(300 * time.Second)" common/singbridge/pipe.go \
+ && grep -qF "T: signal.CancelAfterInactivity(ctx, func() {" proxy/shadowsocks_2022/outbound.go \
  && git apply --verbose /patches/xray-stats-register-race.patch \
  && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
  && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
@@ -135,6 +154,8 @@ RUN git init -q . \
  && grep -qF "tunnel, err := h.processWireGuard(ctx, dialer)" proxy/wireguard/client.go \
  && grep -qF "if h.closed {" proxy/wireguard/client.go \
  && ! grep -qE "h[.]net[.]Dial" proxy/wireguard/client.go \
+ && test "$(grep -c 'case <-bind.closedCh:' proxy/wireguard/bind.go)" = "3" \
+ && grep -B1 -F "close(bind.closedCh)" proxy/wireguard/bind.go | grep -qF "default:" \
  && git apply --verbose /patches/xray-wireguard-tun-close.patch \
  && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
  && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \
@@ -145,6 +166,7 @@ RUN git init -q . \
  && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
  && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \
  && grep -q "if !peerIsTrustedForwarder(remoteAddr) {" common/protocol/http/trusted_forwarder.go \
+ && grep -qF "if prefix.Addr().Is4In6() {" common/protocol/http/trusted_forwarder.go \
  && grep -q "return TrustedClientAddress(header.Values, trusted, remoteAddr)" common/protocol/http/headers.go \
  && grep -q "return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)" transport/internet/grpc/encoding/remoteaddr.go \
  && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go

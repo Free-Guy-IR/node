@@ -24,6 +24,7 @@
 # Go workspace file
 go.work
 xray-core/
+xray-guard-src/
 *.env
 *.temp
 
