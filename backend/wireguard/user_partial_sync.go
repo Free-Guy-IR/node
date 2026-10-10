@@ -21,9 +21,11 @@ func (wg *WireGuard) buildExistingPeersSubsetForTouched(touchedEmails map[string
 
 func (wg *WireGuard) syncUsersPartialReconcile(users []*common.User) error {
 	normalizedUsers := normalizeUsers(users)
-	touchedEmails := make(map[string]struct{}, len(normalizedUsers))
-	for _, user := range normalizedUsers {
-		touchedEmails[user.GetEmail()] = struct{}{}
+	touchedEmails := make(map[string]struct{}, len(users))
+	for _, user := range users {
+		if email := user.GetEmail(); email != "" {
+			touchedEmails[email] = struct{}{}
+		}
 	}
 
 	existingSubset := wg.buildExistingPeersSubsetForTouched(touchedEmails)
