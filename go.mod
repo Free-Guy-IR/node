@@ -2,7 +2,7 @@ module github.com/pasarguard/node
 
 go 1.26.3
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/9seconds/mtg/v2 v2.1.8-0.20260609205628-d095108334de
