@@ -1,0 +1,362 @@
+SS2022 singbridge: tests for Close racing ReadPacket on the same PacketConnWrapper
+
+sing's CopyPacketConn closes both conns as soon as one copy direction ends, while the
+other direction can still be inside ReadPacket. PacketConnWrapper.Close releases w.cached
+while ReadPacket splits and replaces it, with no synchronisation. These tests drive that
+interleaving directly and fail on the pinned code plus xray-ss2022-dispatch.patch.
+
+diff --git a/common/singbridge/packet_close_race_test.go b/common/singbridge/packet_close_race_test.go
+new file mode 100644
+index 0000000..0bc317e
+--- /dev/null
++++ b/common/singbridge/packet_close_race_test.go
+@@ -0,0 +1,349 @@
++package singbridge_test
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"runtime"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	B "github.com/sagernet/sing/common/buf"
++	M "github.com/sagernet/sing/common/metadata"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/signal"
++	"github.com/xtls/xray-core/common/singbridge"
++)
++
++func payloadOf(id int) []byte {
++	return []byte(fmt.Sprintf("datagram-%07d", id))
++}
++
++func portOf(id int) net.Port {
++	return net.Port(1024 + id%60000)
++}
++
++func datagramBatches(sizes ...int) []buf.MultiBuffer {
++	var batches []buf.MultiBuffer
++	id := 0
++	for _, size := range sizes {
++		var mb buf.MultiBuffer
++		for range size {
++			b := buf.New()
++			b.Write(payloadOf(id))
++			from := net.UDPDestination(net.LocalHostIP, portOf(id))
++			b.UDP = &from
++			mb = append(mb, b)
++			id++
++		}
++		batches = append(batches, mb)
++	}
++	return batches
++}
++
++type datagramSource struct {
++	mu      sync.Mutex
++	batches []buf.MultiBuffer
++	handed  []*buf.Buffer
++}
++
++func (s *datagramSource) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if len(s.batches) == 0 {
++		return nil, io.EOF
++	}
++	mb := s.batches[0]
++	s.batches = s.batches[1:]
++	s.handed = append(s.handed, mb...)
++	return mb, nil
++}
++
++func (s *datagramSource) handedOut() []*buf.Buffer {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return append([]*buf.Buffer(nil), s.handed...)
++}
++
++func (s *datagramSource) drain() []*buf.Buffer {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	for _, mb := range s.batches {
++		buf.ReleaseMulti(mb)
++	}
++	s.batches = nil
++	return append([]*buf.Buffer(nil), s.handed...)
++}
++
++type heldSource struct {
++	entered chan struct{}
++	release chan struct{}
++	batch   buf.MultiBuffer
++}
++
++func (s *heldSource) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	close(s.entered)
++	<-s.release
++	return s.batch, nil
++}
++
++type datagramSink struct {
++	mu       sync.Mutex
++	received [][]byte
++}
++
++func (s *datagramSink) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	for _, b := range mb {
++		s.received = append(s.received, append([]byte(nil), b.Bytes()...))
++	}
++	buf.ReleaseMulti(mb)
++	return nil
++}
++
++func newFlow(reader buf.Reader, writer buf.Writer) *singbridge.PacketConnWrapper {
++	return &singbridge.PacketConnWrapper{
++		Reader: reader,
++		Writer: writer,
++		Dest:   net.UDPDestination(net.LocalHostIP, 53),
++		T:      signal.CancelAfterInactivity(context.Background(), func() {}, time.Hour),
++	}
++}
++
++type delivery struct {
++	payload []byte
++	from    M.Socksaddr
++}
++
++func readOne(conn *singbridge.PacketConnWrapper) (delivery, error) {
++	buffer := B.New()
++	defer buffer.Release()
++	from, err := conn.ReadPacket(buffer)
++	return delivery{payload: append([]byte(nil), buffer.Bytes()...), from: from}, err
++}
++
++func checkDelivery(t *testing.T, got delivery, id int) {
++	t.Helper()
++	if !bytes.Equal(got.payload, payloadOf(id)) {
++		t.Fatalf("datagram %d was delivered as %q, want %q: its buffer was read after it was released", id, got.payload, payloadOf(id))
++	}
++	if got.from.Port != uint16(portOf(id)) {
++		t.Fatalf("datagram %d was delivered from port %d, want %d: its buffer was read after it was released", id, got.from.Port, portOf(id))
++	}
++}
++
++func checkAllReleased(t *testing.T, handed []*buf.Buffer) {
++	t.Helper()
++	for _, b := range handed {
++		if b.Cap() != 0 {
++			t.Fatalf("a datagram the flow read from its link was neither delivered nor released once the flow was closed")
++		}
++	}
++}
++
++func TestReadPacketRacingCloseOnTheSameWrapper(t *testing.T) {
++	for round := range 300 {
++		source := &datagramSource{batches: datagramBatches(3)}
++		conn := newFlow(source, &datagramSink{})
++		var delivered []delivery
++		var readErr error
++		var wg sync.WaitGroup
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			for range 3 {
++				got, err := readOne(conn)
++				if err != nil {
++					readErr = err
++					return
++				}
++				delivered = append(delivered, got)
++			}
++		}()
++		go func() {
++			defer wg.Done()
++			conn.Close()
++		}()
++		wg.Wait()
++		conn.T.SetTimeout(0)
++		if readErr != nil && !errors.Is(readErr, io.ErrClosedPipe) {
++			t.Fatalf("round %d: ReadPacket failed with %v, want io.ErrClosedPipe once the flow is closed", round, readErr)
++		}
++		for id, got := range delivered {
++			checkDelivery(t, got, id)
++		}
++		checkAllReleased(t, source.drain())
++	}
++}
++
++func TestReadPacketAfterCloseNeitherReadsTheLinkNorDelivers(t *testing.T) {
++	source := &datagramSource{batches: datagramBatches(3, 2)}
++	conn := newFlow(source, &datagramSink{})
++	defer conn.T.SetTimeout(0)
++	got, err := readOne(conn)
++	if err != nil {
++		t.Fatal(err)
++	}
++	checkDelivery(t, got, 0)
++	if err := conn.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if err := conn.Close(); err != nil {
++		t.Fatal(err)
++	}
++	for range 3 {
++		got, err := readOne(conn)
++		if !errors.Is(err, io.ErrClosedPipe) {
++			t.Fatalf("ReadPacket after Close returned %v, want io.ErrClosedPipe", err)
++		}
++		if len(got.payload) != 0 {
++			t.Fatalf("ReadPacket after Close delivered %q", got.payload)
++		}
++	}
++	handed := source.handedOut()
++	if len(handed) != 3 {
++		t.Fatalf("the closed flow read %d datagrams from its link, want only the 3 it read before Close", len(handed))
++	}
++	checkAllReleased(t, handed)
++	source.drain()
++}
++
++func TestAReadHeldInTheLinkDuringCloseReleasesWhatItGetsAndDeliversNothing(t *testing.T) {
++	source := &heldSource{entered: make(chan struct{}), release: make(chan struct{}), batch: datagramBatches(3)[0]}
++	handed := append([]*buf.Buffer(nil), source.batch...)
++	conn := newFlow(source, &datagramSink{})
++	defer conn.T.SetTimeout(0)
++	type outcome struct {
++		got delivery
++		err error
++	}
++	done := make(chan outcome, 1)
++	go func() {
++		got, err := readOne(conn)
++		done <- outcome{got, err}
++	}()
++	<-source.entered
++	if err := conn.Close(); err != nil {
++		t.Fatal(err)
++	}
++	close(source.release)
++	result := <-done
++	if !errors.Is(result.err, io.ErrClosedPipe) {
++		t.Fatalf("a read that returned after Close gave %v, want io.ErrClosedPipe", result.err)
++	}
++	if len(result.got.payload) != 0 {
++		t.Fatalf("a read that returned after Close delivered %q", result.got.payload)
++	}
++	checkAllReleased(t, handed)
++}
++
++func TestConcurrentReadsWritesAndClosesNeverUseAReleasedBuffer(t *testing.T) {
++	const readers, writers, closers, writes = 4, 3, 2, 25
++	for round := range 40 {
++		sizes := make([]int, 60)
++		for i := range sizes {
++			sizes[i] = 1 + (i+round)%4
++		}
++		source := &datagramSource{batches: datagramBatches(sizes...)}
++		sink := &datagramSink{}
++		conn := newFlow(source, sink)
++		start := make(chan struct{})
++		perReader := make([][]delivery, readers)
++		readerErrs := make([]error, readers)
++		writerErrs := make([]error, writers)
++		var wg sync.WaitGroup
++		for r := range readers {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				<-start
++				for range 100000 {
++					got, err := readOne(conn)
++					if err != nil {
++						readerErrs[r] = err
++						return
++					}
++					if len(got.payload) != 0 {
++						perReader[r] = append(perReader[r], got)
++					}
++				}
++				readerErrs[r] = fmt.Errorf("reader %d never saw the flow close", r)
++			}()
++		}
++		for w := range writers {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				<-start
++				for k := range writes {
++					err := conn.WritePacket(B.As([]byte(fmt.Sprintf("upload-%d-%d", w, k))), M.ParseSocksaddrHostPort("127.0.0.1", 53))
++					if err != nil {
++						writerErrs[w] = err
++						return
++					}
++				}
++			}()
++		}
++		for c := range closers {
++			wg.Add(1)
++			go func() {
++				defer wg.Done()
++				<-start
++				for range 20 * (c + 1) {
++					runtime.Gosched()
++				}
++				conn.Close()
++			}()
++		}
++		close(start)
++		wg.Wait()
++		conn.T.SetTimeout(0)
++
++		for r, err := range readerErrs {
++			if !errors.Is(err, io.ErrClosedPipe) {
++				t.Fatalf("round %d: reader %d ended with %v, want io.ErrClosedPipe", round, r, err)
++			}
++		}
++		for w, err := range writerErrs {
++			if err != nil {
++				t.Fatalf("round %d: writer %d: %v", round, w, err)
++			}
++		}
++		handed := source.drain()
++		seen := make(map[int]bool)
++		for _, deliveries := range perReader {
++			for _, got := range deliveries {
++				id, err := strconv.Atoi(strings.TrimPrefix(string(got.payload), "datagram-"))
++				if err != nil || id < 0 || id >= len(handed) {
++					t.Fatalf("round %d: delivered %q, which the link never handed to the flow: a released buffer was read", round, got.payload)
++				}
++				if seen[id] {
++					t.Fatalf("round %d: datagram %d was delivered twice", round, id)
++				}
++				seen[id] = true
++				checkDelivery(t, got, id)
++			}
++		}
++		checkAllReleased(t, handed)
++		sink.mu.Lock()
++		uploads := make(map[string]bool, len(sink.received))
++		for _, payload := range sink.received {
++			uploads[string(payload)] = true
++		}
++		sink.mu.Unlock()
++		for w := range writers {
++			for k := range writes {
++				if !uploads[fmt.Sprintf("upload-%d-%d", w, k)] {
++					t.Fatalf("round %d: upload %d of writer %d never reached the link", round, k, w)
++				}
++			}
++		}
++	}
++}

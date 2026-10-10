@@ -76,6 +76,7 @@ COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-router-race.patch /patches/xray-router-race.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
+COPY patches/xray-ss2022-singbridge-close-race.patch /patches/xray-ss2022-singbridge-close-race.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 COPY patches/xray-websocket-early-data.patch /patches/xray-websocket-early-data.patch
@@ -136,6 +137,7 @@ RUN git init -q . \
  && grep -qF "conn.T = signal.CancelAfterInactivity(ctx, cancel, 300*time.Second)" common/singbridge/pipe.go \
  && ! grep -qF "time.After(300 * time.Second)" common/singbridge/pipe.go \
  && grep -qF "T: signal.CancelAfterInactivity(ctx, func() {" proxy/shadowsocks_2022/outbound.go \
+ && git apply --verbose /patches/xray-ss2022-singbridge-close-race.patch \
  && git apply --verbose /patches/xray-stats-register-race.patch \
  && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
  && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
