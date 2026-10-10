@@ -300,5 +300,11 @@ jobs:
       - name: Refuse tracked executables and files over 5 MB
         run: bash scripts/check_tracked_files.sh
 
+      - name: Test the toolchain floor guard
+        run: bash scripts/test_toolchain_floor.sh
+
+      - name: Refuse a Go toolchain or golang.org/x/net below the security floor
+        run: bash scripts/toolchain_floor.sh
+
       - name: Test the upstream drift checker
         run: make test-drift
