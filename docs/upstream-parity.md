@@ -12,7 +12,8 @@ reason. An item is any of these:
 - a third-party release published after our pin.
 
 State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-checked on 2026-10-07 (see
-[Node state on 2026-10-07](#node-state-on-2026-10-07)); the third-party sections still describe 2026-09-24.
+[Node state on 2026-10-07](#node-state-on-2026-10-07)) and on 2026-10-10 (see
+[Node state on 2026-10-10](#node-state-on-2026-10-10)); the third-party sections still describe 2026-09-24.
 
 ## Fork point
 
@@ -40,6 +41,7 @@ State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-check
 | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445` on 2026-09-24; ported in 0.6.21 by `f9c4f05` (merged into release/v0.6.21 at `01eed71`), which carries `Upstream: 4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` |
 | `3a3d5c58efff747a12ac57b014802f4f855896df` | deps: gopsutil 4.26.8 to 4.26.9 (#95) | new on upstream `dev` on 2026-10-01; ported in 0.6.21 by `53044cc`, which carries `Upstream: 3a3d5c58efff747a12ac57b014802f4f855896df`. Same module bumps and the same `go.sum` lines as upstream (purego v0.11.1, perfstat `88456608a4f6`, go-sysconf v0.4.0, numcpus v0.12.0) |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
+| `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `acfe4d3` (the fix) and `63ca286` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `71d000a` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
@@ -173,12 +175,13 @@ Other open upstream work that was reviewed:
 
 ## Other upstream branches
 
-The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-10-07 the branches were:
+The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-10-07 the branches were
+as below; on 2026-10-10 only `dev` had moved, to `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` (#99).
 
 | branch | head | status in the fork |
 |---|---|---|
 | `main` | `e9a9ba286413c404854b80c847b588b620426660` | merged (`v0.5.4`) |
-| `dev` | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | see the table above |
+| `dev` | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` (2026-10-10; `7be885ff5410ac7fdb92fa21cf7901a416be5f05` on 2026-10-07) | see the table above |
 | `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` | fully in the fork's history, nothing to list |
 | `chunck` | `c194114eb1971d2e252fa1d117d655122c356d35` | `c194114` is a branch-only prototype; upstream squash-merged chunked user sync as `4f8568b` (#23), which the fork has. Superseded, waived |
 | `debug` | `8047fad98ec7e9955a405a97bf90a2411d8d6678` | `af0846e` and `8047fad` add diagnostic logging and were never merged upstream. Not applicable, waived |
@@ -423,6 +426,54 @@ The lower-risk items were checked against the pinned code on 2026-09-24:
   pin, the check runs under `h.wgLock` (`proxy/wireguard/client.go:94-140`).
 - `d42c981`, the DomainMatcher race, fixes code that the geodata refactor `82624bc` added after the pin, so it does not
   apply.
+
+### Node state on 2026-10-10
+
+Heads checked with `git ls-remote https://github.com/PasarGuard/node.git` on 2026-10-10 (last at 22:06 UTC):
+
+- `dev` `f72ac0efacdbbfa155a1d491cceb8ce4908eab13`, `main` `e9a9ba286413c404854b80c847b588b620426660` (`v0.5.4`, still the
+  newest of the 42 tags);
+- `api-key`, `chunck`, `debug`, `fix/xray-api`, `masque`, `pr-61` and `refactor/inbound-map-storage` unchanged since
+  2026-10-07.
+
+The one new upstream commit is `f72ac0e` (#99) on `dev`. It is ported:
+
+- **The bug.** A partial sync (`SyncUser`, `UpdateUsers`, chunked updates and `UpdateUsersAndRestart`) only marked as
+  touched the users that `normalizeUsers` kept, and that function drops a user with empty `peer_ips` or with no
+  WireGuard credentials. The panel sends exactly that shape when a user loses WireGuard access: its serializer
+  (`app/node/user.py`) sends `peer_ips` as an empty list when the user has no WireGuard IPs, and partial syncs serialize
+  every protocol. The user's peer then stayed on the device and in the peer store until the next `Start` or full sync,
+  its freed IP could be given to another user while the old peer still held it, and handing its key to another user in
+  the same batch failed the batch with "already assigned to user".
+- **The port.** `63ca286` adds upstream's two tests first; on `8959c50` both fail ("expected exactly one Remove for the
+  stale peer, got []" for both shapes, and "already assigned to user"). `acfe4d3` takes upstream's change: every user
+  with a non-empty email in the request counts as touched, and only the normalized users become desired peers. The fork
+  keeps its own stats flush before a partial sync removes peers, so the removed peer's last traffic is sampled before
+  its stats entry is marked deleted.
+- **The interleaving test.** `71d000a` adds `TestLosingWireGuardAccessConvergesUnderConcurrentSyncsFullSyncsAndStarts`.
+  Eight groups hand their IP from user to user, half of them with the key; the user who loses access is sent with empty
+  `peer_ips`, without WireGuard credentials, without proxies, or without the inbound; each change goes out as two
+  `SyncUser` calls, one `UpdateUsers` batch, one chunked batch or `UpdateUsersAndRestart`, racing full syncs, restarts,
+  stats ticks, readers and a `Start`. A fake device keeps each peer's allowed IPs the way the kernel does. After every
+  phase the device and the peer store must hold exactly the desired peers with no IP held twice, removed peers' stats
+  must be marked deleted, and every counted byte must be reported once.
+  - On the fix's parent it fails in its first round: key handovers are refused, the old users' peers stay, the peer
+    store gives each freed IP to two users, a restart hands the IP back to the stale peer, and the removed peers'
+    stats stay live. The same on Linux (Go 1.26.6, kernel 5.15).
+  - With the fix: 20 runs of the three tests under `-race` on darwin (60 of 60 pass), 10 runs under `-race` on linux
+    (30 of 30), and the whole `backend/wireguard` package 3 times under `-race` on both, with no data race.
+- **Mutants of the touched set**, each run against the three tests:
+  - the touched set built from `normalizedUsers` again: all three fail;
+  - only users that carry a WireGuard proxy count as touched: the interleaving test and the removal test ("no
+    wireguard" shape) fail, the handover test passes;
+  - only users that carry a public key count as touched: the same two fail;
+  - users with an empty email count as touched too: all three pass. This mutant is equivalent: the peer store never
+    holds a peer with an empty email, because every path that stores peers goes through `normalizeUsers`.
+- **Not run here.** The real-kernel tests (`-tags=integration`, `make test-integration-wireguard`) need root and the
+  `wireguard` kernel module. The Linux test host has no `wireguard` module loaded, and loading one on that production
+  host is not done for a test; the `wireguard-integration` job of `run-tests.yml` runs them on GitHub's runner.
+- **Drift check.** `DRIFT_COMPONENTS=node` reports `f72ac0e` as `UNPORTED` on `8959c50` (exit 1) and as `PORTED` on
+  `71d000a`, with 0 unported items.
 
 ### govulncheck on the patched Xray build
 
