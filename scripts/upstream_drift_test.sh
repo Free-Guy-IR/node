@@ -786,6 +786,11 @@ COPY other-patches/ /patches/
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check xray-patch-directory-copied-onto-patches 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture xray-patch-directory-copied-onto-patches-no-slash "$xray_copy
+COPY other-patches/ /patches
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-directory-copied-onto-patches-no-slash 1 DRIFT_COMPONENTS="node xray"
+
 xray_fixture xray-build-trailing-comment-on-the-apply "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch # take the fork fix" "$xray_makefile" X1
 check xray-build-trailing-comment-on-the-apply 0 DRIFT_COMPONENTS="node xray"
