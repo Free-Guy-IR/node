@@ -1,10 +1,95 @@
-SS2022 singbridge: tests for Close racing ReadPacket on the same PacketConnWrapper
+SS2022 singbridge: Close no longer releases the cached datagrams while ReadPacket uses them
 
-sing's CopyPacketConn closes both conns as soon as one copy direction ends, while the
-other direction can still be inside ReadPacket. PacketConnWrapper.Close releases w.cached
-while ReadPacket splits and replaces it, with no synchronisation. These tests drive that
-interleaving directly and fail on the pinned code plus xray-ss2022-dispatch.patch.
+FORK DEVIATION: a minimal fix, not upstream code. No upstream branch or tag fixes this race.
+Upstream removed common/singbridge with the SS2022 refactor 65e853ed845e822b818386f0aeac93f5622dc41a
+(#6831, first released in v26.9.30), which does not apply to the pin. sing's CopyPacketConn
+closes both conns as soon as one copy direction ends, while the other direction can still be
+inside ReadPacket, so Close released w.cached while ReadPacket split and replaced it: a data
+race and a use of pooled buffers after their release. PacketConnWrapper now guards cached with
+a mutex. Close marks the wrapper closed and releases what is cached; a ReadPacket after Close
+returns io.ErrClosedPipe without reading the link; a read that returns from the link after
+Close releases what it got instead of caching it; and concurrent reads merge into the cache
+instead of replacing it. Applies after xray-ss2022-dispatch.patch, whose packet.go it extends.
 
+diff --git a/common/singbridge/packet.go b/common/singbridge/packet.go
+index fde4bed..83d00ea 100644
+--- a/common/singbridge/packet.go
++++ b/common/singbridge/packet.go
+@@ -2,6 +2,8 @@ package singbridge
+ 
+ import (
+ 	"context"
++	"io"
++	"sync"
+ 	"time"
+ 
+ 	B "github.com/sagernet/sing/common/buf"
+@@ -38,6 +40,9 @@ type PacketConnWrapper struct {
+ 
+ 	// A simple patch to avoid goroutine leak since sing infra cannot awake read block by write err
+ 	T *signal.ActivityTimer
++
++	access sync.Mutex
++	closed bool
+ }
+ 
+ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err error) {
+@@ -48,13 +53,19 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err
+ 			w.T.SetTimeout(2 * time.Second)
+ 		}
+ 	}()
++	w.access.Lock()
++	if w.closed {
++		w.access.Unlock()
++		return M.Socksaddr{}, io.ErrClosedPipe
++	}
+ 	if w.cached != nil {
+ 		mb, bb := buf.SplitFirst(w.cached)
+ 		if bb == nil {
+ 			w.cached = nil
+ 		} else {
+-			buffer.Write(bb.Bytes())
+ 			w.cached = mb
++			w.access.Unlock()
++			buffer.Write(bb.Bytes())
+ 			var destination net.Destination
+ 			if bb.UDP != nil {
+ 				destination = *bb.UDP
+@@ -65,13 +76,22 @@ func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (addr M.Socksaddr, err
+ 			return ToSocksaddr(destination), nil
+ 		}
+ 	}
++	w.access.Unlock()
+ 	mb, err := w.ReadMultiBuffer()
+ 	nb, bb := buf.SplitFirst(mb)
+ 	if bb == nil {
+ 		return M.Socksaddr{}, nil
+ 	} else {
++		w.access.Lock()
++		if w.closed {
++			w.access.Unlock()
++			bb.Release()
++			buf.ReleaseMulti(nb)
++			return M.Socksaddr{}, io.ErrClosedPipe
++		}
++		w.cached, _ = buf.MergeMulti(w.cached, nb)
++		w.access.Unlock()
+ 		buffer.Write(bb.Bytes())
+-		w.cached = nb
+ 		var destination net.Destination
+ 		if bb.UDP != nil {
+ 			destination = *bb.UDP
+@@ -102,6 +122,10 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
+ }
+ 
+ func (w *PacketConnWrapper) Close() error {
++	w.access.Lock()
++	defer w.access.Unlock()
++	w.closed = true
+ 	buf.ReleaseMulti(w.cached)
++	w.cached = nil
+ 	return nil
+ }
 diff --git a/common/singbridge/packet_close_race_test.go b/common/singbridge/packet_close_race_test.go
 new file mode 100644
 index 0000000..0bc317e

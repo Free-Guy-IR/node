@@ -647,10 +647,10 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
      forms again on the next packet with the users that remain.
   2. Shadowsocks 2022 UDP flows were already cut before this fix by its own user update; hysteria runs over QUIC and is
      not handled by the UDP worker.
-  3. The two Shadowsocks 2022 late-dispatch tests run without `-race`: the same late dispatch trips a data race in
-     `common/singbridge/packet.go`, where `PacketConnWrapper.Close` releases `cached` while `ReadPacket` writes it. That
-     code comes from upstream through `xray-ss2022-dispatch.patch`, the race was there before this fix, and it is
-     tracked as its own finding. The synthetic late-dispatch test below carries the `-race` signal for this fix.
+  3. The two Shadowsocks 2022 late-dispatch tests ran without `-race` until F-SINGBRIDGE-RACE was fixed: the same late
+     dispatch tripped a data race in `common/singbridge/packet.go`, where `PacketConnWrapper.Close` released `cached`
+     while `ReadPacket` wrote it. That code comes from upstream through `xray-ss2022-dispatch.patch`. It is fixed by
+     `xray-ss2022-singbridge-close-race.patch` (see its own section below), and both tests now run under `-race`.
 - **Tests:**
   - `TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow` (`app/proxyman/inbound`): a revoke closes the flow, the next
     flow with the revoked user is refused and removed, a later flow of the same source with the new credential is kept
@@ -677,6 +677,57 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
   - `TestALateDispatchOfARevokedUserIsRefusedAfterItsFlowWasReleased` fails when the released check is moved above
     the revoke checks, which would let a revoked user's late dispatch through.
 - **Removal condition:** none while the node relies on `RevokeUserOperation`; it goes with the session revoke patch.
+
+### FORK DEVIATION: singbridge Close no longer releases the datagrams ReadPacket is using (patches/xray-ss2022-singbridge-close-race.patch)
+
+- **Upstream:** no upstream branch or tag fixes this race. On 2026-10-10 all 116 branches and 135 tags of
+  XTLS/Xray-core were checked (`main` `701af60772cda123492f86e383e1fdba066614a9`, which is `v26.10.10`). Wherever
+  `common/singbridge/packet.go` exists, it is one of three blobs: `fef955e` (before the pin), `d4dccb4` (the pin) or
+  `fde4bed` (`d878fc8`, which the fork carries as `xray-ss2022-dispatch.patch`). Upstream removed `common/singbridge`
+  with the SS2022 refactor `65e853ed845e822b818386f0aeac93f5622dc41a` (#6831, first released in `v26.9.30`), which
+  does not apply to the pin. So the patch has no `Upstream:` line.
+- **The race at the pin plus `xray-ss2022-dispatch.patch`:**
+  - sing's `bufio.CopyPacketConn` runs the two copy directions as one `task.Group` with `FastFail`. When one direction
+    ends, it calls `Close` on both conns while the other direction can still be inside `ReadPacket`, and only then waits
+    for it.
+  - `PacketConnWrapper.Close` released `w.cached` while `ReadPacket` split it and wrote it back, with no
+    synchronisation (`packet.go:105` against `:54` and `:74`). Besides the data race, `ReadPacket` could copy a
+    datagram out of a buffer that `Close` had already returned to the pool. The datagram then reached the client empty,
+    with the flow's default address instead of its source, or with the bytes of whatever reused that buffer. A buffer
+    that both released at once could enter the pool twice, and two later users would then share one backing array.
+  - The Shadowsocks 2022 inbounds (`inbound.go`, `inbound_multi.go` and `inbound_relay.go`) and the Shadowsocks 2022
+    outbound reach it on every UDP flow that ends while a reply is being read.
+- **The fork fix**, in `common/singbridge/packet.go` only:
+  - `cached` and a new `closed` flag are guarded by a mutex. The mutex is never held across the blocking link read;
+  - `Close` marks the wrapper closed, releases what is cached and drops the slice. A second `Close` is a no-op;
+  - a `ReadPacket` after `Close` returns `io.ErrClosedPipe` without reading the link. sing's `IsClosedOrCanceled`
+    counts that error as a normal close;
+  - a read that comes back from the link after `Close` releases what it got and returns `io.ErrClosedPipe` instead of
+    caching it;
+  - concurrent reads merge what is left of their batch into the cache instead of replacing it, so no datagram is
+    dropped unreleased. sing reads each wrapper from one goroutine, so this changes nothing on that path.
+- **Kept from upstream:** `ReadPacket` still ignores the error of the link read, as `d878fc8` does. On a link error it
+  returns an empty datagram with no address and a nil error. That behaviour is out of scope here, and the fix does not
+  change it.
+- **Tests**, `common/singbridge/packet_close_race_test.go`, run under `-race` by `make test_xray_patches`:
+  - `TestReadPacketRacingCloseOnTheSameWrapper`: in each of 300 rounds, one goroutine reads a three-datagram batch
+    while another closes the wrapper. Each delivered datagram must carry its own bytes and source port, and every
+    datagram the wrapper took from the link must be released at the end;
+  - `TestReadPacketAfterCloseNeitherReadsTheLinkNorDelivers`: after `Close`, and after a second `Close`, `ReadPacket`
+    returns `io.ErrClosedPipe`, delivers nothing and does not read the link again;
+  - `TestAReadHeldInTheLinkDuringCloseReleasesWhatItGetsAndDeliversNothing`: a read blocked in the link while `Close`
+    runs gets a batch afterwards, delivers nothing and releases the whole batch;
+  - `TestConcurrentReadsWritesAndClosesNeverUseAReleasedBuffer`, the interleaving test: in each of 40 rounds four
+    readers, three writers and two closers share one wrapper. Each datagram is delivered at most once and intact, every
+    datagram taken from the link is released, every reader ends with `io.ErrClosedPipe`, and every upload reaches the
+    link;
+  - `TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered` and
+    `TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered` run the real Shadowsocks 2022 path
+    and now run under `-race` as well.
+- **Patch order:** the patch extends the `packet.go` that `xray-ss2022-dispatch.patch` writes. Its name sorts right
+  after that patch, so `make build_xray`'s glob applies it in the same order as the Dockerfile. Named
+  `xray-singbridge-close-race.patch`, it would sort before `xray-ss2022-dispatch.patch` and fail to apply.
+- **Removal condition:** drop the patch when the pin moves past `65e853e`, which removes `common/singbridge`.
 
 ### Adapted backport, not a deviation: stats GetOrRegister races (patches/xray-stats-register-race.patch)
 

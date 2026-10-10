@@ -138,6 +138,11 @@ RUN git init -q . \
  && ! grep -qF "time.After(300 * time.Second)" common/singbridge/pipe.go \
  && grep -qF "T: signal.CancelAfterInactivity(ctx, func() {" proxy/shadowsocks_2022/outbound.go \
  && git apply --verbose /patches/xray-ss2022-singbridge-close-race.patch \
+ && grep -qF "w.cached, _ = buf.MergeMulti(w.cached, nb)" common/singbridge/packet.go \
+ && ! grep -qF "w.cached = nb" common/singbridge/packet.go \
+ && test "$(grep -c 'return M.Socksaddr{}, io.ErrClosedPipe' common/singbridge/packet.go)" = "2" \
+ && test "$(grep -c 'w.access.Lock()' common/singbridge/packet.go)" = "3" \
+ && grep -qF "w.closed = true" common/singbridge/packet.go \
  && git apply --verbose /patches/xray-stats-register-race.patch \
  && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
  && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
