@@ -183,6 +183,26 @@ ENV NOTE=<<EOF
 ENV XRAY_EXECUTABLE_PATH=/opt/xray-stock"
 check bypass-env-heredoc-hides-the-executable-path 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture bypass-crlf-continuation-swallows-the-apply "$xray_copy
+RUN git init -q .
+RUN ! test -n x \\$cr
+RUN git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check bypass-crlf-continuation-swallows-the-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-vtab-comment-line-drops-the-apply "$xray_copy
+RUN git init -q . \\
+ && test -n x \\
+$vt# && git apply --verbose /patches/xray-fix.patch \\
+ && true" "$xray_makefile" X1
+check bypass-vtab-comment-line-drops-the-apply 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-nbsp-comment-line-drops-the-apply "$xray_copy
+RUN git init -q . \\
+ && test -n x \\
+$nbsp# && git apply --verbose /patches/xray-fix.patch \\
+ && true" "$xray_makefile" X1
+check bypass-nbsp-comment-line-drops-the-apply 1 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
