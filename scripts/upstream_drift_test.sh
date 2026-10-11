@@ -913,6 +913,49 @@ xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG T
 xray_prepend xray-pin-declared-on-a-continuation-line "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-on-a-continuation-line/xray-up" X1)"
 check xray-pin-declared-on-a-continuation-line 2 DRIFT_COMPONENTS="node xray"
 
+node_branch_only() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b "$2"
+  printf 'package main\n\nfunc extra() int { return 7 }\n' >"$s/upw/extra.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "B1 work on $2"
+  git -C "$s/upw" checkout -q main
+  printf '%s rejected: upstream work on %s still awaits a decision upstream\n' "$(sha_of "$s/upw" B1)" "$2" >>"$s/waivers"
+}
+
+node_branch_only branch-scope-required-on-a-branch-only-commit pr-9
+check branch-scope-required-on-a-branch-only-commit 1
+
+node_branch_only branch-scope-not-required-on-dev dev
+check branch-scope-not-required-on-dev 0
+
+xray_branch_only() {
+  xray_fixture "$1" "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+  s=$tmp/$1
+  git -C "$s/xray-up" checkout -q -b "$2"
+  printf 'package core\n\nvar raced = true\n' >"$s/xray-up/race.go"
+  git -C "$s/xray-up" add -A
+  commit "$s/xray-up" -m "XB fix a race on $2"
+  [ -z "$4" ] || git -C "$s/xray-up" branch -q "$4"
+  git -C "$s/xray-up" checkout -q main
+  printf '%s superseded: pre-squash commit on upstream branch %s, folded into a later main commit%s\n' \
+    "$(sha_of "$s/xray-up" XB)" "$2" "$3" >>"$s/waivers"
+  git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+}
+
+xray_branch_only xray-branch-scope-required-on-a-branch-only-commit side "" ""
+check xray-branch-scope-required-on-a-branch-only-commit 1 DRIFT_COMPONENTS="node xray"
+
+xray_branch_only xray-branch-scope-not-required-on-unstable unstable "" ""
+check xray-branch-scope-not-required-on-unstable 0 DRIFT_COMPONENTS="node xray"
+
+xray_branch_only xray-bot-branch-does-not-reopen-a-scoped-waiver side " branch:side" renovate/deps
+check xray-bot-branch-does-not-reopen-a-scoped-waiver 0 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
