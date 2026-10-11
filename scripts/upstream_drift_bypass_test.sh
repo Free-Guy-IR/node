@@ -203,6 +203,22 @@ $nbsp# && git apply --verbose /patches/xray-fix.patch \\
  && true" "$xray_makefile" X1
 check bypass-nbsp-comment-line-drops-the-apply 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture bypass-slash-slash-syntax-directive "$xray_applied" "$xray_makefile" X1
+xray_prepend bypass-slash-slash-syntax-directive '// syntax=docker.io/example/frontend:1'
+check bypass-slash-slash-syntax-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-bom-syntax-directive "$xray_applied" "$xray_makefile" X1
+xray_prepend bypass-bom-syntax-directive "$(printf '\357\273\277')# syntax=docker.io/example/frontend:1"
+check bypass-bom-syntax-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-vtab-syntax-directive "$xray_applied" "$xray_makefile" X1
+xray_prepend bypass-vtab-syntax-directive "#${vt}syntax=docker.io/example/frontend:1"
+check bypass-vtab-syntax-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-formfeed-syntax-directive "$xray_applied" "$xray_makefile" X1
+xray_prepend bypass-formfeed-syntax-directive "# syntax$(printf '\014')=docker.io/example/frontend:1"
+check bypass-formfeed-syntax-directive 1 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
