@@ -111,7 +111,7 @@ No shared prerequisite: each story owns disjoint files (see plan.md, Source Code
 - [ ] T055 Controller tests: `controller/rest` and `controller/rpc` listen on their own ephemeral ports with a Start deadline that holds under load (F-RPC-5s) - branch `release/v0.6.21-acct-flake`
 - [ ] T056 Controller tests: the Start-build user sync test picks a port no other process can take between its Start rounds (F-C1-flake) - branch `release/v0.6.21-acct-flake`
 - [ ] T057 Non-author verification of `release/v0.6.21-acct-l2tpfix2` 5207e59: every RED on its parent, GREEN, -race under dash and bash, fresh mutants, seeded interleaving stress, hostile review
-- [ ] T058 Real-kernel WireGuard MTU tests in a Linux gate: own network namespace, NET_ADMIN only, the wireguard module loaded only if absent and unloaded after, `lsmod`, `ip link` and `ip addr` identical before and after, and mutants of the MTU code fail (GATE-WGK)
+- [X] T058 Real-kernel WireGuard MTU tests in a Linux gate: own network namespace, NET_ADMIN only, the wireguard module loaded only if absent and unloaded after, `lsmod`, `ip link` and `ip addr` identical before and after, and mutants of the MTU code fail (GATE-WGK) - verification only, no code branch: run against the node integration head 33d30fd on the shared test host on 2026-10-07; 3/3 runs 2 PASS 0 FAIL, mutants M1 (no MTU apply), M2 (no keep-kernel guard) and M3 (Restart skips the MTU) each fail, module set and links unchanged afterwards; evidence in `acct-lead-state/evidence/node-misc-wgk/`
 
 ## Dependencies & Execution Order
 
