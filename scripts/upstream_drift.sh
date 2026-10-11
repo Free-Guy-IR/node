@@ -132,10 +132,20 @@ waiver_branch_scope() {
   awk -v id="$1" '$1 == id { $1 = ""; sub(/^ /, ""); print; exit }' "$work/waiver-branches"
 }
 
+branch_only_heads() {
+  awk -v lines=" $1 " '$0 !~ /^(renovate|dependabot)\// { h[++n] = $0; if (index(lines, " " $0 " ")) d = 1 }
+    END { if (!d) for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? " " : ""), h[i] }'
+}
+
+node_branch_only() {
+  [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
+  git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" | branch_only_heads "main dev"
+}
+
 node_scope_violations() {
   allowed=" $2 "
   { git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
-      awk -v a="$allowed" 'index(a, " " $0 " ") == 0 { print "branch " $0 }'
+      awk -v a="$allowed" '$0 !~ /^(renovate|dependabot)\// && index(a, " " $0 " ") == 0 { print "branch " $0 }'
     git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/tags/" |
       awk '{ print "tag " $0 }'
   } | paste -sd ',' - | sed 's/,/, /g'
@@ -787,6 +797,12 @@ check_node() {
       status=EMPTY
       detail="changes no file, nothing to port"
       empty=$((empty + 1))
+    elif [ -n "$waiver" ] && [ -z "$(waiver_branch_scope "$sha")" ] &&
+      { only=$(node_branch_only "$sha"); [ -n "$only" ]; }; then
+      status=UNPORTED
+      detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the commit must be ported)"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
       status=UNPORTED
@@ -832,6 +848,11 @@ check_node() {
     if [ -n "$trailer" ]; then
       status=PORTED
       detail="referenced by an Upstream/cherry-pick trailer ($trailer)"
+    elif [ -n "$waiver" ] && [ -z "$(waiver_branch_scope "$sha")" ] &&
+      { only=$(node_branch_only "$sha"); [ -n "$only" ]; }; then
+      status=UNPORTED
+      detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the merge must be ported)"
+      count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
       status=UNPORTED
@@ -904,10 +925,16 @@ tpgit() {
   git --git-dir="$tp_gd" "$@"
 }
 
+tp_branch_only() {
+  [ -z "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ] || return 0
+  tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
+    branch_only_heads "$2 main master dev stable testing unstable oldstable"
+}
+
 tp_scope_violations() {
   allowed=" $2 "
   { tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
-      awk -v a="$allowed" 'index(a, " " $0 " ") == 0 { print "branch " $0 }'
+      awk -v a="$allowed" '$0 !~ /^(renovate|dependabot)\// && index(a, " " $0 " ") == 0 { print "branch " $0 }'
     tpgit for-each-ref --format='%(refname:strip=2)' --contains "$1" refs/tags/ |
       awk '{ print "tag " $0 }'
   } | paste -sd ',' - | sed 's/,/, /g'
@@ -978,6 +1005,12 @@ check_thirdparty() {
     if [ -n "$trailer" ]; then
       status=PORTED
       detail="referenced by an Upstream/cherry-pick trailer ($trailer)"
+    elif [ -n "$waiver" ] && [ -z "$(waiver_branch_scope "$sha")" ] &&
+      { only=$(tp_branch_only "$sha" "$line"); [ -n "$only" ]; }; then
+      status=UNPORTED
+      detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the commit must be ported)"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(tp_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
       status=UNPORTED

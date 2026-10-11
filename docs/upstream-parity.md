@@ -1015,9 +1015,13 @@ Add one line to `.github/upstream-waivers.txt`:
   The node commit and node merge checks, and the security-looking commit check of every third-party component, then
   grant `WAIVED` only while every upstream ref that contains the commit is one of the named branches. The day upstream merges that branch into another ref, deletes it and tags a release, the
   commit becomes reachable from a mainline ref or a tag, and the item turns `UNPORTED` with a message naming the refs
-  that now reach it. Several `branch:` tokens are allowed. A waiver whose reason says the upstream work is unmerged
-  (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:` token is a malformed line, so
-  the scope cannot be forgotten; the check exits 2. A malformed `branch:` token also exits 2.
+  that now reach it. Several `branch:` tokens are allowed. The scope is required, not optional: a waived commit
+  that no tag and no release-line branch reaches (node: `main`, `dev`; third party: the line branch and any branch
+  named `main`, `master`, `dev`, `stable`, `testing`, `unstable` or `oldstable`) is `UNPORTED` until its waiver names
+  the branches that do, whatever the reason says. Bot branches (`renovate/*`, `dependabot/*`) never make a commit
+  branch-only and never break a scope, because they only rebase onto other branches. A waiver whose reason says the
+  upstream work is unmerged (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:`
+  token is also a malformed line; the check exits 2. A malformed `branch:` token also exits 2.
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
