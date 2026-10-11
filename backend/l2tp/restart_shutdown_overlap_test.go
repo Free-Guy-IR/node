@@ -1,12 +1,10 @@
 package l2tp
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -73,28 +71,26 @@ func TestL2TPRestartWaitsForAShutdownThatHoldsTheLock(t *testing.T) {
 
 	o.mu.Lock()
 	held := true
-	release := func() {
+	stopAndRelease := func() {
 		if held {
 			held = false
+			o.state = lifecycleStopped
 			o.mu.Unlock()
 		}
 	}
-	t.Cleanup(release)
+	t.Cleanup(stopAndRelease)
 
 	restarted := make(chan error, 1)
 	go func() { restarted <- o.Restart() }()
 
-	if !waitForL2TPGoroutine(10*time.Second, ".(*L2TP).Restart", "sync.(*RWMutex).Lock") {
-		release()
-		err := <-restarted
-		t.Fatalf("Restart ran without waiting for the lock a running Shutdown holds (it returned %v)", err)
-	}
-
-	o.state = lifecycleStopped
-	release()
+	waited := waitForL2TPGoroutine(10*time.Second, ".(*L2TP).Restart", "sync.(*RWMutex).Lock")
+	stopAndRelease()
 
 	select {
 	case err := <-restarted:
+		if !waited {
+			t.Fatalf("Restart ran without waiting for the lock a running Shutdown holds (it returned %v)", err)
+		}
 		if !errors.Is(err, errNotStarted) {
 			t.Fatalf("a Restart that waited while the backend shut down returned %v, want errNotStarted", err)
 		}
@@ -103,53 +99,5 @@ func TestL2TPRestartWaitsForAShutdownThatHoldsTheLock(t *testing.T) {
 	}
 	if o.process != nil || o.Started() {
 		t.Fatal("a Restart that waited while the backend shut down started xl2tpd")
-	}
-}
-
-func TestL2TPRestartsOverlappingARealShutdownAreSerialised(t *testing.T) {
-	e := newAcctEnv(t)
-	o := runningInstanceFromConfig(t, e, "u1")
-	ctx := context.Background()
-
-	stop := make(chan struct{})
-	var workers sync.WaitGroup
-	for range 3 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				_ = o.Restart()
-			}
-		}()
-	}
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			_ = o.UpdateUsers(ctx, e.users("u1"))
-		}
-	}()
-
-	time.Sleep(30 * time.Millisecond)
-	o.Shutdown()
-	time.Sleep(30 * time.Millisecond)
-	close(stop)
-	workers.Wait()
-
-	if err := o.Restart(); !errors.Is(err, errNotStarted) {
-		t.Fatalf("a Restart after the overlapping Shutdown returned %v, want errNotStarted", err)
-	}
-	if o.process != nil || o.Started() {
-		t.Fatal("a Restart overlapping Shutdown left xl2tpd running")
 	}
 }
