@@ -174,10 +174,13 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-xhttp-client-race.patch \
  && test -f transport/internet/splithttp/client_race_test.go \
  && grep -qF "reader atomic.Pointer[io.ReadCloser]" transport/internet/splithttp/client.go \
- && grep -qF "if p := w.reader.Swap(nil); p != nil {" transport/internet/splithttp/client.go \
+ && test "$(grep -cF 'if p := w.reader.Swap(nil); p != nil {' transport/internet/splithttp/client.go)" = "2" \
+ && grep -A1 -F "w.reader.Store(&rc)" transport/internet/splithttp/client.go | grep -qF "if w.wait.Done() {" \
+ && grep -A1 -F "func (w *WaitReadCloser) Close() error {" transport/internet/splithttp/client.go | grep -qF "w.wait.Close()" \
  && grep -qF "return c.closed.Load()" transport/internet/splithttp/client.go \
  && test "$(grep -c 'c.closed.Store(true)' transport/internet/splithttp/client.go)" = "3" \
  && ! grep -qE "c[.]closed = true|close[(]w[.]Wait[)]|w[.]ReadCloser" transport/internet/splithttp/client.go \
+ && grep -A1 -F "n := int(buff.Len())" transport/internet/splithttp/dialer.go | grep -qF "err := w.WriteMultiBuffer(buf.MultiBuffer{buff})" \
  && grep -qF "writed += n" transport/internet/splithttp/dialer.go \
  && ! grep -qF "writed += int(buff.Len())" transport/internet/splithttp/dialer.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
