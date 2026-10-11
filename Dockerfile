@@ -82,7 +82,7 @@ COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 COPY patches/xray-websocket-early-data.patch /patches/xray-websocket-early-data.patch
 COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-close.patch
 COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
-COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
+COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
 RUN git init -q . \
@@ -167,9 +167,9 @@ RUN git init -q . \
  && git apply --verbose /patches/xray-wireguard-tun-close.patch \
  && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
  && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \
- && git apply --verbose /patches/xray-x-net-0.59.0.patch \
+ && git apply --verbose /patches/xray-x-net-0.60.0.patch \
  && grep -q "golang.org/x/crypto v0.57.0$" go.mod \
- && grep -q "golang.org/x/net v0.59.0$" go.mod \
+ && grep -q "golang.org/x/net v0.60.0$" go.mod \
  && git apply --verbose /patches/xray-xff-trusted-header.patch \
  && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
  && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \
