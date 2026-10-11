@@ -79,7 +79,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   line_no=$((line_no + 1))
   printf '%s\n' "$line" | grep -Eq "^([0-9a-f]{40}|$ghsa_re) ($categories): [^[:space:]].{8,}$" ||
     die "$waiver_file:$line_no: expected '<40-hex sha or GHSA id> <rejected|superseded|pending|not-applicable|allowed-merge>: <reason>', got: $line"
-  branch_tokens=$(printf '%s\n' "$line" | tr -s '[:space:]' '\n' | { grep -i '^branch:' || true; })
+  branch_tokens=$(printf '%s\n' "$line" | awk '{ for (i = 1; i <= NF; i++) { w = $i; sub(/^[([{"]+/, "", w); if (tolower(substr(w, 1, 7)) == "branch:") { w = substr(w, 8); sub(/[])},.;:"]+$/, "", w); print "branch:" w } } }')
   if [ -n "$branch_tokens" ]; then
     bad_branch=$(printf '%s\n' "$branch_tokens" | { grep -Evx 'branch:[A-Za-z0-9._/-]+' || true; })
     [ -z "$bad_branch" ] ||
@@ -140,6 +140,16 @@ branch_only_heads() {
 node_branch_only() {
   [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
   git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" | branch_only_heads "main dev"
+}
+
+claims_unmerged() {
+  printf '%s\n' "$1" | grep -Eiq 'unmerged|not( yet)?( been)? merged|never( been)? merged|revisit if upstream merges|still open|open pull request|awaiting( an?)?( upstream)? merge'
+}
+
+node_on_release_line() {
+  [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
+  git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
+    awk '$0 == "main" || $0 == "dev" { f = 1 } END { exit !f }'
 }
 
 node_scope_violations() {
@@ -818,6 +828,11 @@ check_node() {
       detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the commit must be ported)"
       unported=$((unported + 1))
       count_unported
+    elif [ -n "$waiver" ] && claims_unmerged "$waiver" && node_on_release_line "$sha"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this commit; review it and port it or rewrite the waiver"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
       status=UNPORTED
@@ -867,6 +882,10 @@ check_node() {
       { only=$(node_branch_only "$sha"); [ -n "$only" ]; }; then
       status=UNPORTED
       detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the merge must be ported)"
+      count_unported
+    elif [ -n "$waiver" ] && claims_unmerged "$waiver" && node_on_release_line "$sha"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this merge; review it and port it or rewrite the waiver"
       count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
@@ -944,6 +963,12 @@ tp_branch_only() {
   [ -z "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ] || return 0
   tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
     branch_only_heads "$2 main master dev stable testing unstable oldstable"
+}
+
+tp_on_release_line() {
+  [ -z "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ] || return 0
+  tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
+    awk -v lines=" $2 main master dev stable testing unstable oldstable " 'index(lines, " " $0 " ") { f = 1 } END { exit !f }'
 }
 
 tp_scope_violations() {
@@ -1024,6 +1049,11 @@ check_thirdparty() {
       { only=$(tp_branch_only "$sha" "$line"); [ -n "$only" ]; }; then
       status=UNPORTED
       detail="branch-only commit: no tag and no release-line branch reaches it, only $only; its waiver depends on that branch staying unmerged, so it must name it with a branch:<ref> token (or the commit must be ported)"
+      unported=$((unported + 1))
+      count_unported
+    elif [ -n "$waiver" ] && claims_unmerged "$waiver" && tp_on_release_line "$sha" "$line"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this commit; review it and port it or rewrite the waiver"
       unported=$((unported + 1))
       count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&

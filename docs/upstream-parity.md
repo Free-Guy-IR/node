@@ -1021,7 +1021,11 @@ Add one line to `.github/upstream-waivers.txt`:
   the branches that do, whatever the reason says. Bot branches (`renovate/*`, `dependabot/*`) never make a commit
   branch-only and never break a scope, because they only rebase onto other branches. A waiver whose reason says the
   upstream work is unmerged (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:`
-  token is also a malformed line; the check exits 2. A malformed `branch:` token also exits 2.
+  token is also a malformed line; the check exits 2. A malformed `branch:` token also exits 2. A token is read even
+  when punctuation wraps it, as in `(branch:pr-61),`. And whatever its tokens, a waiver whose reason says the work is
+  unmerged or still open (`unmerged`, `not merged`, `not yet merged`, `never merged`, `still open`, `open pull
+  request`, `awaiting upstream merge` and similar) turns its item `UNPORTED` once a release line or a tag carries
+  the commit, because its reason is then false.
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.
