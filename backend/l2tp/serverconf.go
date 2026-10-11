@@ -18,8 +18,13 @@ import (
 )
 
 var (
-	xl2tpdVersionRe = regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+)`)
-	chapSecretsMu   sync.Mutex
+	xl2tpdVersionRe        = regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+)`)
+	chapSecretsMu          sync.Mutex
+	chapSecretsPath        = "/etc/ppp/chap-secrets"
+	beforeChapSecretsWrite = func() {}
+	swanctlDir             = ipsec.SwanctlDir
+	xl2tpdPath             = xl2tpdBinary
+	loadSwanctl            = ipsec.LoadAll
 )
 
 var versionProbeTimeout = 10 * time.Second
@@ -43,7 +48,7 @@ func DetectVersion() string {
 
 func (o *L2TP) confFileName() string { return "pg-l2tp-" + o.config.InboundTag + ".conf" }
 func (o *L2TP) swanctlFragmentPath() string {
-	return filepath.Join(ipsec.SwanctlDir, "conf.d", o.confFileName())
+	return filepath.Join(swanctlDir, "conf.d", o.confFileName())
 }
 func (o *L2TP) xl2tpdConfPath() string    { return filepath.Join(o.config.workDir, "xl2tpd.conf") }
 func (o *L2TP) pppOptionsPath() string    { return filepath.Join(o.config.workDir, "ppp-options") }
@@ -56,7 +61,7 @@ func (o *L2TP) writeConfig() error {
 	if err := os.MkdirAll(o.config.workDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(ipsec.SwanctlDir, "conf.d"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(swanctlDir, "conf.d"), 0o700); err != nil {
 		return err
 	}
 	for _, step := range []func() error{o.writeSwanctl, o.writeXl2tpdConf, o.writePPPOptions, o.writeIPScripts, o.writeChapSecrets} {
@@ -314,6 +319,7 @@ func chapQuote(s string) string {
 }
 
 func (o *L2TP) writeChapSecrets() error {
+	beforeChapSecretsWrite()
 	chapSecretsMu.Lock()
 	defer chapSecretsMu.Unlock()
 	kept, err := o.chapSecretsWithoutTag()

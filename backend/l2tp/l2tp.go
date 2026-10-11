@@ -24,7 +24,6 @@ const (
 	xl2tpdBinary            = "/usr/sbin/xl2tpd"
 	pppdBinary              = "/usr/sbin/pppd"
 	pppDevice               = "/dev/ppp"
-	chapSecretsPath         = "/etc/ppp/chap-secrets"
 	xl2tpdStopGrace         = 5 * time.Second
 )
 
@@ -161,7 +160,7 @@ func (o *L2TP) startLocked() error {
 		o.runHostRoutingCleanup()
 		return fmt.Errorf("start charon: %w", err)
 	}
-	if err := ipsec.LoadAll(); err != nil {
+	if err := loadSwanctl(); err != nil {
 		ipsec.Stop()
 		o.runHostRoutingCleanup()
 		return fmt.Errorf("swanctl load: %w", err)
@@ -191,7 +190,7 @@ func (o *L2TP) runHostRoutingCleanup() {
 
 func (o *L2TP) startXl2tpdLocked() error {
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, xl2tpdBinary, "-D",
+	cmd := exec.CommandContext(ctx, xl2tpdPath, "-D",
 		"-c", o.xl2tpdConfPath(),
 		"-C", o.controlSocketPath(),
 		"-p", o.pidPath(),
@@ -269,7 +268,7 @@ func (o *L2TP) Restart() error {
 	if err := o.writeConfig(); err != nil {
 		return fmt.Errorf("write l2tp config: %w", err)
 	}
-	if err := ipsec.LoadAll(); err != nil {
+	if err := loadSwanctl(); err != nil {
 		return fmt.Errorf("swanctl load: %w", err)
 	}
 	if err := o.startXl2tpdLocked(); err != nil {
@@ -294,7 +293,7 @@ func (o *L2TP) Shutdown() {
 	o.handOverLocked()
 	_ = os.Remove(o.swanctlFragmentPath())
 	if ipsec.Running() {
-		_ = ipsec.LoadAll()
+		_ = loadSwanctl()
 	}
 	ipsec.Stop()
 	o.removeChapSecrets()
