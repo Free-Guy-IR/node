@@ -853,7 +853,10 @@ check_node() {
     printf '%-8s node commit %s [%s] %s\n' "$status" "$(git rev-parse --short=12 "$sha")" "$labels" "$(git log -1 --format=%s "$sha")"
     printf '         %s\n' "$detail"
     if [ "$status" != WAIVED ] && [ -n "$waiver" ]; then
-      printf '         note: the waiver for this commit is no longer needed\n'
+      case "$detail" in
+        "branch-only commit:"* | "the waiver says"* | "the waiver scopes"*) ;;
+        *) printf '         note: the waiver for this commit is no longer needed\n' ;;
+      esac
     fi
   done 3<"$work/upstream"
 
@@ -1077,7 +1080,10 @@ check_thirdparty() {
       "$(tpgit log -1 --format=%s "$sha")"
     printf '         %s\n' "$detail"
     if [ "$status" != WAIVED ] && [ -n "$waiver" ]; then
-      printf '         note: the waiver for this commit is no longer needed\n'
+      case "$detail" in
+        "branch-only commit:"* | "the waiver says"* | "the waiver scopes"*) ;;
+        *) printf '         note: the waiver for this commit is no longer needed\n' ;;
+      esac
     fi
   done 5<"$work/$name-security"
 

@@ -973,6 +973,10 @@ node_branch_only() {
 
 node_branch_only branch-scope-required-on-a-branch-only-commit pr-9
 check branch-scope-required-on-a-branch-only-commit 1
+if grep -q 'waiver for this commit is no longer needed' "$tmp/branch-scope-required-on-a-branch-only-commit/out"; then
+  printf 'FAIL     %-28s calls a waiver that only lacks its scope no longer needed\n' branch-scope-required-on-a-branch-only-commit
+  failed=$((failed + 1))
+fi
 
 node_branch_only branch-scope-not-required-on-dev dev
 check branch-scope-not-required-on-dev 0
