@@ -299,6 +299,9 @@ check d10-scope-token-in-parentheses 1
 d10_node_merged d10-unmerged-phrase-outside-the-lint 'upstream PR #61 is unmerged and still open, it collides with the fork mtproto backend'
 check d10-unmerged-phrase-outside-the-lint 1
 
+xray_fixture control-plain-applied-build-counts "$xray_applied" "$xray_makefile" X1
+check control-plain-applied-build-counts 0 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
