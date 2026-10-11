@@ -229,6 +229,35 @@ COPY other.patch /patches//xray-fix.patch
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 check bypass-patch-overwritten-through-a-double-slash 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture bypass-stock-binary-shipped-through-patches "$xray_copy
+COPY --from=$stock_image /usr/bin/xray /patches/stock
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+FROM scratch
+COPY --from=xray-builder /patches/stock /usr/local/bin/xray"
+check bypass-stock-binary-shipped-through-patches 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-directory-copied-over-usr-local "$xray_applied" "$xray_makefile" X1 "$xray_tail
+COPY --from=$stock_image /usr/local /usr/local"
+check bypass-directory-copied-over-usr-local 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-entrypoint-selects-a-stock-binary "$xray_applied" "$xray_makefile" X1 "$xray_tail
+COPY --from=$stock_image /usr/bin/xray /opt/stock/xray-core
+ENTRYPOINT [\"env\", \"XRAY_EXECUTABLE_PATH=/opt/stock/xray-core\", \"./main\"]"
+check bypass-entrypoint-selects-a-stock-binary 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-dotenv-selects-a-stock-binary "$xray_applied" "$xray_makefile" X1 "$xray_tail
+COPY --from=$stock_image /usr/bin/xray /opt/stock/xray-core
+COPY stock.env /app/.env"
+check bypass-dotenv-selects-a-stock-binary 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-builder-on-an-unpinned-external-image "$xray_applied" "$xray_makefile" X1
+perl -pi -e 's/^FROM scratch AS xray-builder$/FROM docker.io\/example\/golang-git-apply-is-true:1 AS xray-builder/' \
+  "$tmp/bypass-builder-on-an-unpinned-external-image/fork/Dockerfile"
+git -C "$tmp/bypass-builder-on-an-unpinned-external-image/fork" add -A
+commit "$tmp/bypass-builder-on-an-unpinned-external-image/fork" -m "build xray on an external image"
+check bypass-builder-on-an-unpinned-external-image 1 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
