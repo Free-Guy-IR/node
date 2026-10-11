@@ -306,8 +306,14 @@ func (o *L2TP) SyncUser(_ context.Context, user *common.User) error {
 }
 
 func (o *L2TP) SyncUsers(_ context.Context, users []*common.User) error {
+	o.mu.RLock()
+	if o.state != lifecycleRunning {
+		o.mu.RUnlock()
+		return errNotStarted
+	}
 	removed := o.users.replaceAll(users)
 	err := o.writeChapSecrets()
+	o.mu.RUnlock()
 	o.killSessions(removed)
 	o.forgetUsers(removed)
 	return err
@@ -325,6 +331,11 @@ func (o *L2TP) UpdateUsersAndRestart(ctx context.Context, users []*common.User) 
 }
 
 func (o *L2TP) applyUsers(users []*common.User) error {
+	o.mu.RLock()
+	if o.state != lifecycleRunning {
+		o.mu.RUnlock()
+		return errNotStarted
+	}
 	var revoked, rotated []string
 	for _, u := range users {
 		username, changed, removed := o.users.applyUser(u)
@@ -336,6 +347,7 @@ func (o *L2TP) applyUsers(users []*common.User) error {
 		}
 	}
 	err := o.writeChapSecrets()
+	o.mu.RUnlock()
 	o.killSessions(append(append([]string(nil), revoked...), rotated...))
 	o.forgetUsers(revoked)
 	return err
