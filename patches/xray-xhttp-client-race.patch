@@ -7,10 +7,10 @@ Backport: every changed line of client.go and dialer.go is upstream code, unchan
 differs from upstream, because the pin does not carry 986c512 (request creation error), 9d9eaf3 (closing the
 stream-up body) or 1e036ce (closing the HTTP/3 transport). They are not part of this port: 986c512 and 9d9eaf3
 keep their own pending waivers, and 1e036ce matches no drift keyword and comes with the pin move.
-client_race_test.go is fork code. It holds a -race test for each of the three races, and an interleaving
-test that runs stream-down, early-close, failed, stream-up and packet-up requests at once on one client.
-That test checks that each stream reads exactly its own body, that a stream closed early never reads foreign
-data, and that every response body is closed exactly once. The same races also failed upstream's
+client_race_test.go is fork code. It holds a -race test for each of the three races, a test of two Close calls
+racing the response while a Read waits, and an interleaving test that runs stream-down, early-close, failed,
+stream-up and packet-up requests at once on one client. These check that each stream reads exactly its own
+body and that every response body is closed exactly once. The same races also failed upstream's
 TestDialWithRemoteAddr and the splithttp TestTrustedHeaderScenarios under -race.
 
 diff --git a/transport/internet/splithttp/client.go b/transport/internet/splithttp/client.go
@@ -133,10 +133,10 @@ index c156509..2038263 100644
  }
 diff --git a/transport/internet/splithttp/client_race_test.go b/transport/internet/splithttp/client_race_test.go
 new file mode 100644
-index 0000000..fa31df8
+index 0000000..55d8529
 --- /dev/null
 +++ b/transport/internet/splithttp/client_race_test.go
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,526 @@
 +package splithttp
 +
 +import (
@@ -357,6 +357,64 @@ index 0000000..fa31df8
 +	time.Sleep(20 * time.Millisecond)
 +	if n := body.closeCount(); n != 1 {
 +		t.Fatalf("the late response body was closed %d times, want 1", n)
++	}
++}
++
++func TestConcurrentClosesRacingTheResponseCloseItsBodyOnceAndWakeTheWaitingRead(t *testing.T) {
++	bodies := make([]*trackedBody, 0, 50)
++	for round := 0; round < 50; round++ {
++		payload := streamPayload(round)
++		body := newTrackedBody(payload)
++		bodies = append(bodies, body)
++		release := make(chan struct{})
++		client := newScriptedClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
++			announceConn(req)
++			<-release
++			return okResponse(req, body), nil
++		}))
++
++		wrc, _, _, err := client.OpenStream(context.Background(), "http://example.com/s/"+strconv.Itoa(round), "session", nil, false)
++		if err != nil {
++			t.Fatal(err)
++		}
++		read := make(chan []byte, 1)
++		go func() {
++			p := make([]byte, 64)
++			n, _ := wrc.Read(p)
++			read <- p[:n]
++		}()
++		start := make(chan struct{})
++		var closers sync.WaitGroup
++		for i := 0; i < 2; i++ {
++			closers.Add(1)
++			go func() {
++				defer closers.Done()
++				<-start
++				wrc.Close()
++			}()
++		}
++		close(start)
++		close(release)
++		closers.Wait()
++
++		select {
++		case got := <-read:
++			if !bytes.HasPrefix(payload, got) {
++				t.Fatalf("round %d: the waiting read returned %d bytes that are not this stream's body", round, len(got))
++			}
++		case <-time.After(10 * time.Second):
++			t.Fatalf("round %d: the read waiting on the stream never returned after Close", round)
++		}
++		waitForOneClose(t, "round "+strconv.Itoa(round), body)
++		if t.Failed() {
++			return
++		}
++	}
++	time.Sleep(20 * time.Millisecond)
++	for round, body := range bodies {
++		if n := body.closeCount(); n != 1 {
++			t.Errorf("round %d: the response body was closed %d times, want exactly 1", round, n)
++		}
 +	}
 +}
 +
