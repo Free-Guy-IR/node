@@ -681,12 +681,17 @@ check xray-patch-file-is-a-symlink 1 DRIFT_COMPONENTS="node xray"
 xray_fixture xray-pin-declared-twice "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_prepend xray-pin-declared-twice "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice/xray-up" X1)"
-check xray-pin-declared-twice 2 DRIFT_COMPONENTS="node xray"
+check xray-pin-declared-twice 0 DRIFT_COMPONENTS="node xray"
 
 xray_fixture xray-pin-declared-twice-lowercase "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_prepend xray-pin-declared-twice-lowercase "arg XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice-lowercase/xray-up" X1)"
-check xray-pin-declared-twice-lowercase 2 DRIFT_COMPONENTS="node xray"
+check xray-pin-declared-twice-lowercase 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-declared-twice-in-the-builder-stage "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-pin-declared-twice-in-the-builder-stage "s/^(ARG XRAY_COMMIT=.*)\$/\$1\nARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice-in-the-builder-stage/xray-up" X1)/"
+check xray-pin-declared-twice-in-the-builder-stage 2 DRIFT_COMPONENTS="node xray"
 
 xray_fixture xray-build-fetches-another-ref "$xray_copy
 RUN git init -q . && git fetch -q --depth 1 origin main && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
@@ -911,7 +916,7 @@ xray_fixture xray-pin-declared-on-a-continuation-line "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG TARGETOS \\\n XRAY_COMMIT=/'
 xray_prepend xray-pin-declared-on-a-continuation-line "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-on-a-continuation-line/xray-up" X1)"
-check xray-pin-declared-on-a-continuation-line 2 DRIFT_COMPONENTS="node xray"
+check xray-pin-declared-on-a-continuation-line 1 DRIFT_COMPONENTS="node xray"
 
 node_branch_only() {
   base "$1"

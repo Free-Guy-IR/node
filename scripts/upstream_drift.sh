@@ -406,7 +406,19 @@ dockerfile_program='
     rest = substr(s, length(w[1]) + 1)
     sub(/^[ \t]+/, "", rest)
     if (argkey != "") {
-      if (kw == "ARG") for (i = 2; i <= n; i++) if (index(w[i], argkey "=") == 1) { argn++; if (argn == 1) argval = substr(w[i], length(argkey) + 2) }
+      if (kw == "FROM") {
+        stage = ""
+        for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
+        infrom = 1
+        return
+      }
+      if (kw != "ARG") return
+      for (i = 2; i <= n; i++) {
+        if (index(w[i], argkey "=") == 1) {
+          if (!infrom) { gn++; gv = substr(w[i], length(argkey) + 2) }
+          else if (stage == argstage) { sn++; sv = substr(w[i], length(argkey) + 2) }
+        } else if (w[i] == argkey && infrom && stage == argstage) sbare = 1
+      }
       return
     }
     if ((kw == "RUN" || kw == "COPY" || kw == "ADD") && index(s, "<<")) taint("the Dockerfile uses a heredoc, which the check does not follow: " s)
@@ -516,8 +528,11 @@ dockerfile_program='
   END {
     if (inst != "") handle(inst)
     if (argkey != "") {
-      if (argn > 1) exit 3
-      if (argn == 1) print argval
+      if (sn > 1) exit 3
+      if (sn == 1) { print sv; exit 0 }
+      if (!sbare) exit 0
+      if (gn > 1) exit 3
+      if (gn == 1) print gv
       exit 0
     }
     if (!builders) taint("the Dockerfile has no xray-builder stage")
@@ -876,8 +891,8 @@ check_node() {
 }
 
 dockerfile_arg() {
-  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v argkey="$1" -v q="'" "$dockerfile_program" ||
-    die "Dockerfile declares ARG $1 with a value more than once, so the build may use another value than the check reads"
+  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v argkey="$1" -v argstage="$2" -v q="'" "$dockerfile_program" ||
+    die "Dockerfile stage $2 gets ARG $1 from more than one declaration with a value, so the build may use another value than the check reads"
 }
 
 gomod_version() {
@@ -1075,7 +1090,7 @@ if enabled node; then
 fi
 
 if enabled xray; then
-  xray_commit=$(dockerfile_arg XRAY_COMMIT)
+  xray_commit=$(dockerfile_arg XRAY_COMMIT xray-builder)
   printf '%s\n' "$xray_commit" | grep -Eqx '[0-9a-f]{40}' ||
     die "Dockerfile ARG XRAY_COMMIT is not a full commit sha: '$xray_commit'"
   check_thirdparty xray XTLS/Xray-core github.com/xtls/xray-core main \
@@ -1088,15 +1103,15 @@ if enabled xray; then
 fi
 
 if enabled sing-box; then
-  singbox_version=$(dockerfile_arg SINGBOX_VERSION)
+  singbox_version=$(dockerfile_arg SINGBOX_VERSION singbox-builder)
   [ -n "$singbox_version" ] || die "Dockerfile has no ARG SINGBOX_VERSION"
   check_thirdparty sing-box SagerNet/sing-box github.com/sagernet/sing-box oldstable \
     "refs/tags/$singbox_version" "Dockerfile ARG SINGBOX_VERSION $singbox_version" "" ""
 fi
 
 if enabled sing-quic; then
-  singbox_repo=$(dockerfile_arg SINGBOX_REPO)
-  singbox_commit=$(dockerfile_arg SINGBOX_COMMIT)
+  singbox_repo=$(dockerfile_arg SINGBOX_REPO singbox-builder)
+  singbox_commit=$(dockerfile_arg SINGBOX_COMMIT singbox-builder)
   printf '%s\n' "$singbox_commit" | grep -Eqx '[0-9a-f]{40}' ||
     die "Dockerfile ARG SINGBOX_COMMIT is not a full commit sha: '$singbox_commit'"
   fork_gd=$store/sing-box-fork.git
