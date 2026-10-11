@@ -219,6 +219,16 @@ xray_fixture bypass-formfeed-syntax-directive "$xray_applied" "$xray_makefile" X
 xray_prepend bypass-formfeed-syntax-directive "# syntax$(printf '\014')=docker.io/example/frontend:1"
 check bypass-formfeed-syntax-directive 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture bypass-patch-overwritten-through-a-dot-path "$xray_copy
+COPY other.patch /patches/./xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check bypass-patch-overwritten-through-a-dot-path 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture bypass-patch-overwritten-through-a-double-slash "$xray_copy
+COPY other.patch /patches//xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check bypass-patch-overwritten-through-a-double-slash 1 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
