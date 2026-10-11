@@ -258,6 +258,12 @@ git -C "$tmp/bypass-builder-on-an-unpinned-external-image/fork" add -A
 commit "$tmp/bypass-builder-on-an-unpinned-external-image/fork" -m "build xray on an external image"
 check bypass-builder-on-an-unpinned-external-image 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture bypass-pin-read-from-a-global-arg "$xray_applied" "$xray_makefile" B1
+perl -pi -e 's/^ARG XRAY_COMMIT=(\w+)$/ARG XRAY_VERSION=v1.0.0 \\\n    XRAY_COMMIT=$1/' \
+  "$tmp/bypass-pin-read-from-a-global-arg/fork/Dockerfile"
+xray_prepend bypass-pin-read-from-a-global-arg "ARG XRAY_COMMIT=$(sha_of "$tmp/bypass-pin-read-from-a-global-arg/xray-up" X1)"
+check bypass-pin-read-from-a-global-arg 1 DRIFT_COMPONENTS="node xray"
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
