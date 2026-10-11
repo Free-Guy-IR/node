@@ -918,6 +918,46 @@ xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG T
 xray_prepend xray-pin-declared-on-a-continuation-line "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-on-a-continuation-line/xray-up" X1)"
 check xray-pin-declared-on-a-continuation-line 1 DRIFT_COMPONENTS="node xray"
 
+xray_stock_image='docker.io/example/xray-stock@sha256:1111111111111111111111111111111111111111111111111111111111111111'
+
+xray_fixture xray-build-crlf-valid-build "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-build-crlf-valid-build 's/\n/\r\n/'
+check xray-build-crlf-valid-build 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-heredoc-fakes-the-install "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+FROM $xray_stock_image
+RUN true <<LABEL
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
+LABEL"
+check xray-build-heredoc-fakes-the-install 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-directory-copied-over-usr-local-through-a-double-slash "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+COPY --from=builder /tree /usr//local"
+check xray-build-directory-copied-over-usr-local-through-a-double-slash 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-directory-copied-over-usr-local-through-a-relative-path "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+COPY --from=builder /tree usr/local"
+check xray-build-directory-copied-over-usr-local-through-a-relative-path 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-installed-off-the-executable-path "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+FROM $xray_stock_image
+COPY --from=xray-builder /out/xray /opt/xray"
+check xray-build-installed-off-the-executable-path 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-to-a-relative-output-path "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o xray ./main
+
+FROM scratch
+COPY --from=xray-builder xray /usr/local/bin/xray"
+check xray-build-to-a-relative-output-path 1 DRIFT_COMPONENTS="node xray"
+
 node_branch_only() {
   base "$1"
   s=$tmp/$1
