@@ -47,6 +47,10 @@ The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
 The toolchain moved to Go 1.26.6 in `345febd` (fixes GO-2026-6090), with a govulncheck CI job from `47ef6ee`.
+On 2026-10-10 it moved to Go 1.26.9 in `85a53e5`, with golang.org/x/net 0.60.0 in `005d863`, which together fix
+GO-2026-6617, 6613, 6612, 6611, 6610, 6608, 6607, 6605, 6603, 6600 and 6599; Go 1.26.7 and 1.26.8 were released but
+fix none of them. `615fac8` added `scripts/toolchain_floor.sh` to the repo-hygiene job, which refuses any pin below
+Go 1.26.9 or x/net 0.60.0.
 
 Notes on the ported commits:
 
@@ -344,7 +348,8 @@ Why the rules look like this:
   - `a2cec2e580e8ea1900701b11b425e0351de2ec71`, the DNS panic on a name over 255 bytes;
   - `d878fc83f8be0f56cebbc5fb9a9baf0aa48d9990`, the SS2022 dispatch panic;
   - `0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18`, the stats `GetOrRegister*` races, as an adapted backport;
-  - `24e6f6d5513382d92256a80c5f2e7a6e16e5d6c7`, x/crypto 0.57.0 and x/net 0.59.0;
+  - `24e6f6d5513382d92256a80c5f2e7a6e16e5d6c7`, x/crypto 0.57.0 and x/net 0.59.0. Since 2026-10-10 the trailer is in
+    `xray-x-net-0.60.0.patch`, which goes on to x/net 0.60.0 ahead of upstream;
   - `77f98eba0978cbcb425e2f8ec3cec86bd5aa8444` and `eef6e63bc16d6e97fd98178556d49aad7978809a`, the XHTTP client races,
     in the header of `xray-xhttp-client-race.patch`. Their `pending` waivers were removed with the port.
 - **What the check shows.**
@@ -535,6 +540,10 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   six.
 - GO-2026-6354 and GO-2026-6355 (x/crypto/ssh, fixed in 0.56.0) were module-level only. `xray-x-net-0.59.0.patch`
   takes upstream `24e6f6d`'s x/crypto 0.57.0 and clears them.
+- On 2026-10-10 (database of 2026-10-08), the same run with that patch and Go 1.26.6 found 12 symbol-reachable ids:
+  GO-2026-6617, 6612, 6611, 6610 and 6603 in x/net 0.59.0 and the standard library, and 6613, 6609, 6608, 6607, 6605,
+  6600 and 6599 in the standard library. `e691a18` renames the patch to `xray-x-net-0.60.0.patch` and moves Xray to
+  x/net 0.60.0, and the builder image moves to Go 1.26.9. With both, the run finds none at symbol or package level.
 - Two ids are still listed at module level. Neither has a symbol-level or a package-level result:
 
 | id | module | fixed version | state |
@@ -549,8 +558,12 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 
 ### Not covered
 
-- **SagerNet/sing, sing-vmess, grpc-go and other Go dependencies.** The sing-box fork vendors or requires them. They
-  are covered by govulncheck in CI, not by this check.
+- **SagerNet/sing, sing-vmess, grpc-go and other Go dependencies.** The sing-box fork vendors or requires them. The
+  govulncheck CI job scans only the node module, so it does not cover them. On 2026-10-10, govulncheck v1.8.0 with
+  Go 1.26.9 on `./cmd/sing-box` at `SINGBOX_COMMIT` `4a87f50`, with the image's build tags, found no standard library
+  id. It found 20 symbol-reachable ids in x/net 0.50.0, x/crypto 0.48.0 (ssh), x/text 0.34.0 and grpc 1.79.1. The
+  node binds the sing-box gRPC and clash APIs to 127.0.0.1 and serves Hysteria2 over QUIC, so their HTTP/2 server paths
+  are reachable only from the host itself. Moving the sing-box fork's dependencies is a separate, open decision.
 - **Open pull requests on contributors' forks** (listed above).
 - **Pre-release tags** (alpha, beta, rc). Their commits are covered by rule 2 on the active branches.
 - **Alpine packages.** Since 0.6.21 the alpine and golang base images are pinned by digest, and the geo data comes from

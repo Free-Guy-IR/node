@@ -13,7 +13,7 @@ policy; correct the Release Guard message and the README.
 ## Technical Context
 
 - Workflows: GitHub Actions, checked by actionlint 1.7.12 with shellcheck 0.11.0.
-- Gate checker: Go 1.26.6, `gopkg.in/yaml.v3` v3.0.1 (the parser actionlint uses), in its own module
+- Gate checker: Go 1.26.9, `gopkg.in/yaml.v3` v3.0.1 (the parser actionlint uses), in its own module
   `scripts/workflowgate`, so the node module, its `go.mod`, its tests and its govulncheck run stay unchanged.
 - Tests: bash. `scripts/test_workflow_policy.sh` (mutations the policy must refuse),
   `scripts/test_image_tag_policy.sh`, `scripts/test_workflow_steps.sh` (runs each `run:` step with stubbed `gh`,

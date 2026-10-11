@@ -2,18 +2,21 @@
 
 ## Sync Impact Report
 
-- Version change: 1.1.0 -> 1.1.1 (PATCH: one Release Constraints value; no principle added, removed or redefined).
-- Modified: Release Constraints, Go toolchain 1.26.3 -> 1.26.6 (fixes GO-2026-6090, a reachable pre-auth
-  crypto/tls KeyUpdate CPU DoS on the node's TLS port; audit item u4-4).
-- Approval: Approved by main session under the owner's standing orders of 2026-09-23/24 (full autonomy; nothing from
-  upstream dropped; no known bug remains), for u4-4 / GO-2026-6090.
-- Artifacts brought in line in the same release: Dockerfile, Dockerfile.xray and Dockerfile.wireguard builder stages,
-  go.mod `toolchain go1.26.6`, .github/workflows/run-tests.yml and release.yml (345febd);
-  specs/002-accounting-defects plan.md, quickstart.md and tasks.md (db7f577).
+- Version change: 1.1.1 -> 1.1.2 (PATCH: one Release Constraints value; no principle added, removed or redefined).
+- Modified: Release Constraints, Go toolchain 1.26.6 -> 1.26.9 (fixes GO-2026-6617, 6613, 6612, 6611, 6610, 6608,
+  6607, 6605, 6603, 6600 and 6599, eleven advisories reachable from the node with Go 1.26.6; Go 1.26.7 and 1.26.8
+  fix none of them).
+- Approval: pending; the change goes through PG-NODE, a non-author verifier and the 3/3 review gate.
+- Artifacts brought in line in the same change: Dockerfile and Dockerfile.wireguard builder stages, go.mod
+  `toolchain go1.26.9`, .github/workflows/run-tests.yml and publish-release.yml (85a53e5); golang.org/x/net 0.60.0
+  (005d863); the Xray patch xray-x-net-0.60.0.patch (e691a18); the toolchain floor guard (615fac8);
+  specs/002-accounting-defects plan.md, quickstart.md and the open task T029, and specs/003-release-pipeline-hardening
+  plan.md.
 - Templates checked, no change needed: .specify/templates/plan-template.md, spec-template.md, tasks-template.md,
   checklist-template.md and constitution-template.md name no toolchain version.
-- Left as historical record: specs/001-release-0-6-21/plan.md and tasks.md describe the 0.6.21 session-kill work as
-  planned on Go 1.26.3.
+- Left as historical record: specs/001-release-0-6-21/plan.md and tasks.md (Go 1.26.3), and the completed task T041 of
+  specs/002-accounting-defects/tasks.md (Go 1.26.6 in 345febd).
+- Previous amendment: 1.1.0 -> 1.1.1, Go toolchain 1.26.3 -> 1.26.6 for GO-2026-6090 (345febd, ce09efe).
 
 ## Core Principles
 
@@ -70,7 +73,7 @@ failure, never a silent zero.
 
 ## Release Constraints
 
-- Go toolchain 1.26.6 with `GOTOOLCHAIN=local` for the xray build; xray pinned by commit in the
+- Go toolchain 1.26.9 with `GOTOOLCHAIN=local` for the xray build; xray pinned by commit in the
   Dockerfile and asserted after checkout; every `patches/xray-*.patch` the Dockerfile applies is
   asserted by a grep after `git apply`.
 - Images are published only to `ghcr.io/free-guy-ir/node` for `linux/amd64` and `linux/arm64`.
@@ -94,4 +97,4 @@ a Sync Impact Report, and a semantic version bump of this file (MAJOR for remove
 principles, MINOR for added or materially expanded ones, PATCH for wording). Every plan's
 Constitution Check and every review MUST cite the principles it verified.
 
-**Version**: 1.1.1 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-24
+**Version**: 1.1.2 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-10-10
