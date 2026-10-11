@@ -172,7 +172,14 @@ RUN git init -q . \
  && grep -q "return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)" transport/internet/grpc/encoding/remoteaddr.go \
  && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go \
  && git apply --verbose /patches/xray-xhttp-client-race.patch \
- && test -f transport/internet/splithttp/client_race_test.go
+ && test -f transport/internet/splithttp/client_race_test.go \
+ && grep -qF "reader atomic.Pointer[io.ReadCloser]" transport/internet/splithttp/client.go \
+ && grep -qF "if p := w.reader.Swap(nil); p != nil {" transport/internet/splithttp/client.go \
+ && grep -qF "return c.closed.Load()" transport/internet/splithttp/client.go \
+ && test "$(grep -c 'c.closed.Store(true)' transport/internet/splithttp/client.go)" = "3" \
+ && ! grep -qE "c[.]closed = true|close[(]w[.]Wait[)]|w[.]ReadCloser" transport/internet/splithttp/client.go \
+ && grep -qF "writed += n" transport/internet/splithttp/dialer.go \
+ && ! grep -qF "writed += int(buff.Len())" transport/internet/splithttp/dialer.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main

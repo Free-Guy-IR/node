@@ -1,12 +1,136 @@
-XHTTP client: tests for the WaitReadCloser, closed flag and upload byte count races
+XHTTP client: fix the WaitReadCloser data race, the closed flag race and the upload byte count race
 
-These tests come before the fix. client_race_test.go is fork code: a -race test for each of the three races
-upstream fixed in the XHTTP client, and an interleaving test that runs stream-down, early-close, failed,
-stream-up and packet-up requests at once on one client. That test checks that each stream reads exactly its
-own body, that a stream closed early never reads foreign data, and that every response body is closed exactly
-once. At the pin, under -race, five of the six report a data race in every run;
-TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce passes, and holds behaviour the fix must keep.
+Upstream: 77f98eba0978cbcb425e2f8ec3cec86bd5aa8444
+Upstream: eef6e63bc16d6e97fd98178556d49aad7978809a
 
+Backport: every changed line of client.go and dialer.go is upstream code, unchanged. Only the hunk context
+differs from upstream, because the pin does not carry 986c512 (request creation error), 9d9eaf3 (closing the
+stream-up body) or 1e036ce (closing the HTTP/3 transport). They are not part of this port: 986c512 and 9d9eaf3
+keep their own pending waivers, and 1e036ce matches no drift keyword and comes with the pin move.
+client_race_test.go is fork code. It holds a -race test for each of the three races, and an interleaving
+test that runs stream-down, early-close, failed, stream-up and packet-up requests at once on one client.
+That test checks that each stream reads exactly its own body, that a stream closed early never reads foreign
+data, and that every response body is closed exactly once. The same races also failed upstream's
+TestDialWithRemoteAddr and the splithttp TestTrustedHeaderScenarios under -race.
+
+diff --git a/transport/internet/splithttp/client.go b/transport/internet/splithttp/client.go
+index c156509..2038263 100644
+--- a/transport/internet/splithttp/client.go
++++ b/transport/internet/splithttp/client.go
+@@ -8,6 +8,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptrace"
+ 	"sync"
++	"sync/atomic"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+@@ -31,7 +32,7 @@ type DialerClient interface {
+ type DefaultDialerClient struct {
+ 	transportConfig *Config
+ 	client          *http.Client
+-	closed          bool
++	closed          atomic.Bool
+ 	httpVersion     string
+ 	// pool of net.Conn, created using dialUploadConn
+ 	uploadRawPool  *sync.Pool
+@@ -39,7 +40,7 @@ type DefaultDialerClient struct {
+ }
+ 
+ func (c *DefaultDialerClient) IsClosed() bool {
+-	return c.closed
++	return c.closed.Load()
+ }
+ 
+ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessionId string, body io.Reader, uploadOnly bool) (wrc io.ReadCloser, remoteAddr, localAddr net.Addr, err error) {
+@@ -62,12 +63,12 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
+ 	req, _ := http.NewRequestWithContext(context.WithoutCancel(ctx), method, url, body)
+ 	c.transportConfig.FillStreamRequest(req, sessionId, "")
+ 
+-	wrc = &WaitReadCloser{Wait: make(chan struct{})}
++	wrc = &WaitReadCloser{wait: done.New()}
+ 	go func() {
+ 		resp, err := c.client.Do(req)
+ 		if err != nil {
+ 			if !uploadOnly { // stream-down is enough
+-				c.closed = true
++				c.closed.Store(true)
+ 				errors.LogInfoInner(ctx, err, "failed to "+method+" "+url)
+ 			}
+ 			gotConn.Close()
+@@ -101,7 +102,7 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
+ 	if c.httpVersion != "1.1" {
+ 		resp, err := c.client.Do(req)
+ 		if err != nil {
+-			c.closed = true
++			c.closed.Store(true)
+ 			return err
+ 		}
+ 
+@@ -141,7 +142,7 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
+ 				if h1UploadConn.UnreadedResponsesCount > 0 {
+ 					resp, err := http.ReadResponse(h1UploadConn.RespBufReader, req)
+ 					if err != nil {
+-						c.closed = true
++						c.closed.Store(true)
+ 						return fmt.Errorf("error while reading response: %s", err.Error())
+ 					}
+ 					io.Copy(io.Discard, resp.Body)
+@@ -171,38 +172,35 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
+ }
+ 
+ type WaitReadCloser struct {
+-	Wait chan struct{}
+-	io.ReadCloser
++	wait   *done.Instance
++	reader atomic.Pointer[io.ReadCloser]
+ }
+ 
+ func (w *WaitReadCloser) Set(rc io.ReadCloser) {
+-	w.ReadCloser = rc
+-	defer func() {
+-		if recover() != nil {
+-			rc.Close()
++	w.reader.Store(&rc)
++	if w.wait.Done() {
++		if p := w.reader.Swap(nil); p != nil {
++			(*p).Close()
+ 		}
+-	}()
+-	close(w.Wait)
++	}
++	w.wait.Close()
+ }
+ 
+ func (w *WaitReadCloser) Read(b []byte) (int, error) {
+-	if w.ReadCloser == nil {
+-		if <-w.Wait; w.ReadCloser == nil {
++	rc := w.reader.Load()
++	if rc == nil {
++		<-w.wait.Wait()
++		if rc = w.reader.Load(); rc == nil {
+ 			return 0, io.ErrClosedPipe
+ 		}
+ 	}
+-	return w.ReadCloser.Read(b)
++	return (*rc).Read(b)
+ }
+ 
+ func (w *WaitReadCloser) Close() error {
+-	if w.ReadCloser != nil {
+-		return w.ReadCloser.Close()
++	w.wait.Close()
++	if p := w.reader.Swap(nil); p != nil {
++		return (*p).Close()
+ 	}
+-	defer func() {
+-		if recover() != nil && w.ReadCloser != nil {
+-			w.ReadCloser.Close()
+-		}
+-	}()
+-	close(w.Wait)
+ 	return nil
+ }
 diff --git a/transport/internet/splithttp/client_race_test.go b/transport/internet/splithttp/client_race_test.go
 new file mode 100644
 index 0000000..e0b2ac8
@@ -472,3 +596,21 @@ index 0000000..e0b2ac8
 +		}
 +	}
 +}
+diff --git a/transport/internet/splithttp/dialer.go b/transport/internet/splithttp/dialer.go
+index 0c351a5..ac12bfc 100644
+--- a/transport/internet/splithttp/dialer.go
++++ b/transport/internet/splithttp/dialer.go
+@@ -607,11 +607,12 @@ func (w uploadWriter) Write(b []byte) (int, error) {
+ 
+ 	var writed int
+ 	for _, buff := range buffer.MultiBuffer {
++		n := int(buff.Len())
+ 		err := w.WriteMultiBuffer(buf.MultiBuffer{buff})
+ 		if err != nil {
+ 			return writed, err
+ 		}
+-		writed += int(buff.Len())
++		writed += n
+ 	}
+ 	return writed, nil
+ }

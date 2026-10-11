@@ -301,7 +301,9 @@ Why the rules look like this:
   - `a2cec2e580e8ea1900701b11b425e0351de2ec71`, the DNS panic on a name over 255 bytes;
   - `d878fc83f8be0f56cebbc5fb9a9baf0aa48d9990`, the SS2022 dispatch panic;
   - `0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18`, the stats `GetOrRegister*` races, as an adapted backport;
-  - `24e6f6d5513382d92256a80c5f2e7a6e16e5d6c7`, x/crypto 0.57.0 and x/net 0.59.0.
+  - `24e6f6d5513382d92256a80c5f2e7a6e16e5d6c7`, x/crypto 0.57.0 and x/net 0.59.0;
+  - `77f98eba0978cbcb425e2f8ec3cec86bd5aa8444` and `eef6e63bc16d6e97fd98178556d49aad7978809a`, the XHTTP client races,
+    in the header of `xray-xhttp-client-race.patch`. Their `pending` waivers were removed with the port.
 - **What the check shows.**
   - The run of 2026-09-24 marks the six keyword commits among them as `PORTED`: `e5a9fb7`, `8f15190`, `8ee131c`,
     `0bafca9`, `a2cec2e` and `d878fc8`.
@@ -412,6 +414,11 @@ and passes with the fix.
   `xray-stats-register-race.patch`, an adapted backport (see below).
 - `598bde7`, the Router API data race: upstream's refactor does not apply to the pin, so `xray-router-race.patch` is
   a fork fix. The commit stays waived as pending for the rest of the refactor.
+
+On 2026-10-10 the XHTTP client races `77f98eb` and `eef6e63` were taken early too, as
+`xray-xhttp-client-race.patch`. They had been waived as pending the v26.9.x pin move, because no production core
+dials out over XHTTP. That waiver did not survive CI: since CI runs `make test_xray_patches` with `GOFLAGS=-race`,
+upstream's own `TestDialWithRemoteAddr` failed on these races (run 37916395457).
 
 The lower-risk items were checked against the pinned code on 2026-09-24:
 
