@@ -264,6 +264,41 @@ perl -pi -e 's/^ARG XRAY_COMMIT=(\w+)$/ARG XRAY_VERSION=v1.0.0 \\\n    XRAY_COMM
 xray_prepend bypass-pin-read-from-a-global-arg "ARG XRAY_COMMIT=$(sha_of "$tmp/bypass-pin-read-from-a-global-arg/xray-up" X1)"
 check bypass-pin-read-from-a-global-arg 1 DRIFT_COMPONENTS="node xray"
 
+xray_fixture d10-branch-scope-ignored-for-xray "$xray_applied" "$xray_makefile" X1
+s=$tmp/d10-branch-scope-ignored-for-xray
+git -C "$s/xray-up" checkout -q -b feat
+printf 'package core\n\nvar guarded = true\n\nvar bounded = true\n' >"$s/xray-up/core.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "X2 fix a crash on a long name"
+git -C "$s/xray-up" checkout -q main
+printf '%s rejected: upstream PR on branch feat, open, not merged; revisit if upstream merges it branch:feat\n' \
+  "$(sha_of "$s/xray-up" X2)" >>"$s/waivers"
+git -C "$s/xray-up" merge -q --no-ff --no-edit feat
+git -C "$s/xray-up" branch -q -D feat
+git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+check d10-branch-scope-ignored-for-xray 1 DRIFT_COMPONENTS="node xray"
+
+d10_node_merged() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b pr-61
+  printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "P1 telemt backend"
+  git -C "$s/upw" checkout -q main
+  printf '%s rejected: %s\n' "$(sha_of "$s/upw" P1)" "$2" >>"$s/waivers"
+  git -C "$s/upw" merge -q --no-ff --no-edit pr-61
+  git -C "$s/upw" branch -q -D pr-61
+}
+
+d10_node_merged d10-scope-token-in-parentheses 'upstream PR #61 is still open and has not been merged yet (branch:pr-61), it collides with the fork mtproto backend'
+check d10-scope-token-in-parentheses 1
+
+d10_node_merged d10-unmerged-phrase-outside-the-lint 'upstream PR #61 is unmerged and still open, it collides with the fork mtproto backend'
+check d10-unmerged-phrase-outside-the-lint 1
+
 finished=1
 printf 'upstream-drift-test: %d of %d cases ran, %d passed, %d failed\n' "$ran" "$declared" "$pass" "$failed"
 if [ "$ran" != "$declared" ]; then
