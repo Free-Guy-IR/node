@@ -522,7 +522,8 @@ guards cover every fix: it runs the stage's apply-and-guard chain on the pinned 
 non-test file from one patch at a time and requires the chain or the linux/amd64 build to fail. On 2026-09-30 all 55
 removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevoke/operation.go`, `singbridge/pipe.go`,
 `shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
-(r2-B review).
+(r2-B review). On 2026-10-11, at node `47434b9`, all 56 removals fail; the 56th is the `packet.go` diff of
+`xray-ss2022-singbridge-close-race.patch`.
 
 Every `go test` line of `make test_xray_patches` states its own race mode: `-race` with `CGO_ENABLED=1`, or
 `-race=false`. CI runs the target as `CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches`. A `-race` or `-race=false`
@@ -733,6 +734,25 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
   - `TestAShadowsocks2022UDPFlowEndedByAnInvalidPacketLeavesNoSessionRegistered` and
     `TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered` run the real Shadowsocks 2022 path
     and now run under `-race` as well.
+- **Measured on 2026-10-10 and 2026-10-11:**
+  - Before the fix, at node `a692620` (the pin, the earlier patches and these tests), each of the four new tests failed
+    in 10 of 10 separate `-race` processes. The racing and interleaving tests reported the race at `packet.go:105`
+    against `:57` and `:74`. Re-run with the 1-minute load below 20, the racing test failed 10 of 10 at `-count=10`.
+  - The two Shadowsocks 2022 tests under `-race` before the fix: the invalid-packet test failed in 8 of 10 processes at
+    a load near 100 and in 9 of 10 at a load below 20; the duplicated-datagram test failed 10 of 10 at both. Every
+    failure reported the race at `packet.go:105` against `:54` or `:74`.
+  - With the fix, at node `47434b9`: the four tests at `-race -count=20` passed 80 of 80 with no race report, and
+    the interleaving test at `-race -count=10` passed 10 of 10. Both Shadowsocks 2022 tests at `-race -count=10`
+    passed 10 of 10 with no race report. Each of these held at a load near 130 and again at a load below 20.
+  - Mutants, each run with the four tests at `-race -count=3`. Reverting the whole fix fails 12 of 12. A `Close`
+    without the mutex and a cached branch read without it both bring the race back. Dropping the closed check before
+    the link read fails 9 of 12, including `TestReadPacketAfterCloseNeitherReadsTheLinkNorDelivers`. Dropping the
+    closed check after the link read fails 8 of 12, including
+    `TestAReadHeldInTheLinkDuringCloseReleasesWhatItGetsAndDeliversNothing`. Replacing the cache instead of merging
+    into it fails the interleaving test 10 of 10 at `-count=10`.
+  - One mutant survives and is equivalent: dropping `w.cached = nil` after the release in `Close`. `ReleaseMulti` has
+    already set every element to nil, and the closed flag stops every later read before it reaches the cache, so the
+    line changes no behaviour. It is kept so that a closed wrapper does not hold the slice.
 - **Patch order:** the patch extends the `packet.go` that `xray-ss2022-dispatch.patch` writes. Its name sorts right
   after that patch, so `make build_xray`'s glob applies it in the same order as the Dockerfile. Named
   `xray-singbridge-close-race.patch`, it would sort before `xray-ss2022-dispatch.patch` and fail to apply.
