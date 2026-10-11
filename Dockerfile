@@ -83,6 +83,7 @@ COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-cl
 COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
 COPY patches/xray-x-net-0.59.0.patch /patches/xray-x-net-0.59.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
+COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
@@ -169,7 +170,9 @@ RUN git init -q . \
  && grep -qF "if prefix.Addr().Is4In6() {" common/protocol/http/trusted_forwarder.go \
  && grep -q "return TrustedClientAddress(header.Values, trusted, remoteAddr)" common/protocol/http/headers.go \
  && grep -q "return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)" transport/internet/grpc/encoding/remoteaddr.go \
- && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go
+ && ! grep -q "IndexByte(value, ',')" common/protocol/http/headers.go transport/internet/grpc/encoding/remoteaddr.go \
+ && git apply --verbose /patches/xray-xhttp-client-race.patch \
+ && test -f transport/internet/splithttp/client_race_test.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main

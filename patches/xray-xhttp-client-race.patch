@@ -1,0 +1,474 @@
+XHTTP client: tests for the WaitReadCloser, closed flag and upload byte count races
+
+These tests come before the fix. client_race_test.go is fork code: a -race test for each of the three races
+upstream fixed in the XHTTP client, and an interleaving test that runs stream-down, early-close, failed,
+stream-up and packet-up requests at once on one client. That test checks that each stream reads exactly its
+own body, that a stream closed early never reads foreign data, and that every response body is closed exactly
+once. At the pin, under -race, five of the six report a data race in every run;
+TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce passes, and holds behaviour the fix must keep.
+
+diff --git a/transport/internet/splithttp/client_race_test.go b/transport/internet/splithttp/client_race_test.go
+new file mode 100644
+index 0000000..e0b2ac8
+--- /dev/null
++++ b/transport/internet/splithttp/client_race_test.go
+@@ -0,0 +1,459 @@
++package splithttp
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptrace"
++	"runtime"
++	"strconv"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++var errTrackedBodyClosed = errors.New("read on a closed tracked body")
++
++type trackedBody struct {
++	mu     sync.Mutex
++	data   []byte
++	closes int
++}
++
++func newTrackedBody(data []byte) *trackedBody {
++	return &trackedBody{data: data}
++}
++
++func (b *trackedBody) Read(p []byte) (int, error) {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.closes > 0 {
++		return 0, errTrackedBodyClosed
++	}
++	if len(b.data) == 0 {
++		return 0, io.EOF
++	}
++	n := copy(p[:min(len(p), 1500)], b.data)
++	b.data = b.data[n:]
++	return n, nil
++}
++
++func (b *trackedBody) Close() error {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	b.closes++
++	return nil
++}
++
++func (b *trackedBody) closeCount() int {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	return b.closes
++}
++
++func waitForOneClose(t *testing.T, name string, b *trackedBody) {
++	t.Helper()
++	deadline := time.Now().Add(10 * time.Second)
++	for b.closeCount() == 0 && time.Now().Before(deadline) {
++		time.Sleep(time.Millisecond)
++	}
++	if n := b.closeCount(); n != 1 {
++		t.Errorf("%s: the response body was closed %d times, want exactly 1", name, n)
++	}
++}
++
++type stubConn struct {
++	net.Conn
++}
++
++func (stubConn) LocalAddr() net.Addr {
++	return &net.TCPAddr{IP: net.IPv6loopback, Port: 40000}
++}
++
++func (stubConn) RemoteAddr() net.Addr {
++	return &net.TCPAddr{IP: net.IPv6loopback, Port: 443}
++}
++
++type roundTripFunc func(*http.Request) (*http.Response, error)
++
++func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
++	return f(req)
++}
++
++func announceConn(req *http.Request) {
++	if trace := httptrace.ContextClientTrace(req.Context()); trace != nil && trace.GotConn != nil {
++		trace.GotConn(httptrace.GotConnInfo{Conn: stubConn{}})
++	}
++}
++
++func okResponse(req *http.Request, body io.ReadCloser) *http.Response {
++	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{}, Body: body, Request: req}
++}
++
++func newScriptedClient(transport http.RoundTripper) *DefaultDialerClient {
++	return &DefaultDialerClient{
++		transportConfig: &Config{},
++		client:          &http.Client{Transport: transport},
++		httpVersion:     "2",
++	}
++}
++
++func streamPayload(index int) []byte {
++	payload := make([]byte, 1+(index*7919)%40000)
++	for i := range payload {
++		payload[i] = byte((index*31 + i) % 251)
++	}
++	return payload
++}
++
++func testPathTarget(path string) (string, int) {
++	parts := strings.Split(strings.Trim(path, "/"), "/")
++	if len(parts) < 2 {
++		return "", -1
++	}
++	index, err := strconv.Atoi(parts[1])
++	if err != nil {
++		return "", -1
++	}
++	return parts[0], index
++}
++
++func TestAStreamDownBodySetWhileAReadWaitsIsDeliveredWhole(t *testing.T) {
++	payload := streamPayload(7)
++	body := newTrackedBody(payload)
++	release := make(chan struct{})
++	client := newScriptedClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		announceConn(req)
++		<-release
++		return okResponse(req, body), nil
++	}))
++
++	wrc, remoteAddr, localAddr, err := client.OpenStream(context.Background(), "http://example.com/s/7", "session-7", nil, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if remoteAddr == nil || localAddr == nil {
++		t.Fatal("OpenStream returned without the connection addresses")
++	}
++
++	type result struct {
++		data []byte
++		err  error
++	}
++	read := make(chan result, 1)
++	go func() {
++		data, err := io.ReadAll(wrc)
++		read <- result{data, err}
++	}()
++	close(release)
++
++	select {
++	case r := <-read:
++		if r.err != nil {
++			t.Fatalf("reading the stream failed: %v", r.err)
++		}
++		if !bytes.Equal(r.data, payload) {
++			t.Fatalf("read %d bytes, want the whole %d byte body", len(r.data), len(payload))
++		}
++	case <-time.After(10 * time.Second):
++		t.Fatal("the waiting read never received the response body")
++	}
++	if err := wrc.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if n := body.closeCount(); n != 1 {
++		t.Fatalf("the response body was closed %d times, want 1", n)
++	}
++}
++
++func TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce(t *testing.T) {
++	body := newTrackedBody(streamPayload(3))
++	release := make(chan struct{})
++	client := newScriptedClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		announceConn(req)
++		<-release
++		return okResponse(req, body), nil
++	}))
++
++	wrc, _, _, err := client.OpenStream(context.Background(), "http://example.com/s/3", "session-3", nil, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := wrc.Close(); err != nil {
++		t.Fatal(err)
++	}
++	close(release)
++
++	waitForOneClose(t, "late body", body)
++	if n, err := wrc.Read(make([]byte, 64)); n != 0 || err == nil {
++		t.Fatalf("Read on a stream closed before its response returned %d bytes and %v", n, err)
++	}
++	time.Sleep(20 * time.Millisecond)
++	if n := body.closeCount(); n != 1 {
++		t.Fatalf("the late response body was closed %d times, want 1", n)
++	}
++}
++
++func TestAFailedStreamDownMarksTheClientClosedWhileOthersPollIt(t *testing.T) {
++	client := newScriptedClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		return nil, errors.New("refused by the test transport")
++	}))
++
++	polled := make(chan struct{})
++	go func() {
++		defer close(polled)
++		for i := 0; i < 64; i++ {
++			client.IsClosed()
++		}
++	}()
++
++	wrc, _, _, err := client.OpenStream(context.Background(), "http://example.com/s/1", "session-1", nil, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	<-polled
++	if !client.IsClosed() {
++		t.Fatal("a failed stream-down did not mark the client closed")
++	}
++	if n, err := wrc.Read(make([]byte, 64)); n != 0 || err == nil {
++		t.Fatalf("Read on a failed stream-down returned %d bytes and %v", n, err)
++	}
++}
++
++func TestUploadWriterCountsEachWriteWhileTheUploaderReleasesItsBuffers(t *testing.T) {
++	reader, writer := pipe.New(pipe.WithSizeLimit(0))
++	w := uploadWriter{writer, buf.Size}
++	uploaded := make(chan []byte, 1)
++	go func() {
++		defer close(uploaded)
++		for {
++			mb, err := reader.ReadMultiBuffer()
++			if err != nil {
++				return
++			}
++			data := make([]byte, mb.Len())
++			mb.Copy(data)
++			buf.ReleaseMulti(mb)
++			uploaded <- data
++		}
++	}()
++
++	for i := 0; i < 32; i++ {
++		msg := []byte(fmt.Sprintf("upload %d %s", i, strings.Repeat("x", i*37)))
++		n, err := w.Write(msg)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if n != len(msg) {
++			t.Fatalf("Write %d reported %d bytes, want %d", i, n, len(msg))
++		}
++		if got := <-uploaded; !bytes.Equal(got, msg) {
++			t.Fatalf("upload %d carried %d bytes, want %d", i, len(got), len(msg))
++		}
++	}
++	writer.Close()
++	if extra, ok := <-uploaded; ok {
++		t.Fatalf("the uploader received %d unexpected bytes", len(extra))
++	}
++}
++
++func TestUploadWriterDeliversLargeWritesExactlyOnceToAConcurrentUploader(t *testing.T) {
++	reader, writer := pipe.New(pipe.WithSizeLimit(0))
++	w := uploadWriter{writer, buf.Size}
++	var received bytes.Buffer
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for {
++			mb, err := reader.ReadMultiBuffer()
++			if err != nil {
++				return
++			}
++			data := make([]byte, mb.Len())
++			mb.Copy(data)
++			buf.ReleaseMulti(mb)
++			received.Write(data)
++		}
++	}()
++
++	var sent bytes.Buffer
++	for i := 0; i < 24; i++ {
++		msg := streamPayload(i + 100)
++		n, err := w.Write(msg)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if n != len(msg) {
++			t.Fatalf("Write %d reported %d bytes, want %d", i, n, len(msg))
++		}
++		sent.Write(msg)
++	}
++	writer.Close()
++	<-done
++	if !bytes.Equal(received.Bytes(), sent.Bytes()) {
++		t.Fatalf("the uploader received %d bytes, want exactly the %d bytes written", received.Len(), sent.Len())
++	}
++}
++
++func TestConcurrentStreamsOpenReadAndCloseWithoutLosingOrDuplicatingData(t *testing.T) {
++	const streams = 96
++	var bodiesMu sync.Mutex
++	bodies := make(map[int]*trackedBody)
++	uploads := make(map[int][]byte)
++	var failedPosts atomic.Int32
++
++	client := newScriptedClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
++		kind, index := testPathTarget(req.URL.Path)
++		switch kind {
++		case "fail":
++			return nil, fmt.Errorf("stream %d refused by the test transport", index)
++		case "post":
++			failedPosts.Add(1)
++			return nil, fmt.Errorf("packet %d refused by the test transport", index)
++		case "s", "up":
++		default:
++			return nil, fmt.Errorf("unexpected request path %q", req.URL.Path)
++		}
++		announceConn(req)
++		if req.Body != nil {
++			data, err := io.ReadAll(req.Body)
++			req.Body.Close()
++			if err != nil {
++				return nil, err
++			}
++			bodiesMu.Lock()
++			uploads[index] = data
++			bodiesMu.Unlock()
++		}
++		time.Sleep(time.Duration(index%4) * time.Millisecond)
++		body := newTrackedBody(streamPayload(index))
++		bodiesMu.Lock()
++		bodies[index] = body
++		bodiesMu.Unlock()
++		return okResponse(req, body), nil
++	}))
++
++	stopPolling := make(chan struct{})
++	polling := make(chan struct{})
++	go func() {
++		defer close(polling)
++		for {
++			select {
++			case <-stopPolling:
++				return
++			default:
++				client.IsClosed()
++				runtime.Gosched()
++			}
++		}
++	}()
++
++	var wg sync.WaitGroup
++	for i := 0; i < streams; i++ {
++		wg.Add(1)
++		go func(index int) {
++			defer wg.Done()
++			ctx := context.Background()
++			session := "session-" + strconv.Itoa(index)
++			switch index % 5 {
++			case 0:
++				wrc, _, _, err := client.OpenStream(ctx, "http://example.com/s/"+strconv.Itoa(index), session, nil, false)
++				if err != nil {
++					t.Errorf("stream %d: %v", index, err)
++					return
++				}
++				data, err := io.ReadAll(wrc)
++				if err != nil {
++					t.Errorf("stream %d: read failed: %v", index, err)
++				}
++				if want := streamPayload(index); !bytes.Equal(data, want) {
++					t.Errorf("stream %d: read %d bytes, want exactly its own %d bytes", index, len(data), len(want))
++				}
++				if err := wrc.Close(); err != nil {
++					t.Errorf("stream %d: close failed: %v", index, err)
++				}
++			case 1:
++				wrc, _, _, err := client.OpenStream(ctx, "http://example.com/s/"+strconv.Itoa(index), session, nil, false)
++				if err != nil {
++					t.Errorf("stream %d: %v", index, err)
++					return
++				}
++				if err := wrc.Close(); err != nil {
++					t.Errorf("stream %d: close failed: %v", index, err)
++				}
++				p := make([]byte, 64)
++				n, _ := wrc.Read(p)
++				if want := streamPayload(index); !bytes.HasPrefix(want, p[:n]) {
++					t.Errorf("stream %d: a read after Close returned %d bytes that are not this stream's data", index, n)
++				}
++			case 2:
++				wrc, _, _, err := client.OpenStream(ctx, "http://example.com/fail/"+strconv.Itoa(index), session, nil, false)
++				if err != nil {
++					t.Errorf("stream %d: %v", index, err)
++					return
++				}
++				if n, err := wrc.Read(make([]byte, 64)); n != 0 || err == nil {
++					t.Errorf("stream %d: Read on a failed stream-down returned %d bytes and %v", index, n, err)
++				}
++			case 3:
++				upload := streamPayload(index + 1000)
++				wrc, _, _, err := client.OpenStream(ctx, "http://example.com/up/"+strconv.Itoa(index), session, bytes.NewReader(upload), true)
++				if err != nil {
++					t.Errorf("stream %d: %v", index, err)
++					return
++				}
++				if n, err := wrc.Read(make([]byte, 64)); n != 0 || err == nil {
++					t.Errorf("stream %d: Read on a stream-up returned %d bytes and %v", index, n, err)
++				}
++				bodiesMu.Lock()
++				got := uploads[index]
++				bodiesMu.Unlock()
++				if !bytes.Equal(got, upload) {
++					t.Errorf("stream %d: the server received %d upload bytes, want exactly %d", index, len(got), len(upload))
++				}
++			case 4:
++				mb := buf.MultiBuffer{buf.New()}
++				mb[0].Write([]byte("packet " + strconv.Itoa(index)))
++				if err := client.PostPacket(ctx, "http://example.com/post/"+strconv.Itoa(index), session, "0", mb); err == nil {
++					t.Errorf("packet %d: a refused POST reported success", index)
++				}
++			}
++		}(i)
++	}
++	wg.Wait()
++	close(stopPolling)
++	<-polling
++
++	if !client.IsClosed() {
++		t.Error("failed stream-downs and posts did not mark the client closed")
++	}
++	if got, want := int(failedPosts.Load()), streams/5; got < want {
++		t.Errorf("%d refused posts reached the transport, want at least %d", got, want)
++	}
++	bodiesMu.Lock()
++	created := make(map[int]*trackedBody, len(bodies))
++	for index, body := range bodies {
++		created[index] = body
++	}
++	bodiesMu.Unlock()
++	for index := 0; index < streams; index++ {
++		switch index % 5 {
++		case 0, 1, 3:
++			body, ok := created[index]
++			if !ok {
++				t.Errorf("stream %d: no response body was created", index)
++				continue
++			}
++			waitForOneClose(t, "stream "+strconv.Itoa(index), body)
++		}
++	}
++}
