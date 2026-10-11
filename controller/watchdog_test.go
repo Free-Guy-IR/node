@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -54,14 +56,32 @@ func (g *gatedBackend) Shutdown() {
 	g.started.Store(false)
 }
 
+const (
+	firstTestPort = 20000
+	testPortSpan  = 10000
+)
+
 func unusedPort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 1000 {
+		port := firstTestPort + rand.IntN(testPortSpan)
+		if listenPortIsFree(port) {
+			return port
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatalf("no port between %d and %d is free on both 127.0.0.1 and the wildcard", firstTestPort, firstTestPort+testPortSpan-1)
+	return 0
+}
+
+func listenPortIsFree(port int) bool {
+	for _, addr := range []*net.TCPAddr{{IP: net.IPv4(127, 0, 0, 1), Port: port}, {Port: port}} {
+		l, err := net.ListenTCP("tcp", addr)
+		if err != nil {
+			return false
+		}
+		_ = l.Close()
+	}
+	return true
 }
 
 func panelStart(c *Controller, ip string, data *common.Backend) error {
@@ -82,6 +102,21 @@ func panelStart(c *Controller, ip string, data *common.Backend) error {
 	c.Connect(ip, data.GetKeepAlive())
 	_ = c.BaseInfoResponse()
 	return nil
+}
+
+const startBindAttempts = 5
+
+func panelStartOnAnUnusedPort(t *testing.T, c *Controller, ip string, data func(port int) *common.Backend) error {
+	t.Helper()
+	var err error
+	for range startBindAttempts {
+		port := unusedPort(t)
+		if err = panelStart(c, ip, data(port)); !errors.Is(err, syscall.EADDRINUSE) {
+			return err
+		}
+		t.Logf("Start could not bind port %d, another socket took it after the probe; retrying on a fresh port: %v", port, err)
+	}
+	return err
 }
 
 func newWatchdogController(t *testing.T) *Controller {

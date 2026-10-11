@@ -3,6 +3,7 @@ package rest
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -11,14 +12,32 @@ import (
 	"github.com/pasarguard/node/common"
 )
 
+const (
+	firstTestPort = 20000
+	testPortSpan  = 10000
+)
+
 func restFreeTCPPort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to find a free TCP port: %v", err)
+	for range 1000 {
+		port := firstTestPort + rand.IntN(testPortSpan)
+		if listenPortIsFree(port) {
+			return port
+		}
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatalf("no port between %d and %d is free on both 127.0.0.1 and the wildcard", firstTestPort, firstTestPort+testPortSpan-1)
+	return 0
+}
+
+func listenPortIsFree(port int) bool {
+	for _, addr := range []*net.TCPAddr{{IP: net.IPv4(127, 0, 0, 1), Port: port}, {Port: port}} {
+		l, err := net.ListenTCP("tcp", addr)
+		if err != nil {
+			return false
+		}
+		_ = l.Close()
+	}
+	return true
 }
 
 func mtprotoTestConfig(t *testing.T, port int) string {

@@ -25,14 +25,11 @@ import (
 )
 
 var (
-	servicePort         = 8002
-	nodeHost            = "127.0.0.1"
-	sslCertFile         = "../../certs/ssl_cert.pem"
-	sslKeyFile          = "../../certs/ssl_key.pem"
-	apiKey              = uuid.New()
-	generatedConfigPath = "../../generated/"
-	addr                = fmt.Sprintf("%s:%d", nodeHost, servicePort)
-	configPath          = "../../backend/xray/config.json"
+	nodeHost    = "127.0.0.1"
+	sslCertFile = "../../certs/ssl_cert.pem"
+	sslKeyFile  = "../../certs/ssl_key.pem"
+	apiKey      = uuid.New()
+	configPath  = "../../backend/xray/config.json"
 
 	// Shared test context
 	sharedTestCtx *testContext
@@ -49,27 +46,40 @@ type testContext struct {
 
 func TestMain(m *testing.M) {
 	// Setup
+	generatedConfigPath, err := os.MkdirTemp("", "pg-node-rest-generated-")
+	if err != nil {
+		log.Fatalf("Failed to create the generated config directory: %v", err)
+	}
+	fatalf := func(format string, args ...any) {
+		_ = os.RemoveAll(generatedConfigPath)
+		log.Fatalf(format, args...)
+	}
 	cfg := config.NewTestConfig(generatedConfigPath, apiKey)
 
 	tlsConfig, err := tlsutil.LoadTLSCredentials(sslCertFile, sslKeyFile)
 	if err != nil {
-		log.Fatalf("Failed to load TLS credentials: %v", err)
+		fatalf("Failed to load TLS credentials: %v", err)
 	}
 
-	shutdownFunc, s, err := StartHttpListener(tlsConfig, addr, cfg)
+	var shutdownFunc func(ctx context.Context) error
+	var s controller.Service
+	addr, err := listenOnAnUnusedLoopbackPort(func(addr string) (err error) {
+		shutdownFunc, s, err = StartHttpListener(tlsConfig, addr, cfg)
+		return err
+	})
 	if err != nil {
-		log.Fatalf("Failed to start HTTP listener: %v", err)
+		fatalf("Failed to start HTTP listener: %v", err)
 	}
 
 	certPool, err := tlsutil.LoadClientPool(sslCertFile)
 	if err != nil {
-		log.Fatalf("Failed to load client pool: %v", err)
+		fatalf("Failed to load client pool: %v", err)
 	}
 	client := tlsutil.CreateHTTPClient(certPool, nodeHost)
 
 	url := fmt.Sprintf("https://%s", addr)
 
-	createAuthenticatedRequest := func(method, endpoint string, data proto.Message, response proto.Message) error {
+	authenticatedRequest := func(httpClient *http.Client, method, endpoint string, data proto.Message, response proto.Message) error {
 		body, err := proto.Marshal(data)
 		if err != nil {
 			return err
@@ -84,7 +94,7 @@ func TestMain(m *testing.M) {
 			req.Header.Set("Content-Type", "application/x-protobuf")
 		}
 
-		do, err := client.Do(req)
+		do, err := httpClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -95,6 +105,10 @@ func TestMain(m *testing.M) {
 			return err
 		}
 		return nil
+	}
+
+	createAuthenticatedRequest := func(method, endpoint string, data proto.Message, response proto.Message) error {
+		return authenticatedRequest(client, method, endpoint, data, response)
 	}
 
 	createAuthenticatedStreamingRequest := func(method, endpoint string) (io.ReadCloser, error) {
@@ -119,7 +133,7 @@ func TestMain(m *testing.M) {
 
 	configFile, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Fatalf("Failed to read config file: %v", err)
+		fatalf("Failed to read config file: %v", err)
 	}
 
 	user1 := &common.User{
@@ -180,9 +194,11 @@ func TestMain(m *testing.M) {
 		Users:  []*common.User{user1, user2},
 	}
 
+	startClient := *client
+	startClient.Timeout = sharedNodeStartTimeout()
 	var baseInfoResp common.BaseInfoResponse
-	if err = createAuthenticatedRequest("POST", "/start", backendStartReq, &baseInfoResp); err != nil {
-		log.Fatalf("Failed to start backend: %v", err)
+	if err = authenticatedRequest(&startClient, "POST", "/start", backendStartReq, &baseInfoResp); err != nil {
+		fatalf("Failed to start backend: %v", err)
 	}
 
 	sharedTestCtx = &testContext{
@@ -205,6 +221,10 @@ func TestMain(m *testing.M) {
 
 	if err = shutdownFunc(ctx); err != nil {
 		log.Printf("Failed to shutdown server: %v", err)
+	}
+
+	if err = os.RemoveAll(generatedConfigPath); err != nil {
+		log.Printf("Failed to remove the generated config directory: %v", err)
 	}
 
 	os.Exit(code)

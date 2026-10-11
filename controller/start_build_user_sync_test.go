@@ -35,13 +35,16 @@ func TestUserSyncDuringTheStartBuildMustNotBeAcknowledgedWithNoCoreToReceiveIt(t
 	c := newWatchdogController(t)
 
 	const tag = "build"
-	data := &common.Backend{
-		Type:      common.BackendType_MTPROTO,
-		Config:    fmt.Sprintf(`{"instances":[{"tag":%q,"port":%d,"mode":"plain"}]}`, tag, unusedPort(t)),
-		Users:     mtprotoStartUsers(tag, 2000),
-		KeepAlive: 60,
+	users := mtprotoStartUsers(tag, 2000)
+	data := func(port int) *common.Backend {
+		return &common.Backend{
+			Type:      common.BackendType_MTPROTO,
+			Config:    fmt.Sprintf(`{"instances":[{"tag":%q,"port":%d,"mode":"plain"}]}`, tag, port),
+			Users:     users,
+			KeepAlive: 60,
+		}
 	}
-	if err := panelStart(c, panelIP, data); err != nil {
+	if err := panelStartOnAnUnusedPort(t, c, panelIP, data); err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
 
@@ -74,7 +77,7 @@ func TestUserSyncDuringTheStartBuildMustNotBeAcknowledgedWithNoCoreToReceiveIt(t
 			}
 		}()
 
-		err := panelStart(c, panelIP, data)
+		err := panelStartOnAnUnusedPort(t, c, panelIP, data)
 		close(stop)
 		<-done
 		if err != nil {
