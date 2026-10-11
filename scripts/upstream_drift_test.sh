@@ -835,6 +835,84 @@ check xray-branch-scope-on-branch 0 DRIFT_COMPONENTS="node xray"
 xray_branch_scope xray-branch-scope-after-merge merged
 check xray-branch-scope-after-merge 1 DRIFT_COMPONENTS="node xray"
 
+xray_rewrite() {
+  f=$tmp/$1/fork
+  perl -pi -e "$2" "$f/Dockerfile"
+  git -C "$f" add -A
+  commit "$f" -m "rewrite the Dockerfile"
+}
+
+xray_fixture xray-build-crlf-hides-the-builder-stage "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-build-crlf-hides-the-builder-stage 's/^ARG SINGBOX_VERSION=v1\.0\.0\n/ARG SINGBOX_VERSION=v1.0.0 \\\r\n/'
+check xray-build-crlf-hides-the-builder-stage 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-copied-over-through-a-double-slash "$xray_copy
+COPY other/x.patch /patches//xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-copied-over-through-a-double-slash 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-patch-copied-over-through-a-dot-segment "$xray_copy
+COPY other/x.patch /patches/./xray-fix.patch
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+check xray-patch-copied-over-through-a-dot-segment 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-directory-copied-over-usr-local "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+COPY --from=builder /tree /usr/local"
+check xray-build-directory-copied-over-usr-local 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-exec-path-in-the-entrypoint "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+ENTRYPOINT [\"env\", \"XRAY_EXECUTABLE_PATH=/opt/xray-stock\", \"./main\"]"
+check xray-build-exec-path-in-the-entrypoint 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-env-file-copied-into-the-image "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+COPY deploy/node.env /app/.env"
+check xray-build-env-file-copied-into-the-image 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-label-heredoc-hides-a-replace "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_tail
+LABEL note=\"see <<EOF\"
+RUN cp /opt/xray-stock /usr/local/bin/xray"
+check xray-build-label-heredoc-hides-a-replace 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-slash-slash-directive "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-build-slash-slash-directive '// syntax=example.com/another-frontend'
+check xray-build-slash-slash-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-bom-before-a-directive "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-build-bom-before-a-directive '# syntax=example.com/another-frontend'
+xray_rewrite xray-build-bom-before-a-directive 's/^/\xef\xbb\xbf/ if $. == 1'
+check xray-build-bom-before-a-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-vertical-tab-before-a-directive "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_prepend xray-build-vertical-tab-before-a-directive '# syntax=example.com/another-frontend'
+xray_rewrite xray-build-vertical-tab-before-a-directive 's/^/\x0b/ if $. == 1'
+check xray-build-vertical-tab-before-a-directive 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-copies-a-stock-binary-from-the-builder "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "RUN CGO_ENABLED=0 go build -trimpath -o /out/xray ./main
+
+FROM scratch
+COPY --from=xray-builder /usr/bin/xray-stock /usr/local/bin/xray"
+check xray-build-copies-a-stock-binary-from-the-builder 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-build-unpinned-builder-image "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-build-unpinned-builder-image 's/^FROM scratch AS xray-builder$/FROM golang:latest AS xray-builder/'
+check xray-build-unpinned-builder-image 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-declared-on-a-continuation-line "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG TARGETOS \\\n XRAY_COMMIT=/'
+xray_prepend xray-pin-declared-on-a-continuation-line "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-on-a-continuation-line/xray-up" X1)"
+check xray-pin-declared-on-a-continuation-line 2 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
