@@ -564,7 +564,7 @@ func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, err
 		if outboundTagValue, ok := obj["outboundTag"].(string); ok && outboundTagValue == apiTag {
 			continue
 		}
-		if ruleTagValue, ok := obj["ruleTag"].(string); ok && ruleTagValue == malformedDomainGuardRuleTag {
+		if ruleTagValue, ok := obj["ruleTag"].(string); ok && (ruleTagValue == malformedDomainGuardRuleTag || ruleTagValue == apiGuardRuleTag) {
 			continue
 		}
 
@@ -839,6 +839,9 @@ func (c *Config) blackholeOutboundTag() string {
 
 	tags := make([]string, 0, len(protocolByTag))
 	for tag := range protocolByTag {
+		if tag == apiGuardOutboundTag {
+			continue
+		}
 		tags = append(tags, tag)
 	}
 	sort.Strings(tags)
@@ -1003,6 +1006,15 @@ func (c *Config) ApplyAPI(apiPort, metricPort int) (err error) {
 			return err
 		}
 		prependRules = append(prependRules, guardRaw)
+	}
+
+	apiGuard, err := apiGuardRules(apiPort, metricPort)
+	if err != nil {
+		return err
+	}
+	if len(apiGuard) > 0 {
+		c.ensureAPIGuardOutbound()
+		prependRules = append(prependRules, apiGuard...)
 	}
 
 	c.RouterConfig.RuleList = append(prependRules, c.RouterConfig.RuleList...)
