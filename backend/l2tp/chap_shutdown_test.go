@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -21,10 +20,7 @@ const (
 func chapEnv(t *testing.T) *acctEnv {
 	t.Helper()
 	e := newAcctEnv(t)
-	prev := chapSecretsPath
-	chapSecretsPath = filepath.Join(t.TempDir(), "ppp", "chap-secrets")
-	t.Cleanup(func() { chapSecretsPath = prev })
-	e.write(chapSecretsPath, chapKeptComment+"\n"+chapForeignLine+"\n")
+	useHostSeam(t, e)
 	return e
 }
 
@@ -108,40 +104,44 @@ func TestUserSyncOnAShutDownInstanceNeverTouchesTheReplacementsCredentials(t *te
 }
 
 func TestUserSyncWritingWhenShutdownStartsIsRemovedByTheShutdown(t *testing.T) {
-	e := chapEnv(t)
-	o := runningWithChapSecrets(t, e, "7")
-	parked := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	prev := beforeChapSecretsWrite
-	t.Cleanup(func() { beforeChapSecretsWrite = prev })
-	beforeChapSecretsWrite = func() {
-		once.Do(func() {
-			close(parked)
-			<-release
+	for _, c := range userSyncCalls()[:3] {
+		t.Run(c.name, func(t *testing.T) {
+			e := chapEnv(t)
+			o := runningWithChapSecrets(t, e, "7")
+			parked := make(chan struct{})
+			release := make(chan struct{})
+			var once sync.Once
+			prev := beforeChapSecretsWrite
+			t.Cleanup(func() { beforeChapSecretsWrite = prev })
+			beforeChapSecretsWrite = func() {
+				once.Do(func() {
+					close(parked)
+					<-release
+				})
+			}
+			synced := make(chan error, 1)
+			go func() { synced <- c.call(o, e) }()
+			<-parked
+			stopped := make(chan struct{})
+			go func() {
+				o.Shutdown()
+				close(stopped)
+			}()
+			select {
+			case <-stopped:
+			case <-time.After(300 * time.Millisecond):
+			}
+			close(release)
+			for _, done := range []<-chan struct{}{waitErr(synced), stopped} {
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Fatal("the sync or the shutdown did not finish")
+				}
+			}
+			expectChapSecrets(t, c.name+" that was writing when the shutdown started", e)
 		})
 	}
-	synced := make(chan error, 1)
-	go func() { synced <- o.UpdateUsers(context.Background(), e.users("8")) }()
-	<-parked
-	stopped := make(chan struct{})
-	go func() {
-		o.Shutdown()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(300 * time.Millisecond):
-	}
-	close(release)
-	for _, done := range []<-chan struct{}{waitErr(synced), stopped} {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the sync or the shutdown did not finish")
-		}
-	}
-	expectChapSecrets(t, "after a sync that was writing when the shutdown started", e)
 }
 
 func waitErr(c <-chan error) <-chan struct{} {
