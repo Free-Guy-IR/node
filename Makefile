@@ -235,3 +235,7 @@ test-race-wireguard:
 
 serve:
 	go run ./cmd/node
+
+test-drift:
+	bash scripts/upstream_drift_test.sh
+	bash scripts/upstream_drift_bypass_test.sh

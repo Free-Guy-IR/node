@@ -1047,6 +1047,9 @@ bash scripts/upstream_drift.sh
   - The check follows the `rel="next"` Link header of each response, the cursor pagination both advisory endpoints
     use. An earlier `&page=N` was ignored by the API, and it looped forever at 100 or more advisories.
   - A next link outside the API URL, or a listing longer than the bound, stops the run with an error.
+- `make test-drift` runs both synthetic suites: `scripts/upstream_drift_test.sh` and the independent verifier's
+  `scripts/upstream_drift_bypass_test.sh`, which holds the Dockerfile-reading and branch-scope bypasses. Each file
+  guards its own case count.
 - `bash scripts/upstream_drift_test.sh` runs the check against synthetic repositories: ours-merges, evil and
   side-dropping merges, waiver dates, patch scoping, the Dockerfile apply shapes (shell comments, heredoc bodies, a
   no-op `SHELL`, a moved `WORKDIR`, a `cd`, reverse applies and refetches, an exec-form revert, a binary copied from
