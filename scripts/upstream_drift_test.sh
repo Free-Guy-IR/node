@@ -582,7 +582,7 @@ xray_prepend xray-patch-after-a-heredoc-elsewhere 'FROM scratch AS notes
 COPY <<EOF /notes.txt
 hello
 EOF'
-check xray-patch-after-a-heredoc-elsewhere 0 DRIFT_COMPONENTS="node xray"
+check xray-patch-after-a-heredoc-elsewhere 1 DRIFT_COMPONENTS="node xray"
 
 xray_fixture xray-patch-heredoc-fakes-a-stage "$xray_copy
 RUN true" "$xray_makefile" X1
@@ -801,7 +801,7 @@ xray_prepend xray-build-heredoc-body-is-not-read 'FROM scratch AS notes
 COPY <<EOF /notes.txt
 RUN cp /opt/xray-stock /usr/local/bin/xray
 EOF'
-check xray-build-heredoc-body-is-not-read 0 DRIFT_COMPONENTS="node xray"
+check xray-build-heredoc-body-is-not-read 1 DRIFT_COMPONENTS="node xray"
 
 xray_fixture xray-build-never-built "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_final"

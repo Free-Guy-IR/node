@@ -218,7 +218,7 @@ upstream months after our pin, and nothing had noticed them. The drift check the
 
 ### Pins
 
-The script reads every pin from the checked commit, never from a hardcoded value. A key it reads that the Dockerfile declares with a value more than once (`ARG` in any case, also in a multi-argument line) stops the run with exit 2, because docker would use the declaration of the stage that builds, which need not be the one the check read:
+The script reads every pin from the checked commit, never from a hardcoded value, through the same Dockerfile reader as the xray build (so a declaration on a continuation line or behind a CRLF counts). A key it reads that the Dockerfile declares with a value more than once (`ARG` in any case, also in a multi-argument line) stops the run with exit 2, because docker would use the declaration of the stage that builds, which need not be the one the check read:
 
 | component | upstream | pin read from | pin on 2026-09-24 | line branch |
 |---|---|---|---|---|
@@ -297,28 +297,36 @@ Why the rules look like this:
     `--numstat`, `--summary`, `-R` or `--reverse`, and without ignoring the failure (`|| true`);
   - the patch must be a regular file in the tree; a symlink under `patches/` never counts, because its blob is the
     link text while docker copies the file the link points at;
-  - the Dockerfile at the checked commit is read the way docker reads it (continuation lines joined, comment lines
-    dropped, heredoc bodies of `COPY`/`RUN` skipped), and the xray build is accepted only when the check can follow
+  - the Dockerfile at the checked commit is read the way BuildKit reads it (a trailing CR stripped from every line,
+    continuation lines joined, comment lines dropped), and the xray build is accepted only when the check can follow
     it end to end. This is an allowlist, not a list of known tricks: anything it does not recognise fails closed, and
     the run then prints one line, `upstream-drift: xray: no patch header counts, because the Dockerfile's xray build
     is not one the check can follow: <instruction>`, naming the first instruction it refused. What it accepts:
-    - no parser directive (`# syntax=`, `# escape=` in any case) before the first instruction;
-    - exactly one stage named `xray-builder`, built on an external image, never on another stage of the file;
+    - no parser directive before the first instruction, in either form (`# syntax=`, `# escape=` in any case, or
+      `// syntax=`); no byte outside printable ASCII and tab anywhere (a BOM, a vertical tab or a no-break space can
+      change what BuildKit treats as a comment or a directive); no heredoc on any `RUN`, `COPY` or `ADD`;
+    - exactly one stage named `xray-builder`, built on an external image pinned by digest (or `scratch`), never on
+      another stage of the file;
     - in that stage only `ARG` (names `TARGET*`, `BUILD*`, `XRAY_*`), one `WORKDIR` before the patches are copied,
-      `COPY patches/<name> /patches/<name>`, and shell-form `RUN` without flags;
+      `COPY patches/<name> /patches/<name>`, and shell-form `RUN` without flags. Copy destinations are cleaned the way
+      docker cleans them (`//`, `.`, `..`) before they are compared, and any copy onto `/patches` other than such an
+      exact self-copy fails closed;
     - each `RUN` is split on its operators outside quotes, `$(...)` substitutions included, and may join commands
       only with `&&` and `|`. Before the first apply it may set up the source, down to the arguments: `git init`
       of `.`, `git remote add origin https://...`, `git fetch` of exactly one `XRAY_COMMIT` reference with only quiet,
       depth and no-tags flags, `git checkout` of `FETCH_HEAD`, and `apk` with plain package names, so the source is
       always the pinned commit; then `git apply --verbose /patches/<name>` exactly, once per patch, reached only through
       `&&`; read-only checks (`grep`, `test`, `true`, also in pipelines; a substitution may run only these and
-      `git rev-parse HEAD`); and `go build` after every apply, without `-overlay`, `-toolexec`, `-modfile`, `-mod`,
-      `-C` or `-pgo`. Any other command, a redirection, a subshell, a backquote, a `;`, `||` or `&`, a setup command
+      `git rev-parse HEAD`); and exactly one `go build` after every apply, with an absolute `-o` path and without
+      `-overlay`, `-toolexec`, `-modfile`, `-mod`, `-C` or `-pgo`. Any other command, a redirection, a subshell, a backquote, a `;`, `||` or `&`, a setup command
       after an apply, or any mention of `/patches` outside an exact apply fails closed;
-    - outside that stage, every `COPY` of a file named `xray` comes from `xray-builder`, no `RUN` touches
-      `bin/xray`, nothing sets `XRAY_EXECUTABLE_PATH`, the last stage installs xray from `xray-builder`, and after
-      that `COPY` the stage only copies files to explicit paths and sets `ENV`, `ENTRYPOINT`, `CMD`, `LABEL`,
-      `EXPOSE`, `USER`, `WORKDIR`, `HEALTHCHECK` or `STOPSIGNAL`.
+    - outside that stage, the only copy from `xray-builder` is the last stage copying exactly the `go build -o`
+      path to `/usr/local/bin/xray`; every other `COPY` of a file named `xray` fails closed, no `RUN` touches
+      `bin/xray`, no instruction anywhere names `XRAY_EXECUTABLE_PATH`, the last stage copies no `.env` file and no
+      whole directory of the build context (the node loads `.env` from its working directory), and after the xray
+      `COPY` the stage only copies files to explicit paths that are neither `/usr/local/bin/xray` nor a directory
+      above it, and sets `ENV`, `ENTRYPOINT`, `CMD`, `LABEL`, `EXPOSE`, `USER`, `WORKDIR`, `HEALTHCHECK` or
+      `STOPSIGNAL`.
     The real Dockerfile matches this shape. A change to the xray build that the check does not recognise adds an
     `UNPORTED xray build` item that names the refused instruction, and also turns every patch-ported item `UNPORTED`,
     until the Dockerfile is written in this shape or the parser learns the new one. That is the intended direction of

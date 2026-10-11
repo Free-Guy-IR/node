@@ -171,6 +171,19 @@ dockerfile_program='
     if (!tainted) reason = why
     tainted = 1
   }
+  function norm(p,   parts, n, i, out, depth, stack) {
+    if (substr(p, 1, 1) != "/") return p
+    n = split(p, parts, "/")
+    depth = 0
+    for (i = 1; i <= n; i++) {
+      if (parts[i] == "" || parts[i] == ".") continue
+      if (parts[i] == "..") { if (depth > 0) depth--; continue }
+      stack[++depth] = parts[i]
+    }
+    out = ""
+    for (i = 1; i <= depth; i++) out = out "/" stack[i]
+    return out == "" ? "/" : out
+  }
   function strip_comment(c,   out, i, ch, prev, sq, dq) {
     out = ""
     prev = ""
@@ -316,7 +329,12 @@ dockerfile_program='
     return "apply:" substr(path, 10)
   }
   function build_args(w, nw, j) {
-    for (; j <= nw; j++) if (w[j] ~ /^-(-)?(overlay|toolexec|modfile|mod|C|pgo|exec)(=|$)/) return "other"
+    last_build_out = ""
+    for (; j <= nw; j++) {
+      if (w[j] ~ /^-(-)?(overlay|toolexec|modfile|mod|C|pgo|exec)(=|$)/) return "other"
+      if (w[j] == "-o") { last_build_out = w[j + 1]; j++; continue }
+      if (substr(w[j], 1, 3) == "-o=") last_build_out = substr(w[j], 4)
+    }
     return "build"
   }
   function sub_ok(   qi, si, cls) {
@@ -360,6 +378,9 @@ dockerfile_program='
         if (cls == "setup" && (apply_seen || built)) taint("xray-builder changes the source after a patch is applied: " cmd)
         if (cls == "build") {
           if (!apply_seen) taint("xray-builder runs go build before any patch is applied: " cmd)
+          if (built) taint("xray-builder runs go build more than once: " cmd)
+          if (last_build_out !~ /^\/[A-Za-z0-9._\/-]+$/) taint("xray-builder runs go build without an absolute -o path: " cmd)
+          build_out = norm(last_build_out)
           built = 1
         }
         if (cls == "other") taint("xray-builder runs a command the check cannot follow: " cmd)
@@ -368,12 +389,18 @@ dockerfile_program='
     }
     if (!sub_ok()) taint("xray-builder runs a command substitution that is not a read-only check: " raw)
   }
-  function handle(s,   w, n, i, kw, rest, args, nargs, from_flag, from_val, dest, bn, a, img) {
+  function handle(s,   w, n, i, kw, rest, args, nargs, from_flag, from_val, dest, src, bn, sbn, a, img) {
     sub(/^[ \t]+/, "", s)
     n = split(s, w, /[ \t]+/)
     kw = toupper(w[1])
     rest = substr(s, length(w[1]) + 1)
     sub(/^[ \t]+/, "", rest)
+    if (argkey != "") {
+      if (kw == "ARG") for (i = 2; i <= n; i++) if (index(w[i], argkey "=") == 1) { argn++; if (argn == 1) argval = substr(w[i], length(argkey) + 2) }
+      return
+    }
+    if ((kw == "RUN" || kw == "COPY" || kw == "ADD") && index(s, "<<")) taint("the Dockerfile uses a heredoc, which the check does not follow: " s)
+    if (index(s, "XRAY_EXECUTABLE_PATH")) taint("the Dockerfile names XRAY_EXECUTABLE_PATH: " s)
     if (kw == "FROM") {
       nstage++
       stage = ""
@@ -385,19 +412,24 @@ dockerfile_program='
       }
       for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
       after_copy = 0
+      env_bad = ""
       if (stage == "xray-builder") {
         builders++
         if (builders > 1) taint("the Dockerfile has more than one xray-builder stage")
         if (img in stage_names || index(img, "$")) taint("xray-builder builds on another stage or a variable image: " s)
+        else if (img != "scratch" && img !~ /@sha256:[0-9a-f]{64}$/) taint("xray-builder builds on an image that is not pinned by digest: " s)
       }
       if (stage != "") stage_names[stage] = 1
       return
     }
-    if ((kw == "ENV" || kw == "ARG") && index(s, "XRAY_EXECUTABLE_PATH")) taint("the Dockerfile sets XRAY_EXECUTABLE_PATH: " s)
     if (stage != "xray-builder" && after_copy) {
       if (kw == "COPY" || kw == "ADD") {
         dest = w[n]
-        if (dest ~ /\/$/ || dest !~ /^\// || index(dest, "$") || index(dest, "..")) taint("the last stage copies into a directory or an unresolved path after it installs xray: " s)
+        if (dest ~ /\/$/ || dest !~ /^\// || index(dest, "$")) taint("the last stage copies into a directory or an unresolved path after it installs xray: " s)
+        else {
+          dest = norm(dest)
+          if (dest == "/" || dest == "/usr" || dest == "/usr/local" || dest == "/usr/local/bin" || dest == "/usr/local/bin/xray") taint("the last stage copies over the installed xray or a directory above it: " s)
+        }
       } else if (kw != "ENV" && kw != "ENTRYPOINT" && kw != "CMD" && kw != "LABEL" && kw != "EXPOSE" && kw != "USER" && kw != "WORKDIR" && kw != "HEALTHCHECK" && kw != "STOPSIGNAL") {
         taint("the stage that installs xray runs " kw " after it: " s)
       }
@@ -415,17 +447,27 @@ dockerfile_program='
         args[++nargs] = w[i]
       }
       dest = args[nargs]
-      bn = dest
+      src = args[1]
+      bn = norm(dest)
       sub(/.*\//, "", bn)
-      if (stage != "xray-builder" && bn == "xray") {
-        if (from_val != "xray-builder") taint("a stage installs an xray binary that does not come from xray-builder: " s)
-        else { xray_copied[nstage] = 1; after_copy = 1 }
+      sbn = src
+      sub(/\/+$/, "", sbn)
+      sub(/.*\//, "", sbn)
+      if (stage != "xray-builder") {
+        if (bn == ".env" || sbn == ".env" || (!from_flag && (src == "." || src ~ /\/$/))) env_bad = "the last stage copies an env file or a whole directory of the build context: " s
+        if (from_val == "xray-builder") {
+          if (nargs != 2 || norm(src) != build_out || norm(dest) != "/usr/local/bin/xray") taint("the image copies something other than the built xray binary from xray-builder to /usr/local/bin/xray: " s)
+          else { xray_copied[nstage] = 1; after_copy = 1 }
+        } else if (bn == "xray" || sbn == "xray") taint("a stage installs an xray binary that does not come from xray-builder: " s)
+        return
       }
-      if (stage != "xray-builder") return
+      if (dest !~ /^\//) { taint("xray-builder copies to a relative path: " s); return }
+      dest = norm(dest)
       if (dest !~ /^\/patches(\/|$)/) { taint("xray-builder copies something outside /patches: " s); return }
       seen_patch_copy = 1
-      if (kw == "COPY" && !from_flag && nargs == 2 && args[1] == "patches/" name && dest == "/patches/" name) copied = 1
-      else if (dest == "/patches/" name || dest ~ /^\/patches\/?$/) taint("xray-builder copies something other than the patch file onto it: " s)
+      if (kw == "COPY" && !from_flag && nargs == 2 && src ~ /^patches\/[A-Za-z0-9._-]+$/ && dest == "/" src) {
+        if (src == "patches/" name) copied = 1
+      } else taint("xray-builder copies something onto /patches other than a patch file: " s)
       return
     }
     if (stage != "xray-builder") {
@@ -442,23 +484,13 @@ dockerfile_program='
     if (kw != "RUN") { taint("xray-builder has a " kw " instruction: " s); return }
     run_xray(rest, s)
   }
-  BEGIN { in_hd = 0; nterm = 0; nstage = 0 }
-  in_hd {
-    t = $0
-    sub(/^[ \t]+/, "", t)
-    sub(/[ \t]+$/, "", t)
-    for (hi = 1; hi <= nterm; hi++) {
-      if (term[hi] != "" && t == term[hi]) {
-        term[hi] = ""
-        left = 0
-        for (hj = 1; hj <= nterm; hj++) if (term[hj] != "") left = 1
-        if (!left) { in_hd = 0; nterm = 0 }
-        break
-      }
-    }
-    next
+  BEGIN { nstage = 0 }
+  {
+    sub(/\r$/, "")
+    if ($0 ~ /[^\t\040-\176]/) taint("the Dockerfile has a byte outside printable ASCII on line " NR)
   }
   /^[ \t]*#[ \t]*[A-Za-z][A-Za-z0-9]*[ \t]*=/ && !seen_instruction { taint("the Dockerfile starts with a parser directive: " $0) }
+  /^[ \t]*\/\// && !seen_instruction { taint("the Dockerfile starts with a parser directive: " $0) }
   /^[ \t]*#/ { next }
   /^[ \t]*$/ { next }
   {
@@ -467,28 +499,20 @@ dockerfile_program='
     continued = sub(/\\[ \t]*$/, "", line)
     inst = (inst == "") ? line : inst " " line
     if (!continued) {
-      tmp = inst
-      nterm = 0
-      while ((p = index(tmp, "<<")) > 0) {
-        tmp = substr(tmp, p + 2)
-        if (substr(tmp, 1, 1) == "-") tmp = substr(tmp, 2)
-        if (substr(tmp, 1, 1) == "\"" || substr(tmp, 1, 1) == q) tmp = substr(tmp, 2)
-        word = ""
-        while (tmp != "" && substr(tmp, 1, 1) ~ /[A-Za-z0-9_]/) {
-          word = word substr(tmp, 1, 1)
-          tmp = substr(tmp, 2)
-        }
-        if (word != "") term[++nterm] = word
-      }
       handle(inst)
       inst = ""
-      if (nterm > 0) in_hd = 1
     }
   }
   END {
     if (inst != "") handle(inst)
+    if (argkey != "") {
+      if (argn > 1) exit 3
+      if (argn == 1) print argval
+      exit 0
+    }
     if (!builders) taint("the Dockerfile has no xray-builder stage")
     if (!xray_copied[nstage]) taint("the last stage does not install xray from xray-builder")
+    if (env_bad != "") taint(env_bad)
     if (!built) taint("xray-builder never runs go build after the patches")
     if (explain) {
       if (tainted) print reason
@@ -498,12 +522,12 @@ dockerfile_program='
   }'
 
 dockerfile_applies_patch() {
-  printf '%s\n' "$dockerfile_text" | awk -v name="$1" -v q="'" "$dockerfile_program"
+  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v name="$1" -v q="'" "$dockerfile_program"
 }
 
 : >"$work/applied-xray-patches"
 : >"$work/xray-patch-headers"
-xray_build_note=$(printf '%s\n' "$dockerfile_text" | awk -v name= -v explain=1 -v q="'" "$dockerfile_program")
+xray_build_note=$(printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v name= -v explain=1 -v q="'" "$dockerfile_program")
 if makefile_applies_xray_patches; then
   [ -z "$xray_build_note" ] ||
     printf 'upstream-drift: xray: no patch header counts, because the Dockerfile'"'"'s xray build is not one the check can follow: %s\n' "$xray_build_note"
@@ -831,9 +855,7 @@ check_node() {
 }
 
 dockerfile_arg() {
-  printf '%s\n' "$dockerfile_text" | awk -v key="$1" '
-    toupper($1) == "ARG" { for (i = 2; i <= NF; i++) if (index($i, key "=") == 1) { n++; if (n == 1) v = substr($i, length(key) + 2) } }
-    END { if (n > 1) exit 3; if (n == 1) print v }' ||
+  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v argkey="$1" -v q="'" "$dockerfile_program" ||
     die "Dockerfile declares ARG $1 with a value more than once, so the build may use another value than the check reads"
 }
 
