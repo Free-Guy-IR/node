@@ -186,6 +186,9 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 
 			entries := make([]middleproxy.SecretEntry, 0, len(b.secretsByID))
 			for username, entry := range b.secretsByID {
+				if _, on := entry.inbounds[inst.Tag]; !on {
+					continue
+				}
 				entries = append(entries, middleproxy.SecretEntry{
 					Username: username,
 					Email:    entry.email,
@@ -296,7 +299,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 			IPBlocklist:        ipblocklist.NewNoop(),
 			IPAllowlist:        allowEveryone{panics: newPanicGuard(fmt.Sprintf("the allowlist of instance %q", inst.Tag), b.recordLog)},
 			EventStream:        eventStream,
-			Secrets:            b.secretsForInstance(inst.FakeTLSDomain),
+			Secrets:            b.secretsForInstance(inst.Tag, inst.FakeTLSDomain),
 			DomainFrontingHost: inst.FakeTLSDomain,
 			PlainMode:          inst.Plain(),
 		}

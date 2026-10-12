@@ -141,22 +141,22 @@ func assertRefused(t *testing.T, backend *Backend, email string) {
 	}
 }
 
-func assertInstanceSecret(t *testing.T, backend *Backend, domain, email, secret string) {
+func assertInstanceSecret(t *testing.T, backend *Backend, tag, domain, email, secret string) {
 	t.Helper()
-	secrets := backend.secretsForInstance(domain)
+	secrets := backend.secretsForInstance(tag, domain)
 	got, ok := secrets[email]
 	if !ok {
-		t.Fatalf("instance secrets for domain %q must carry %s right after New, got %v", domain, email, sortedIDs(secrets))
+		t.Fatalf("instance secrets of %s (domain %q) must carry %s right after New, got %v", tag, domain, email, sortedIDs(secrets))
 	}
 	if got.Host != domain || got.Key != secretKey(t, secret) {
 		t.Fatalf("instance secret for %s is wrong: host=%q", email, got.Host)
 	}
 }
 
-func assertInstanceSecretAbsent(t *testing.T, backend *Backend, domain, email string) {
+func assertInstanceSecretAbsent(t *testing.T, backend *Backend, tag, domain, email string) {
 	t.Helper()
-	if _, ok := backend.secretsForInstance(domain)[email]; ok {
-		t.Fatalf("instance secrets for domain %q must not carry %s", domain, email)
+	if _, ok := backend.secretsForInstance(tag, domain)[email]; ok {
+		t.Fatalf("instance secrets of %s (domain %q) must not carry %s", tag, domain, email)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestNewAuthorisesInitialUsersOnFakeTLSInstance(t *testing.T) {
 
 	assertAuthorised(t, backend, "a@x", initialSecretA)
 	assertRefused(t, backend, "b@x")
-	assertInstanceSecret(t, backend, "localhost", "a@x", initialSecretA)
-	assertInstanceSecretAbsent(t, backend, "localhost", "b@x")
+	assertInstanceSecret(t, backend, "mtproto-tg", "localhost", "a@x", initialSecretA)
+	assertInstanceSecretAbsent(t, backend, "mtproto-tg", "localhost", "b@x")
 }
 
 func TestNewAuthorisesInitialUsersOnMiddleProxyInstance(t *testing.T) {
@@ -285,7 +285,7 @@ func TestNewWithoutInitialUsersAuthorisesNobody(t *testing.T) {
 	if entries := authorisedEntries(backend); len(entries) != 0 {
 		t.Fatalf("no initial users must authorise nobody, got %v", sortedIDs(entries))
 	}
-	if secrets := backend.secretsForInstance("localhost"); len(secrets) != 0 {
+	if secrets := backend.secretsForInstance("mtproto-tg", "localhost"); len(secrets) != 0 {
 		t.Fatalf("no initial users must leave the instance secrets empty, got %v", sortedIDs(secrets))
 	}
 }
@@ -306,8 +306,8 @@ func TestNewAuthorisesUserListedOnlyOnTheSecondInstance(t *testing.T) {
 
 	assertAuthorised(t, backend, "c@x", initialSecretC)
 	assertRefused(t, backend, "b@x")
-	assertInstanceSecret(t, backend, "localhost", "c@x", initialSecretC)
-	assertInstanceSecret(t, backend, "", "c@x", initialSecretC)
+	assertInstanceSecret(t, backend, "mtproto-tg-plain", "", "c@x", initialSecretC)
+	assertInstanceSecretAbsent(t, backend, "mtproto-tg", "localhost", "c@x")
 
 	if outcome := plainHandshakeOutcome(t, backend, ports[1], initialSecretC); outcome != handshakeAccepted {
 		t.Fatalf("a client holding c@x's secret must pass the second instance's handshake right after New, got %s", outcome)

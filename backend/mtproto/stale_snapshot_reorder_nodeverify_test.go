@@ -105,7 +105,7 @@ func TestNodeVerifyAnOlderSecretsSnapshotNeverLandsAfterANewerRemoval(t *testing
 		IPBlocklist:     ipblocklist.NewNoop(),
 		IPAllowlist:     allowEveryone{},
 		EventStream:     events.NewNoopStream(),
-		Secrets:         b.secretsForInstance("example.com"),
+		Secrets:         b.secretsForInstance(tag, "example.com"),
 		PlainMode:       true,
 	})
 	if err != nil {
