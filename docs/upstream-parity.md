@@ -331,6 +331,9 @@ Why the rules look like this:
     `UNPORTED xray build` item that names the refused instruction, and also turns every patch-ported item `UNPORTED`,
     until the Dockerfile is written in this shape or the parser learns the new one. That is the intended direction of
     failure: the run never passes on an xray build it could not follow.
+    The check's awk programs use no regular-expression interval such as `{64}`, because mawk 1.3.4 20200120 (the
+    awk of Ubuntu 22.04) reads one as plain text and would refuse every digest-pinned builder. A test runs the check
+    under an awk that rejects any program with an interval.
   It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
   sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:

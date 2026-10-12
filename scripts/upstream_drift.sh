@@ -191,6 +191,12 @@ dockerfile_program='
     if (!tainted) reason = why
     tainted = 1
   }
+  function digest_pinned(img,   at, digest) {
+    at = index(img, "@sha256:")
+    if (!at) return 0
+    digest = substr(img, at + 8)
+    return length(digest) == 64 && digest !~ /[^0-9a-f]/
+  }
   function norm(p,   parts, n, i, out, depth, stack) {
     if (substr(p, 1, 1) != "/") return p
     n = split(p, parts, "/")
@@ -449,7 +455,7 @@ dockerfile_program='
         builders++
         if (builders > 1) taint("the Dockerfile has more than one xray-builder stage")
         if (img in stage_names || index(img, "$")) taint("xray-builder builds on another stage or a variable image: " s)
-        else if (img != "scratch" && img !~ /@sha256:[0-9a-f]{64}$/) taint("xray-builder builds on an image that is not pinned by digest: " s)
+        else if (img != "scratch" && !digest_pinned(img)) taint("xray-builder builds on an image that is not pinned by digest: " s)
       }
       if (stage != "") stage_names[stage] = 1
       return

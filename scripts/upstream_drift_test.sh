@@ -912,6 +912,34 @@ RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefil
 xray_rewrite xray-build-unpinned-builder-image 's/^FROM scratch AS xray-builder$/FROM golang:latest AS xray-builder/'
 check xray-build-unpinned-builder-image 1 DRIFT_COMPONENTS="node xray"
 
+noint_awk=$tmp/noint-awk
+mkdir -p "$noint_awk"
+cat >"$noint_awk/awk" <<EOF
+#!/bin/sh
+for a do
+  case \$a in
+    *[{][0-9]*) echo "awk: this awk has no interval expressions" >&2; exit 2 ;;
+  esac
+done
+exec $(command -v awk) "\$@"
+EOF
+chmod +x "$noint_awk/awk"
+
+builder_digest() {
+  xray_fixture "$1" "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+  xray_rewrite "$1" "s/^FROM scratch AS xray-builder\$/FROM golang:1.26\@sha256:$2 AS xray-builder/"
+}
+
+builder_digest xray-build-digest-pinned-builder-on-an-awk-without-intervals "$(printf '%064d' 0)"
+check xray-build-digest-pinned-builder-on-an-awk-without-intervals 0 DRIFT_COMPONENTS="node xray" PATH="$noint_awk:$PATH"
+
+builder_digest xray-build-builder-digest-one-digit-short "$(printf '%063d' 0)"
+check xray-build-builder-digest-one-digit-short 1 DRIFT_COMPONENTS="node xray" PATH="$noint_awk:$PATH"
+
+builder_digest xray-build-builder-digest-not-hex "$(printf '%063dg' 0)"
+check xray-build-builder-digest-not-hex 1 DRIFT_COMPONENTS="node xray" PATH="$noint_awk:$PATH"
+
 xray_fixture xray-pin-declared-on-a-continuation-line "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG TARGETOS \\\n XRAY_COMMIT=/'
