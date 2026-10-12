@@ -337,6 +337,13 @@ xray_prepend() {
   commit "$f" -m "add a stage in front"
 }
 
+xray_rewrite() {
+  f=$tmp/$1/fork
+  perl -pi -e "$2" "$f/Dockerfile"
+  git -C "$f" add -A
+  commit "$f" -m "rewrite the Dockerfile"
+}
+
 xray_makefile_commented='# build_xray:
 #	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done'
 
@@ -839,13 +846,6 @@ check xray-branch-scope-on-branch 0 DRIFT_COMPONENTS="node xray"
 
 xray_branch_scope xray-branch-scope-after-merge merged
 check xray-branch-scope-after-merge 1 DRIFT_COMPONENTS="node xray"
-
-xray_rewrite() {
-  f=$tmp/$1/fork
-  perl -pi -e "$2" "$f/Dockerfile"
-  git -C "$f" add -A
-  commit "$f" -m "rewrite the Dockerfile"
-}
 
 xray_fixture xray-build-crlf-hides-the-builder-stage "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
