@@ -133,7 +133,7 @@ waiver_branch_scope() {
 }
 
 branch_only_heads() {
-  awk -v lines=" $1 " '$0 !~ /^(renovate|dependabot)\// { h[++n] = $0; if (index(lines, " " $0 " ")) d = 1 }
+  awk -v lines=" $1 " '{ h[++n] = $0; if (index(lines, " " $0 " ")) d = 1 }
     END { if (!d) for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? " " : ""), h[i] }'
 }
 

@@ -1021,8 +1021,9 @@ Add one line to `.github/upstream-waivers.txt`:
   that now reach it. Several `branch:` tokens are allowed. The scope is required, not optional: a waived commit
   that no tag and no release-line branch reaches (node: `main`, `dev`; third party: the line branch and any branch
   named `main`, `master`, `dev`, `stable`, `testing`, `unstable` or `oldstable`) is `UNPORTED` until its waiver names
-  the branches that do, whatever the reason says. Bot branches (`renovate/*`, `dependabot/*`) never make a commit
-  branch-only and never break a scope, because they only rebase onto other branches. A waiver whose reason says the
+  the branches that do, whatever the reason says. Bot branches (`renovate/*`, `dependabot/*`) never break a scope,
+  because they only rebase onto other branches; a commit that only bot branches reach is still branch-only, and its
+  waiver names them. A waiver whose reason says the
   upstream work is unmerged (`not merged`, `never merged`, `revisit if upstream merges`) but carries no `branch:`
   token is also a malformed line; the check exits 2. A malformed `branch:` token also exits 2. A token is read even
   when punctuation wraps it, as in `(branch:pr-61),`. And whatever its tokens, a waiver whose reason says the work is

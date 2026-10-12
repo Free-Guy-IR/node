@@ -1230,6 +1230,12 @@ check stale-claim-unmerged-alone 1
 d10_plain branch-scope-not-required-on-a-tagged-commit pr-9 'collides with the fork mtproto backend' tagged
 check branch-scope-not-required-on-a-tagged-commit 0
 
+d10_plain branch-scope-required-on-a-bot-only-commit dependabot/go 'collides with the fork mtproto backend' open
+check branch-scope-required-on-a-bot-only-commit 1
+
+d10_plain branch-scope-naming-a-bot-branch dependabot/go 'collides with the fork mtproto backend branch:dependabot/go' open
+check branch-scope-naming-a-bot-branch 0
+
 stub_curl
 base advisories-endless
 : >"$tmp/advisories-endless/stub.log"
