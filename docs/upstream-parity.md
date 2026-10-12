@@ -693,6 +693,67 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
   - On the pin, round 0 counted 56000 of 64000 bytes.
   - With the fix, 5 runs of 200 rounds pass.
 
+### Adapted backport, not a deviation: XHTTP client races (patches/xray-xhttp-client-race.patch)
+
+- It carries upstream `77f98eba0978cbcb425e2f8ec3cec86bd5aa8444` (#6665) and `eef6e63bc16d6e97fd98178556d49aad7978809a`
+  (#6694) with their `Upstream:` lines. Every changed line of `transport/internet/splithttp/client.go` and `dialer.go`
+  is upstream code.
+- **The races at the pin:**
+  - `WaitReadCloser.Set` wrote the embedded reader while `Read` checked it without synchronization (`client.go:179`
+    against `:189`). `Close` and `Set` both closed the wait channel and relied on `recover`.
+  - `DefaultDialerClient.closed` was a plain bool. A failed stream-down or packet POST wrote it, and XMUX read it
+    through `IsClosed()` on other dials.
+  - `uploadWriter.Write` read `buff.Len()` after `WriteMultiBuffer` had handed the buffer to the uploader, which clears
+    it once it is posted (`dialer.go:614`). Besides the race, `Write` could report fewer bytes than it wrote.
+- **Difference:** only the hunk context. The pin does not carry `986c512`, `9d9eaf3` or `1e036ce`; the first two keep
+  their own pending waivers.
+- **Reach:** client side only. No production core dials out over XHTTP (checked 2026-09-25), so the port mainly makes
+  the -race CI run honest and protects a future XHTTP outbound. The server-side XHTTP code is untouched.
+- **Why now:** CI runs `make test_xray_patches` with `GOFLAGS=-race`. Upstream's own `TestDialWithRemoteAddr` failed on
+  these races (run 37916395457), and the splithttp `TestTrustedHeaderScenarios` line hits the same two families.
+- **Tests:** `client_race_test.go` is fork code, committed before the fix (`c989eb0`).
+  - One -race test for each race: `TestAStreamDownBodySetWhileAReadWaitsIsDeliveredWhole`,
+    `TestAFailedStreamDownMarksTheClientClosedWhileOthersPollIt`,
+    `TestUploadWriterCountsEachWriteWhileTheUploaderReleasesItsBuffers` and
+    `TestUploadWriterDeliversLargeWritesExactlyOnceToAConcurrentUploader`.
+  - `TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce` holds the close-before-response behaviour: the late
+    body is closed exactly once and a read returns no data.
+  - `TestConcurrentClosesRacingTheResponseCloseItsBodyOnceAndWakeTheWaitingRead` (`a9c1735`, added after a review)
+    covers the path eef6e63 made safe: in each of 50 rounds a Read waits while two goroutines close the stream as the
+    response arrives. The Read must return only bytes of this stream's body, and the body must be closed exactly
+    once.
+  - The interleaving test `TestConcurrentStreamsOpenReadAndCloseWithoutLosingOrDuplicatingData` runs 96 stream-down,
+    early-close, failed, stream-up and packet-up requests at once on one client while another goroutine polls
+    `IsClosed`. It checks that each stream reads exactly its own body and that every response body is closed exactly
+    once. It waits for each scripted body before counting closes (`0cef49e`): an early-close stream returns before
+    its body exists, and without the wait one `-test.count=10` iteration in ten failed with no data race.
+  - On the pin with every fork patch, under -race, in separate processes: `TestDialWithRemoteAddr` failed 20 of 20 runs
+    and the splithttp `TestTrustedHeaderScenarios` 5 of 5, all with data races. Five of the six new tests failed 10 of
+    10 with data races; the close-before-response test passed, as designed. The concurrent-Close test, added later,
+    failed 10 of 10 there with data races.
+  - With the fix, on 2026-10-11 at a 1-minute load of 3.7 to 9.2 (`go1.26.6`, -race, separate processes):
+    `TestDialWithRemoteAddr` passed 20 of 20 and the splithttp `TestTrustedHeaderScenarios` 10 of 10. The four
+    one-race tests and the close-before-response test passed 20 of 20 each. The interleaving test passed 20 runs and
+    10 runs of `-test.count=10`, and the concurrent-Close test 20 runs and 5 runs of `-test.count=10`. All of them
+    together passed 3 runs of `-test.count=10`. No run reported a data race.
+  - Mutants of the fixed code, one change each:
+    - the old `WaitReadCloser`: `TestDialWithRemoteAddr`, the Set test, the interleaving test and the concurrent-Close
+      test each failed 10 of 10, and `TestTrustedHeaderScenarios` 3 of 3, all with data races;
+    - the plain `closed` bool: the closed-flag test and the interleaving test each failed 10 of 10 with data races;
+    - the length read after `WriteMultiBuffer`: both upload tests failed 10 of 10, `TestTrustedHeaderScenarios` 3 of
+      3, and `TestDialWithRemoteAddr` 9 of 10, with data races;
+    - without `Set`'s `wait.Done` check, or without `Close`'s first `wait.Close`: the close-before-response test and
+      the concurrent-Close test each failed 5 of 5, because the late body was never closed.
+  - Each of those five mutants also fails a Dockerfile guard.
+  - `CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches` passes all 18 recipe lines (28 package runs, no data race)
+    on this branch merged with the singbridge fix. Without that fix, the run stops at the earlier SS2022 line on the
+    singbridge `PacketConnWrapper` race. `make test_xray_guards` removes 57 non-test file diffs on this branch, and 58
+    with the singbridge patch; none is left uncaught.
+- **Not changed, upstream as well:** the `GotConn` trace callback in `OpenStream` writes the returned addresses. If an
+  HTTP/2 retry calls it again after `OpenStream` has returned, that write races the caller. This is the same in the pin
+  and in upstream `main`, and it is to be reported upstream, not forked.
+- **Removal condition:** drop the patch when the pin moves past `eef6e63`.
+
 ### FORK DEVIATION: WireGuard outbound dials through the tunnel taken under the lock (patches/xray-wireguard-client-close.patch)
 
 - **The bug at the pin:** `Process` in `proxy/wireguard/client.go` called `processWireGuard` under `h.wgLock`, then
