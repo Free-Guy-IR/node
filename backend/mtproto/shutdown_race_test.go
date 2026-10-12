@@ -159,7 +159,7 @@ func TestConcurrentShutdownCallsHandOverAccountingOnce(t *testing.T) {
 			`{"tag":"mtproto-tg-ad","port":%d,"fake_tls_domain":"localhost","ad_tag":%q}]}`, ports[0], ports[1], testAdTag)
 		backend := startBackend(t, raw, nil)
 		takeHandOver()
-		logs := backend.Logs()
+		logs := backend.SubscribeLogs(context.Background())
 
 		var wg sync.WaitGroup
 		for range 8 {

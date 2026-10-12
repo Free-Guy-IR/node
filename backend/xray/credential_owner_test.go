@@ -31,6 +31,7 @@ import (
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
+	"github.com/pasarguard/node/pkg/logstream"
 )
 
 const credentialInbounds = `{"log":{"loglevel":"warning"},"inbounds":[
@@ -388,7 +389,7 @@ func newCredentialXray(t *testing.T, core *credentialCore) *Xray {
 	}
 
 	x := &Xray{config: cfg, handler: handler, core: &Core{
-		logsChan:       make(chan string, 64),
+		logs:           logstream.NewBuffer(64),
 		logPhase:       logPhaseRuntime,
 		startupLogSize: 200,
 		runtimeLogs:    newStartupLogRing(64),

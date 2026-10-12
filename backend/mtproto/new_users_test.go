@@ -164,7 +164,7 @@ func awaitServing(t *testing.T, backend *Backend, tag string, port int) {
 	t.Helper()
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	marker := "[mtproto." + tag + ".proxy] "
-	logs := backend.Logs()
+	logs := backend.SubscribeLogs(context.Background())
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -189,7 +189,7 @@ func awaitServing(t *testing.T, backend *Backend, tag string, port int) {
 }
 
 func handshakeOutcomeFromLogs(backend *Backend) string {
-	logs := backend.Logs()
+	logs := backend.SubscribeLogs(context.Background())
 	for {
 		select {
 		case line := <-logs:

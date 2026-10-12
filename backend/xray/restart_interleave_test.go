@@ -24,6 +24,7 @@ import (
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
+	"github.com/pasarguard/node/pkg/logstream"
 )
 
 type statsModel struct {
@@ -115,7 +116,7 @@ func newRestartHarness(t *testing.T, inbounds string) *restartHarness {
 		executablePath: executable,
 		assetsPath:     dir,
 		configPath:     dir,
-		logsChan:       make(chan string, 64),
+		logs:           logstream.NewBuffer(64),
 		logPhase:       logPhaseRuntime,
 		startupLogSize: 200,
 		runtimeLogs:    newStartupLogRing(10),

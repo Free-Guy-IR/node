@@ -118,7 +118,7 @@ func New(ctx context.Context, sbConfig *Config, users []*common.User, apiPort in
 	return sb, nil
 }
 
-func (s *SingBox) Logs() <-chan string {
+func (s *SingBox) SubscribeLogs(context.Context) <-chan string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.core.Logs()

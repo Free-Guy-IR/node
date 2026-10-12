@@ -256,7 +256,7 @@ func (o *L2TP) Started() bool {
 
 func (o *L2TP) Version() string { return DetectVersion() }
 
-func (o *L2TP) Logs() <-chan string { return o.logChan }
+func (o *L2TP) SubscribeLogs(context.Context) <-chan string { return o.logChan }
 
 func (o *L2TP) Restart() error {
 	o.mu.Lock()

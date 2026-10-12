@@ -219,7 +219,7 @@ func (b *Backend) Version() string {
 	return b.version
 }
 
-func (b *Backend) Logs() <-chan string {
+func (b *Backend) SubscribeLogs(context.Context) <-chan string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.logsChan

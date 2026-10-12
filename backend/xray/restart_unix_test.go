@@ -25,6 +25,7 @@ import (
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
+	"github.com/pasarguard/node/pkg/logstream"
 	"github.com/pasarguard/node/pkg/netutil"
 )
 
@@ -85,7 +86,7 @@ func newFakeCoreXray(t *testing.T, stats *fakeStatsService) *Xray {
 		executablePath: executable,
 		assetsPath:     dir,
 		configPath:     dir,
-		logsChan:       make(chan string, 100),
+		logs:           logstream.NewBuffer(100),
 		logPhase:       logPhaseRuntime,
 		startupLogSize: 200,
 		runtimeLogs:    newStartupLogRing(10),

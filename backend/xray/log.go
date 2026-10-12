@@ -68,33 +68,23 @@ func (c *Core) recordProcessLog(output string) {
 
 func (c *Core) noteNodeLog(line string) {
 	c.RecordRuntimeLog(line)
-	select {
-	case c.logsChan <- line:
-	default:
+	if c.logs != nil {
+		c.logs.Publish(line)
 	}
 }
 
 func (c *Core) captureStartupLogLine(output string) {
 	c.RecordStartupLog(output)
-
-	// Non-blocking send: skip if channel is full to prevent deadlock
-	select {
-	case c.logsChan <- output:
-		// Log sent successfully
-	default:
-		// Channel full, skip this log (prevents blocking xray process)
+	if c.logs != nil {
+		c.logs.Publish(output)
 	}
 	c.detectLogType(output)
 }
 
 func (c *Core) captureRuntimeLogLine(output string) {
 	c.RecordRuntimeLog(output)
-	// Non-blocking send: skip if channel is full to prevent deadlock
-	select {
-	case c.logsChan <- output:
-		// Log sent successfully
-	default:
-		// Channel full, skip this log (prevents blocking xray process)
+	if c.logs != nil {
+		c.logs.Publish(output)
 	}
 	c.detectLogType(output)
 }

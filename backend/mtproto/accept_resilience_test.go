@@ -160,7 +160,7 @@ func adTagInstanceBackend(t *testing.T) (*Backend, int) {
 
 func failOnPanicLines(t *testing.T, b *Backend) {
 	t.Helper()
-	logs := b.Logs()
+	logs := b.SubscribeLogs(context.Background())
 	for {
 		select {
 		case line := <-logs:

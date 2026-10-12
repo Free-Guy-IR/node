@@ -19,6 +19,7 @@ import (
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/config"
+	"github.com/pasarguard/node/pkg/logstream"
 )
 
 type bootingStatsService struct {
@@ -66,7 +67,7 @@ func newBootingCoreXray(t *testing.T, stats *bootingStatsService) *Xray {
 		executablePath: executable,
 		assetsPath:     dir,
 		configPath:     dir,
-		logsChan:       make(chan string, 100),
+		logs:           logstream.NewBuffer(100),
 		logPhase:       logPhaseRuntime,
 		startupLogSize: 200,
 		runtimeLogs:    newStartupLogRing(10),

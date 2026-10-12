@@ -19,6 +19,7 @@ import (
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/config"
+	"github.com/pasarguard/node/pkg/logstream"
 )
 
 func cancelledBySyncAbort(err error) bool {
@@ -99,7 +100,7 @@ func newGatedRestartHarness(t *testing.T, inbounds string) (*restartHarness, *ga
 		executablePath: executable,
 		assetsPath:     dir,
 		configPath:     dir,
-		logsChan:       make(chan string, 64),
+		logs:           logstream.NewBuffer(64),
 		logPhase:       logPhaseRuntime,
 		startupLogSize: 200,
 		runtimeLogs:    newStartupLogRing(10),
