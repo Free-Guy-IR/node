@@ -699,6 +699,10 @@ xray_fixture xray-pin-declared-twice-in-the-builder-stage "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-twice-in-the-builder-stage "s/^(ARG XRAY_COMMIT=.*)\$/\$1\nARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-twice-in-the-builder-stage/xray-up" X1)/"
 check xray-pin-declared-twice-in-the-builder-stage 2 DRIFT_COMPONENTS="node xray"
+if ! grep -q 'gets ARG XRAY_COMMIT from more than one declaration with a value' "$tmp/xray-pin-declared-twice-in-the-builder-stage/out"; then
+  printf 'FAIL     %-28s does not name the pin declared more than once\n' xray-pin-declared-twice-in-the-builder-stage
+  failed=$((failed + 1))
+fi
 
 xray_fixture xray-build-fetches-another-ref "$xray_copy
 RUN git init -q . && git fetch -q --depth 1 origin main && git checkout -q FETCH_HEAD && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
@@ -1069,6 +1073,10 @@ xray_rewrite xray-pin-two-global-declarations 's/^ARG XRAY_COMMIT=.*$/ARG XRAY_C
 xray_prepend xray-pin-two-global-declarations "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-two-global-declarations/xray-up" X1)
 ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-two-global-declarations/xray-up" X0)"
 check xray-pin-two-global-declarations 2 DRIFT_COMPONENTS="node xray"
+if ! grep -q 'gets ARG XRAY_COMMIT from more than one declaration with a value' "$tmp/xray-pin-two-global-declarations/out"; then
+  printf 'FAIL     %-28s does not name the pin declared more than once\n' xray-pin-two-global-declarations
+  failed=$((failed + 1))
+fi
 
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
