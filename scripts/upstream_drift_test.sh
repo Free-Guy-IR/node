@@ -940,6 +940,11 @@ check xray-build-builder-digest-one-digit-short 1 DRIFT_COMPONENTS="node xray" P
 builder_digest xray-build-builder-digest-not-hex "$(printf '%063dg' 0)"
 check xray-build-builder-digest-not-hex 1 DRIFT_COMPONENTS="node xray" PATH="$noint_awk:$PATH"
 
+xray_fixture xray-build-builder-tag-shaped-like-a-digest "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-build-builder-tag-shaped-like-a-digest "s/^FROM scratch AS xray-builder\$/FROM golang:$(printf '%064d' 0) AS xray-builder/"
+check xray-build-builder-tag-shaped-like-a-digest 1 DRIFT_COMPONENTS="node xray" PATH="$noint_awk:$PATH"
+
 xray_fixture xray-pin-declared-on-a-continuation-line "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-on-a-continuation-line 's/^ARG XRAY_COMMIT=/ARG TARGETOS \\\n XRAY_COMMIT=/'
