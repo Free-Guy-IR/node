@@ -1005,6 +1005,38 @@ check xray-branch-scope-not-required-on-unstable 0 DRIFT_COMPONENTS="node xray"
 xray_branch_only xray-bot-branch-does-not-reopen-a-scoped-waiver side " branch:side" renovate/deps
 check xray-bot-branch-does-not-reopen-a-scoped-waiver 0 DRIFT_COMPONENTS="node xray"
 
+xray_fixture stale-claim-on-a-merged-xray-commit "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+s=$tmp/stale-claim-on-a-merged-xray-commit
+git -C "$s/xray-up" checkout -q -b side
+printf 'package core\n\nvar raced = true\n' >"$s/xray-up/race.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "XB fix a race on side"
+git -C "$s/xray-up" checkout -q main
+printf '%s rejected: the upstream pull request is still open and does not touch server code\n' "$(sha_of "$s/xray-up" XB)" >>"$s/waivers"
+git -C "$s/xray-up" merge -q --no-ff --no-edit side
+git -C "$s/xray-up" branch -q -D side
+git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+check stale-claim-on-a-merged-xray-commit 1 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-declared-in-another-stage "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-pin-declared-in-another-stage "s/^ARG SINGBOX_VERSION=v1\.0\.0\$/ARG SINGBOX_VERSION=v1.0.0\nARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-in-another-stage/xray-up" X1)/"
+check xray-pin-declared-in-another-stage 0 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-only-global-without-a-stage-declaration "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-pin-only-global-without-a-stage-declaration 's/^ARG XRAY_COMMIT=.*\n//'
+xray_prepend xray-pin-only-global-without-a-stage-declaration "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-only-global-without-a-stage-declaration/xray-up" X0)"
+check xray-pin-only-global-without-a-stage-declaration 2 DRIFT_COMPONENTS="node xray"
+
+xray_fixture xray-pin-two-global-declarations "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+xray_rewrite xray-pin-two-global-declarations 's/^ARG XRAY_COMMIT=.*$/ARG XRAY_COMMIT/'
+xray_prepend xray-pin-two-global-declarations "ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-two-global-declarations/xray-up" X1)
+ARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-two-global-declarations/xray-up" X0)"
+check xray-pin-two-global-declarations 2 DRIFT_COMPONENTS="node xray"
+
 pending pending-not-a-calendar-day 'taken with the next release until:2026-09-31'
 check pending-not-a-calendar-day 2
 
@@ -1104,6 +1136,71 @@ check branch-scope-merge-on-branch 0
 
 branch_scope_merge branch-scope-merge-after-merge merged
 check branch-scope-merge-after-merge 1
+
+merge_branch_only() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b side
+  printf 'package main\n\nfunc c() int { return 3 }\n' >"$s/upw/c.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "S1 add c"
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" S1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" S1)" >/dev/null
+  git -C "$s/upw" checkout -q main
+  git -C "$s/upw" checkout -q -b pr-61
+  git -C "$s/upw" merge -q --no-ff --no-commit side >/dev/null 2>&1
+  printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "M1 merge side with a telemt backend"
+  git -C "$s/upw" checkout -q main
+  git -C "$s/upw" branch -q -D side
+  printf '%s rejected: %s\n' "$(sha_of "$s/upw" M1)" "$2" >>"$s/waivers"
+  if [ "$3" = merged ]; then
+    git -C "$s/upw" merge -q --no-ff --no-edit pr-61
+    git -C "$s/upw" branch -q -D pr-61
+  fi
+}
+
+merge_branch_only branch-scope-required-on-a-branch-only-merge 'collides with the fork mtproto backend' open
+check branch-scope-required-on-a-branch-only-merge 1
+
+merge_branch_only stale-claim-on-a-merged-merge 'the pull request is still open and collides with the fork mtproto backend' merged
+check stale-claim-on-a-merged-merge 1
+
+branch_scope branch-scope-bot-branch-does-not-reopen-a-node-scope open
+git -C "$tmp/branch-scope-bot-branch-does-not-reopen-a-node-scope/upw" branch -q dependabot/go pr-61
+check branch-scope-bot-branch-does-not-reopen-a-node-scope 0
+
+d10_plain() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b "$2"
+  printf 'package main\n\nfunc telemt() int { return 2 }\n' >"$s/upw/telemt.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "P1 telemt backend"
+  git -C "$s/upw" checkout -q main
+  printf '%s rejected: %s\n' "$(sha_of "$s/upw" P1)" "$3" >>"$s/waivers"
+  case $4 in
+    merged)
+      git -C "$s/upw" merge -q --no-ff --no-edit "$2"
+      git -C "$s/upw" branch -q -D "$2"
+      ;;
+    tagged) git -C "$s/upw" tag v9.9.9 "$2" ;;
+  esac
+}
+
+d10_plain branch-scope-token-in-parentheses-plain-wording pr-61 'collides with the fork mtproto backend (branch:pr-61), see the fork backend' merged
+check branch-scope-token-in-parentheses-plain-wording 1
+
+d10_plain stale-claim-unmerged-alone pr-61 'upstream PR #61 is unmerged; it collides with the fork mtproto backend' merged
+check stale-claim-unmerged-alone 1
+
+d10_plain branch-scope-not-required-on-a-tagged-commit pr-9 'collides with the fork mtproto backend' tagged
+check branch-scope-not-required-on-a-tagged-commit 0
 
 stub_curl
 base advisories-endless
