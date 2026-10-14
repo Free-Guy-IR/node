@@ -148,37 +148,60 @@ func (c *Config) validate() error {
 
 	c.ServerAddr = strings.TrimSpace(c.ServerAddr)
 
-	return validateRelayIdentities(c.RelayIdentities)
+	return validateRelayIdentities(c.RelayIdentities, net.ParseIP(c.ServerAddr))
 }
 
-func validateRelayIdentities(relays []RelayIdentity) error {
+func validateRelayIdentities(relays []RelayIdentity, serverIP net.IP) error {
 	if len(relays) > maxRelayIdentities {
 		return fmt.Errorf("relay_identities has %d entries, at most %d are allowed", len(relays), maxRelayIdentities)
 	}
 	seen := make(map[string]int, len(relays))
 	for i := range relays {
 		r := &relays[i]
-		addr := net.ParseIP(r.LocalAddr)
-		if addr == nil || addr.IsUnspecified() || addr.IsMulticast() || addr.Equal(net.IPv4bcast) {
+		addr := unicastIP(r.LocalAddr)
+		if addr == nil {
 			return fmt.Errorf("relay_identities[%d].local_addr %q must be a unicast IPv4 or IPv6 address", i, r.LocalAddr)
 		}
 		r.LocalAddr = addr.String()
+		if serverIP != nil && addr.Equal(serverIP) {
+			return fmt.Errorf("relay_identities[%d].local_addr %s is the server_addr; direct clients would be answered with the relay identity", i, r.LocalAddr)
+		}
 		if first, dup := seen[r.LocalAddr]; dup {
 			return fmt.Errorf("relay_identities[%d].local_addr %s is already used by relay_identities[%d]", i, r.LocalAddr, first)
 		}
 		seen[r.LocalAddr] = i
-		if !validRelayID(r.ID) {
-			return fmt.Errorf("relay_identities[%d].id %q must be an IPv4/IPv6 address or a host name of letters, digits, '-' and '.' (max %d characters)", i, r.ID, maxRelayIDLength)
+		id, ok := canonicalRelayID(r.ID)
+		if !ok {
+			return fmt.Errorf("relay_identities[%d].id %q must be a unicast IPv4/IPv6 address or a host name of letters, digits, '-' and '.' whose last label is not all digits (max %d characters)", i, r.ID, maxRelayIDLength)
 		}
+		r.ID = id
 	}
 	return nil
 }
 
-func validRelayID(id string) bool {
-	if net.ParseIP(id) != nil {
-		return true
+func unicastIP(s string) net.IP {
+	ip := net.ParseIP(s)
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return nil
 	}
-	return len(id) <= maxRelayIDLength && relayIDRe.MatchString(id)
+	return ip
+}
+
+func canonicalRelayID(id string) (string, bool) {
+	if net.ParseIP(id) != nil {
+		ip := unicastIP(id)
+		if ip == nil {
+			return "", false
+		}
+		return ip.String(), true
+	}
+	if len(id) > maxRelayIDLength || !relayIDRe.MatchString(id) {
+		return "", false
+	}
+	if lastLabel := id[strings.LastIndexByte(id, '.')+1:]; strings.Trim(lastLabel, "0123456789") == "" {
+		return "", false
+	}
+	return id, true
 }
 
 func validatePSK(psk string) error {
