@@ -248,24 +248,10 @@ func (o *L2TP) swanctlConfig() string {
 	tag := o.config.InboundTag
 	var b strings.Builder
 	fmt.Fprintf(&b, "connections {\n")
-	fmt.Fprintf(&b, "    %s {\n", tag)
-	fmt.Fprintf(&b, "        version = 1\n")
-	fmt.Fprintf(&b, "        proposals = %s\n", strings.Join(o.config.IKEProposals, ","))
-	fmt.Fprintf(&b, "        encap = yes\n")
-	fmt.Fprintf(&b, "        fragmentation = yes\n")
-	fmt.Fprintf(&b, "        dpd_delay = 30s\n")
-	fmt.Fprintf(&b, "        local {\n            auth = psk\n        }\n")
-	fmt.Fprintf(&b, "        remote {\n            auth = psk\n        }\n")
-	fmt.Fprintf(&b, "        children {\n")
-	fmt.Fprintf(&b, "            %s {\n", tag)
-	fmt.Fprintf(&b, "                esp_proposals = %s\n", strings.Join(o.config.ESPProposals, ","))
-	fmt.Fprintf(&b, "                local_ts = dynamic[udp/1701]\n")
-	fmt.Fprintf(&b, "                remote_ts = dynamic[udp]\n")
-	fmt.Fprintf(&b, "                mode = transport\n")
-	fmt.Fprintf(&b, "                dpd_action = clear\n")
-	fmt.Fprintf(&b, "            }\n")
-	fmt.Fprintf(&b, "        }\n")
-	fmt.Fprintf(&b, "    }\n")
+	o.renderSwanctlConnection(&b, tag, nil)
+	for i := range o.config.RelayIdentities {
+		o.renderSwanctlConnection(&b, fmt.Sprintf("%s-relay-%d", tag, i), &o.config.RelayIdentities[i])
+	}
 	fmt.Fprintf(&b, "}\n\n")
 	fmt.Fprintf(&b, "secrets {\n")
 	fmt.Fprintf(&b, "    ike-%s {\n", tag)
@@ -273,6 +259,34 @@ func (o *L2TP) swanctlConfig() string {
 	fmt.Fprintf(&b, "    }\n")
 	fmt.Fprintf(&b, "}\n")
 	return b.String()
+}
+
+func (o *L2TP) renderSwanctlConnection(b *strings.Builder, name string, relay *RelayIdentity) {
+	fmt.Fprintf(b, "    %s {\n", name)
+	fmt.Fprintf(b, "        version = 1\n")
+	if relay != nil {
+		fmt.Fprintf(b, "        local_addrs = %s\n", relay.LocalAddr)
+	}
+	fmt.Fprintf(b, "        proposals = %s\n", strings.Join(o.config.IKEProposals, ","))
+	fmt.Fprintf(b, "        encap = yes\n")
+	fmt.Fprintf(b, "        fragmentation = yes\n")
+	fmt.Fprintf(b, "        dpd_delay = 30s\n")
+	fmt.Fprintf(b, "        local {\n            auth = psk\n")
+	if relay != nil {
+		fmt.Fprintf(b, "            id = %s\n", relay.ID)
+	}
+	fmt.Fprintf(b, "        }\n")
+	fmt.Fprintf(b, "        remote {\n            auth = psk\n        }\n")
+	fmt.Fprintf(b, "        children {\n")
+	fmt.Fprintf(b, "            %s {\n", name)
+	fmt.Fprintf(b, "                esp_proposals = %s\n", strings.Join(o.config.ESPProposals, ","))
+	fmt.Fprintf(b, "                local_ts = dynamic[udp/1701]\n")
+	fmt.Fprintf(b, "                remote_ts = dynamic[udp]\n")
+	fmt.Fprintf(b, "                mode = transport\n")
+	fmt.Fprintf(b, "                dpd_action = clear\n")
+	fmt.Fprintf(b, "            }\n")
+	fmt.Fprintf(b, "        }\n")
+	fmt.Fprintf(b, "    }\n")
 }
 
 func (o *L2TP) writeXl2tpdConf() error {

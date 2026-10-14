@@ -12,11 +12,17 @@ var (
 	inboundTagRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 	proposalRe   = regexp.MustCompile(`^[a-z0-9-]+$`)
 	ifaceRe      = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,15}$`)
+	relayIDRe    = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
 )
 
 const (
 	pskMinLength = 8
 	pskMaxLength = 128
+)
+
+const (
+	maxRelayIdentities = 16
+	maxRelayIDLength   = 253
 )
 
 var (
@@ -32,6 +38,11 @@ var (
 	legacyESPProposals  = []string{"3des-sha1"}
 )
 
+type RelayIdentity struct {
+	LocalAddr string `json:"local_addr"`
+	ID        string `json:"id"`
+}
+
 type Config struct {
 	InboundTag      string   `json:"inbound_tag"`
 	ServerAddr      string   `json:"server_addr"`
@@ -43,6 +54,8 @@ type Config struct {
 	IKEProposals    []string `json:"ike_proposals"`
 	ESPProposals    []string `json:"esp_proposals"`
 	LegacyClients   bool     `json:"legacy_clients"`
+
+	RelayIdentities []RelayIdentity `json:"relay_identities"`
 
 	workDir string
 	poolNet *net.IPNet
@@ -134,7 +147,38 @@ func (c *Config) validate() error {
 	}
 
 	c.ServerAddr = strings.TrimSpace(c.ServerAddr)
+
+	return validateRelayIdentities(c.RelayIdentities)
+}
+
+func validateRelayIdentities(relays []RelayIdentity) error {
+	if len(relays) > maxRelayIdentities {
+		return fmt.Errorf("relay_identities has %d entries, at most %d are allowed", len(relays), maxRelayIdentities)
+	}
+	seen := make(map[string]int, len(relays))
+	for i := range relays {
+		r := &relays[i]
+		addr := net.ParseIP(r.LocalAddr)
+		if addr == nil || addr.IsUnspecified() || addr.IsMulticast() || addr.Equal(net.IPv4bcast) {
+			return fmt.Errorf("relay_identities[%d].local_addr %q must be a unicast IPv4 or IPv6 address", i, r.LocalAddr)
+		}
+		r.LocalAddr = addr.String()
+		if first, dup := seen[r.LocalAddr]; dup {
+			return fmt.Errorf("relay_identities[%d].local_addr %s is already used by relay_identities[%d]", i, r.LocalAddr, first)
+		}
+		seen[r.LocalAddr] = i
+		if !validRelayID(r.ID) {
+			return fmt.Errorf("relay_identities[%d].id %q must be an IPv4/IPv6 address or a host name of letters, digits, '-' and '.' (max %d characters)", i, r.ID, maxRelayIDLength)
+		}
+	}
 	return nil
+}
+
+func validRelayID(id string) bool {
+	if net.ParseIP(id) != nil {
+		return true
+	}
+	return len(id) <= maxRelayIDLength && relayIDRe.MatchString(id)
 }
 
 func validatePSK(psk string) error {
