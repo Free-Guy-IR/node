@@ -33,9 +33,20 @@ var (
 		"aes256-sha1-modp1024",
 		"aes128-sha1-modp1024",
 	}
-	defaultESPProposals = []string{"aes256-sha256", "aes256-sha1", "aes128-sha1"}
-	legacyIKEProposals  = []string{"3des-sha1-modp1024"}
-	legacyESPProposals  = []string{"3des-sha1"}
+	defaultESPProposals = []string{
+		"aes256-sha256",
+		"aes256-sha1",
+		"aes128-sha1",
+		"aes256-sha256-modp2048",
+		"aes256-sha1-modp2048",
+		"aes128-sha1-modp2048",
+		"aes256-sha1-modp1536",
+		"aes128-sha1-modp1536",
+		"aes256-sha1-modp1024",
+		"aes128-sha1-modp1024",
+	}
+	legacyIKEProposals = []string{"3des-sha1-modp1024"}
+	legacyESPProposals = []string{"3des-sha1", "3des-sha1-modp1024"}
 )
 
 type RelayIdentity struct {

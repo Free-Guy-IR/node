@@ -113,7 +113,7 @@ func TestSwanctlEmitsARelayConnectionThatPresentsTheRelayIdentity(t *testing.T) 
         }
         children {
             l2tp-de-relay-0 {
-                esp_proposals = aes256-sha256,aes256-sha1,aes128-sha1
+                esp_proposals = aes256-sha256,aes256-sha1,aes128-sha1,aes256-sha256-modp2048,aes256-sha1-modp2048,aes128-sha1-modp2048,aes256-sha1-modp1536,aes128-sha1-modp1536,aes256-sha1-modp1024,aes128-sha1-modp1024
                 local_ts = dynamic[udp/1701]
                 remote_ts = dynamic[udp]
                 mode = transport
