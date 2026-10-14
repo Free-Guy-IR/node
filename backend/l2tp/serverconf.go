@@ -241,6 +241,10 @@ func makeRunDirs() error {
 }
 
 func (o *L2TP) writeSwanctl() error {
+	return os.WriteFile(o.swanctlFragmentPath(), []byte(o.swanctlConfig()), 0o600)
+}
+
+func (o *L2TP) swanctlConfig() string {
 	tag := o.config.InboundTag
 	var b strings.Builder
 	fmt.Fprintf(&b, "connections {\n")
@@ -268,7 +272,7 @@ func (o *L2TP) writeSwanctl() error {
 	fmt.Fprintf(&b, "        secret = \"%s\"\n", o.config.PSK)
 	fmt.Fprintf(&b, "    }\n")
 	fmt.Fprintf(&b, "}\n")
-	return os.WriteFile(o.swanctlFragmentPath(), []byte(b.String()), 0o600)
+	return b.String()
 }
 
 func (o *L2TP) writeXl2tpdConf() error {
