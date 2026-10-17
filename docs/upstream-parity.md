@@ -218,7 +218,7 @@ upstream months after our pin, and nothing had noticed them. The drift check the
 
 ### Pins
 
-The script reads every pin from the checked commit, never from a hardcoded value, through the same Dockerfile reader as the xray build (so a declaration on a continuation line or behind a CRLF counts), and the way docker resolves it: from the `ARG` declaration in the stage that builds (`xray-builder` for `XRAY_COMMIT`, `singbox-builder` for the sing-box pins), falling back to a global declaration only when that stage declares the `ARG` without a value. Two declarations with a value in that stage, or two global ones it falls back to, stop the run with exit 2:
+The script reads every pin from the checked commit, never from a hardcoded value, through the same Dockerfile reader as the xray build (so a declaration on a continuation line or behind a CRLF counts), and the way docker resolves it: from the `ARG` declaration in the stage that builds (`xray-builder` for `XRAY_COMMIT`, `singbox-builder` for the sing-box pins), falling back to a global declaration only when that stage declares the `ARG` without a value. Two declarations with a value in that stage, or two global ones it falls back to, stop the run with exit 2, and so does a Dockerfile in which that stage does not exist the way docker reads it (a continuation line can swallow its `FROM`):
 
 | component | upstream | pin read from | pin on 2026-09-24 | line branch |
 |---|---|---|---|---|

@@ -425,6 +425,7 @@ dockerfile_program='
       if (kw == "FROM") {
         stage = ""
         for (i = 2; i < n; i++) if (toupper(w[i]) == "AS") stage = tolower(w[i + 1])
+        if (stage == argstage) argstage_seen = 1
         infrom = 1
         return
       }
@@ -544,6 +545,7 @@ dockerfile_program='
   END {
     if (inst != "") handle(inst)
     if (argkey != "") {
+      if (!argstage_seen) exit 4
       if (sn > 1) exit 3
       if (sn == 1) { print sv; exit 0 }
       if (!sbare) exit 0
@@ -919,7 +921,11 @@ check_node() {
 }
 
 dockerfile_arg() {
-  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v argkey="$1" -v argstage="$2" -v q="'" "$dockerfile_program" ||
+  arg_rc=0
+  printf '%s\n' "$dockerfile_text" | LC_ALL=C awk -v argkey="$1" -v argstage="$2" -v q="'" "$dockerfile_program" || arg_rc=$?
+  [ "$arg_rc" != 4 ] ||
+    die "Dockerfile has no stage named $2 the way docker reads it, so ARG $1 cannot be read and the build it pins cannot be followed"
+  [ "$arg_rc" = 0 ] ||
     die "Dockerfile stage $2 gets ARG $1 from more than one declaration with a value, so the build may use another value than the check reads"
 }
 

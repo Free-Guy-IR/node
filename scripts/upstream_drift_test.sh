@@ -854,7 +854,11 @@ check xray-branch-scope-after-merge 1 DRIFT_COMPONENTS="node xray"
 xray_fixture xray-build-crlf-hides-the-builder-stage "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-build-crlf-hides-the-builder-stage 's/^ARG SINGBOX_VERSION=v1\.0\.0\n/ARG SINGBOX_VERSION=v1.0.0 \\\r\n/'
-check xray-build-crlf-hides-the-builder-stage 1 DRIFT_COMPONENTS="node xray"
+check xray-build-crlf-hides-the-builder-stage 2 DRIFT_COMPONENTS="node xray"
+if ! grep -q 'has no stage named xray-builder' "$tmp/xray-build-crlf-hides-the-builder-stage/out"; then
+  printf 'FAIL     %-28s does not say that the CRLF hid the xray-builder stage\n' xray-build-crlf-hides-the-builder-stage
+  failed=$((failed + 1))
+fi
 
 xray_fixture xray-patch-copied-over-through-a-double-slash "$xray_copy
 COPY other/x.patch /patches//xray-fix.patch
