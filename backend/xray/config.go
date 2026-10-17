@@ -564,7 +564,7 @@ func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, err
 		if outboundTagValue, ok := obj["outboundTag"].(string); ok && outboundTagValue == apiTag {
 			continue
 		}
-		if ruleTagValue, ok := obj["ruleTag"].(string); ok && (ruleTagValue == malformedDomainGuardRuleTag || ruleTagValue == apiGuardRuleTag) {
+		if ruleTagValue, ok := obj["ruleTag"].(string); ok && (ruleTagValue == malformedDomainGuardRuleTag || ruleTagValue == apiGuardRuleTag || ruleTagValue == siblingGuardRuleTag) {
 			continue
 		}
 
@@ -1012,9 +1012,14 @@ func (c *Config) ApplyAPI(apiPort, metricPort int) (err error) {
 	if err != nil {
 		return err
 	}
-	if len(apiGuard) > 0 {
+	siblingGuard, err := siblingGuardRules(c.userInboundTags())
+	if err != nil {
+		return err
+	}
+	if len(apiGuard) > 0 || len(siblingGuard) > 0 {
 		c.ensureAPIGuardOutbound()
 		prependRules = append(prependRules, apiGuard...)
+		prependRules = append(prependRules, siblingGuard...)
 	}
 
 	c.RouterConfig.RuleList = append(prependRules, c.RouterConfig.RuleList...)

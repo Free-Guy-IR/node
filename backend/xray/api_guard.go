@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -99,4 +100,75 @@ func (c *Config) ensureAPIGuardOutbound() {
 		kept = append(kept, outbound)
 	}
 	c.OutboundConfigs = append(kept, guard)
+}
+
+const siblingGuardRuleTag = "PG_NODE_SIBLING_LOOPBACK_GUARD"
+
+var siblingGuardUserProtocols = map[string]struct{}{
+	Vmess:       {},
+	Vless:       {},
+	Trojan:      {},
+	Shadowsocks: {},
+	Hysteria:    {},
+}
+
+var siblingGuardDomains = []string{
+	"regexp:(^|\\.)localhost\\.?$",
+}
+
+func (c *Config) userInboundTags() []string {
+	seen := make(map[string]struct{})
+	tags := make([]string, 0, len(c.InboundConfigs))
+	for _, inbound := range c.InboundConfigs {
+		if inbound == nil {
+			continue
+		}
+		if _, ok := siblingGuardUserProtocols[strings.ToLower(strings.TrimSpace(inbound.Protocol))]; !ok {
+			continue
+		}
+		tag := strings.TrimSpace(inbound.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, dup := seen[tag]; dup {
+			continue
+		}
+		seen[tag] = struct{}{}
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+func siblingGuardRules(userInboundTags []string) ([]json.RawMessage, error) {
+	if len(userInboundTags) == 0 {
+		return nil, nil
+	}
+
+	rules := []map[string]any{
+		{
+			"type":        "field",
+			"ruleTag":     siblingGuardRuleTag,
+			"inboundTag":  userInboundTags,
+			"ip":          append([]string{}, apiGuardDestinationCIDRs...),
+			"outboundTag": apiGuardOutboundTag,
+		},
+		{
+			"type":        "field",
+			"ruleTag":     siblingGuardRuleTag,
+			"inboundTag":  userInboundTags,
+			"domain":      siblingGuardDomains,
+			"outboundTag": apiGuardOutboundTag,
+		},
+	}
+
+	raws := make([]json.RawMessage, 0, len(rules))
+	for _, rule := range rules {
+		rawBytes, err := json.Marshal(rule)
+		if err != nil {
+			return nil, err
+		}
+		raws = append(raws, json.RawMessage(rawBytes))
+	}
+	return raws, nil
 }
