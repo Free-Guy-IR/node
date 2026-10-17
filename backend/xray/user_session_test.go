@@ -38,7 +38,7 @@ const sessionTestInbound = "VLESS TCP SESSION"
 func startByteSource(t *testing.T) *net.TCPAddr {
 	t.Helper()
 
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := net.Listen("tcp4", net.JoinHostPort(userTrafficHost(t), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}

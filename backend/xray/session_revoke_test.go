@@ -81,7 +81,7 @@ type streamingTarget struct {
 func startStreamingTarget(t *testing.T) *streamingTarget {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp4", net.JoinHostPort(userTrafficHost(t), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,10 @@ func startStreamingTarget(t *testing.T) *streamingTarget {
 
 func (s *streamingTarget) port() int {
 	return s.listener.Addr().(*net.TCPAddr).Port
+}
+
+func (s *streamingTarget) host() string {
+	return s.listener.Addr().(*net.TCPAddr).IP.String()
 }
 
 func (s *streamingTarget) serve() {
@@ -349,7 +353,7 @@ func startRevokeHarness(t *testing.T, cases []revokeCase) *revokeHarness {
 				"listen":   "127.0.0.1",
 				"port":     port,
 				"protocol": "dokodemo-door",
-				"settings": map[string]any{"address": "127.0.0.1", "port": target.port(), "network": "tcp"},
+				"settings": map[string]any{"address": target.host(), "port": target.port(), "network": "tcp"},
 			})
 			clientOutbounds = append(clientOutbounds, revokeClientOutbound(c, outTag, serverPorts[c.tag], user))
 			clientRules = append(clientRules, map[string]any{

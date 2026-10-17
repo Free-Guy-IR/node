@@ -40,7 +40,7 @@ func udpFlowCases() []udpFlowCase {
 func startUDPEcho(t *testing.T) int {
 	t.Helper()
 
-	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	conn, err := net.ListenPacket("udp4", net.JoinHostPort(userTrafficHost(t), "0"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func startUDPFlowClient(t *testing.T, c udpFlowCase, serverPort, echoPort int, s
 			"listen":   "127.0.0.1",
 			"port":     clientPort,
 			"protocol": "dokodemo-door",
-			"settings": map[string]any{"address": "127.0.0.1", "port": echoPort, "network": "tcp,udp"},
+			"settings": map[string]any{"address": userTrafficHost(t), "port": echoPort, "network": "tcp,udp"},
 		}},
 		"outbounds": []any{map[string]any{
 			"tag":      "out",

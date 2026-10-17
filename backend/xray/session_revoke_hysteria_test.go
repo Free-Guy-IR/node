@@ -144,7 +144,7 @@ func startHysteriaVictim(t *testing.T) (*Xray, *common.User, int) {
 			"listen":   "127.0.0.1",
 			"port":     clientPort,
 			"protocol": "dokodemo-door",
-			"settings": map[string]any{"address": "127.0.0.1", "port": target.port(), "network": "tcp"},
+			"settings": map[string]any{"address": target.host(), "port": target.port(), "network": "tcp"},
 		}},
 		"outbounds": []any{map[string]any{
 			"tag":      "out-victim",

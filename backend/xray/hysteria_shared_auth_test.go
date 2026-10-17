@@ -94,7 +94,7 @@ func (n *hysteriaNode) client(t *testing.T, auth string) int {
 			"listen":   "127.0.0.1",
 			"port":     clientPort,
 			"protocol": "dokodemo-door",
-			"settings": map[string]any{"address": "127.0.0.1", "port": n.target.port(), "network": "tcp"},
+			"settings": map[string]any{"address": n.target.host(), "port": n.target.port(), "network": "tcp"},
 		}},
 		"outbounds": []any{map[string]any{
 			"tag":      "out-hysteria",
