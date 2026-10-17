@@ -794,7 +794,8 @@ check_node() {
       awk -v suffix=" $kind $label" '{ print $0 suffix }' >>"$work/upstream-raw"
   done <"$work/node-refs"
   awk '{ if (!($1 in seen)) { order[++n] = $1; seen[$1] = 1 }
-      if ($2 == "b") b[$1] = ($1 in b) ? b[$1] "," $3 : $3; else t[$1] = ($1 in t) ? t[$1] "," $3 : $3 }
+      if ($2 == "b") { if ($1 in b) b[$1] = b[$1] "," $3; else b[$1] = $3 }
+      else if ($1 in t) t[$1] = t[$1] "," $3; else t[$1] = $3 }
     END { for (i = 1; i <= n; i++) { s = order[i]; print s, ((s in b) ? b[s] : t[s]) } }' \
     "$work/upstream-raw" >"$work/upstream"
 

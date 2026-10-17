@@ -184,6 +184,10 @@ check clean 0
 
 base missing
 check missing 1
+if ! grep -q '^UNPORTED node commit [0-9a-f]* \[main\] U1 fix a$' "$tmp/missing/out"; then
+  printf 'FAIL     %-28s does not label the commit with its branch alone\n' missing
+  failed=$((failed + 1))
+fi
 
 base ours-merge
 git -C "$tmp/ours-merge/fork" fetch -q "$tmp/ours-merge/upw" main
