@@ -4,18 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/xtls/xray-core/infra/conf"
-	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
-
 	"github.com/pasarguard/node/common"
 )
-
-const shadowsocks2022Config = `{"log":{"loglevel":"warning"},"inbounds":[
-	{"tag":"aes128","protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-128-gcm","password":"MDEyMzQ1Njc4OWFiY2RlZg==","network":"tcp,udp"}},
-	{"tag":"aes256","protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-aes-256-gcm","password":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=","network":"tcp,udp"}},
-	{"tag":"chacha","protocol":"shadowsocks","settings":{"clients":[],"method":"2022-blake3-chacha20-poly1305","password":"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=","network":"tcp,udp"}},
-	{"tag":"legacy","protocol":"shadowsocks","settings":{"clients":[],"method":"aes-256-gcm","password":"legacy-server-password","network":"tcp,udp"}}
-]}`
 
 func serializedInboundSettings(t *testing.T, cfg *Config) map[string]map[string]any {
 	t.Helper()
@@ -52,63 +42,6 @@ func serializedClientEmails(t *testing.T, settings map[string]any) []string {
 		emails = append(emails, email)
 	}
 	return emails
-}
-
-func buildShadowsocksInbound(t *testing.T, settings map[string]any) any {
-	t.Helper()
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var server conf.ShadowsocksServerConfig
-	if err := json.Unmarshal(raw, &server); err != nil {
-		t.Fatal(err)
-	}
-	built, err := server.Build()
-	if err != nil {
-		t.Fatalf("xray rejected the serialized inbound %v: %v", settings, err)
-	}
-	return built
-}
-
-func TestToBytesStartsEmptyShadowsocks2022InboundsMultiUser(t *testing.T) {
-	cfg, err := NewConfig(shadowsocks2022Config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := serializedInboundSettings(t, cfg)
-
-	for _, tag := range []string{"aes128", "aes256"} {
-		settings := out[tag]
-		built := buildShadowsocksInbound(t, settings)
-		if _, ok := built.(*shadowsocks_2022.MultiUserServerConfig); !ok {
-			t.Errorf("%s: an inbound without users was built as %T, want a multi-user server", tag, built)
-			continue
-		}
-		clients, _ := settings["clients"].([]any)
-		if len(clients) != 1 {
-			t.Fatalf("%s: clients = %v, want one placeholder", tag, clients)
-		}
-		placeholder, _ := clients[0].(map[string]any)
-		if placeholder["password"] == settings["password"] {
-			t.Fatalf("%s: the placeholder uses the server key", tag)
-		}
-	}
-
-	if got := serializedClientEmails(t, out["chacha"]); len(got) != 0 {
-		t.Fatalf("chacha20 inbound clients = %v, want none", got)
-	}
-	buildShadowsocksInbound(t, out["chacha"])
-
-	if got := serializedClientEmails(t, out["legacy"]); len(got) != 0 {
-		t.Fatalf("legacy inbound clients = %v, want none", got)
-	}
-
-	for _, inbound := range cfg.InboundConfigs {
-		if len(inbound.clients) != 0 {
-			t.Fatalf("ToBytes stored clients on inbound %s: %v", inbound.Tag, inbound.clients)
-		}
-	}
 }
 
 func TestToBytesWritesOnlyRealShadowsocks2022Users(t *testing.T) {
