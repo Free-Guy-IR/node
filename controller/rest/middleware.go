@@ -88,15 +88,15 @@ func LogRequest(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Service) trackSuccessfulRequest(next http.Handler) http.Handler {
+func (s *Service) trackRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-
-		next.ServeHTTP(ww, r)
-
-		// Only track successful requests (status codes 200-299)
-		if status := ww.Status(); status >= 200 && status < 300 {
-			s.NewRequest()
+		if ip, ok := requestClientIP(r); !ok || !s.IsCurrentClient(ip) {
+			next.ServeHTTP(w, r)
+			return
 		}
+		s.NewRequest()
+		defer s.NewRequest()
+
+		next.ServeHTTP(w, r)
 	})
 }

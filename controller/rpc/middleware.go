@@ -147,6 +147,40 @@ func validateApiKeyStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 	}
 }
 
+func trackRequestMiddleware(s *Service) grpc.UnaryServerInterceptor {
+	return func(
+		ctx context.Context,
+		req any,
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (any, error) {
+		if !s.IsCurrentClient(clientIPFromContext(ctx)) {
+			return handler(ctx, req)
+		}
+		s.NewRequest()
+		defer s.NewRequest()
+
+		return handler(ctx, req)
+	}
+}
+
+func trackRequestStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
+	return func(
+		srv any,
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		if !s.IsCurrentClient(clientIPFromContext(ss.Context())) {
+			return handler(srv, ss)
+		}
+		s.NewRequest()
+		defer s.NewRequest()
+
+		return handler(srv, ss)
+	}
+}
+
 func checkBackendStatus(s *Service) error {
 	if len(s.AllBackends()) == 0 {
 		return status.Errorf(codes.Unavailable, "backend not initialized")
@@ -218,11 +252,6 @@ func LoggingInterceptor(s *Service) grpc.UnaryServerInterceptor {
 		// Log the request
 		logRequest(ctx, info.FullMethod, err)
 
-		// Track successful requests
-		if err == nil {
-			s.NewRequest()
-		}
-
 		return resp, err
 	}
 }
@@ -245,11 +274,6 @@ func LoggingStreamInterceptor(s *Service) grpc.StreamServerInterceptor {
 
 		// Log the request
 		logRequest(ss.Context(), info.FullMethod, err)
-
-		// Track successful requests
-		if err == nil {
-			s.NewRequest()
-		}
 
 		return err
 	}
@@ -293,6 +317,8 @@ func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 
 		interceptors = append(interceptors, validateApiKeyMiddleware(s))
 
+		interceptors = append(interceptors, trackRequestMiddleware(s))
+
 		if backendMethods[info.FullMethod] {
 			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 			interceptors = append(interceptors, CheckBackendMiddleware(s))
@@ -317,6 +343,8 @@ func ConditionalStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 		interceptors = append(interceptors, LoggingStreamInterceptor(s))
 
 		interceptors = append(interceptors, validateApiKeyStreamMiddleware(s))
+
+		interceptors = append(interceptors, trackRequestStreamMiddleware(s))
 
 		if backendMethods[info.FullMethod] {
 			interceptors = append(interceptors, validateCurrentClientStreamMiddleware(s))

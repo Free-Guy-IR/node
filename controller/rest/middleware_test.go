@@ -92,3 +92,22 @@ func TestKeepAliveNotRefreshedWithoutValidKey(t *testing.T) {
 		}
 	}
 }
+
+func TestKeepAliveRefreshedWhenLongRequestEnds(t *testing.T) {
+	s, _ := newKeepAliveTestService(t)
+
+	var atArrival time.Time
+	handler := s.trackRequest(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atArrival = s.LastRequest()
+		time.Sleep(10 * time.Millisecond)
+		http.Error(w, "client went away", http.StatusInternalServerError)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/logs", nil))
+
+	if atArrival.IsZero() {
+		t.Fatal("keep-alive was not refreshed when the request arrived")
+	}
+	if !s.LastRequest().After(atArrival) {
+		t.Fatal("keep-alive was not refreshed when the request ended")
+	}
+}
