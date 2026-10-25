@@ -164,6 +164,12 @@ func (c *Controller) NewRequest() {
 	c.lastRequest = time.Now()
 }
 
+func (c *Controller) LastRequest() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastRequest
+}
+
 func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPort, metricPort int) (backend.Backend, error) {
 	if c.newBackend != nil {
 		return c.newBackend(ctx, b, apiPort, metricPort)
