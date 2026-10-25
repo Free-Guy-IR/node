@@ -315,6 +315,12 @@ func TestApplyAPIBlocksProxyUserFromReachingControlPorts(t *testing.T) {
 				{inbound: userInboundTag, isIP: true, value: "127.0.0.1", port: apiPort}, {inbound: userInboundTag, isIP: true, value: "127.0.0.53", port: apiPort},
 				{inbound: userInboundTag, isIP: false, value: "localhost", port: apiPort},
 				{inbound: userInboundTag, isIP: false, value: "localhost", port: metricPort},
+				{inbound: userInboundTag, isIP: false, value: "localhost.", port: apiPort},
+				{inbound: userInboundTag, isIP: false, value: "2130706433", port: apiPort},
+				{inbound: userInboundTag, isIP: false, value: "127.1", port: metricPort},
+				{inbound: userInboundTag, isIP: false, value: "0x7f000001", port: apiPort},
+				{inbound: "PANEL TUNNEL", isIP: true, value: "127.0.0.1", port: apiPort},
+				{inbound: "PANEL TUNNEL", isIP: false, value: "2130706433", port: metricPort},
 			}
 
 			for _, source := range apiRuleSources() {
@@ -335,8 +341,8 @@ func TestApplyAPIBlocksProxyUserFromReachingControlPorts(t *testing.T) {
 					form = "domain"
 				}
 				if !destinationIsBlocked(protocol) {
-					t.Errorf("a proxy user on %q reached the control port: dest %s %q:%d routed to outbound %q (protocol %q); expected it to be blackholed",
-						userInboundTag, form, q.value, q.port, tag, protocol)
+					t.Errorf("traffic on inbound %q reached the control port: dest %s %q:%d routed to outbound %q (protocol %q); expected it to be blackholed",
+						q.inbound, form, q.value, q.port, tag, protocol)
 				}
 			}
 		})
