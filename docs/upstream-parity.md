@@ -1029,7 +1029,10 @@ Add one line to `.github/upstream-waivers.txt`:
   when punctuation wraps it, as in `(branch:pr-61),`. And whatever its tokens, a waiver whose reason says the work is
   unmerged or still open (`unmerged`, `not merged`, `not yet merged`, `never merged`, `still open`, `open pull
   request`, `awaiting upstream merge` and similar) turns its item `UNPORTED` once a release line or a tag carries
-  the commit, because its reason is then false.
+  the commit, because its reason is then false. In the same way, a waiver whose reason says the work is unreleased
+  (`dev-only`, `unreleased`, `not yet released`, `... release contains it`) turns its item `UNPORTED` once an
+  upstream tag contains the commit: under the release-only rule a released commit is to be ported, so the waiver
+  has to be rewritten.
 - The file has no comments and no blank lines; every line is a waiver. The check refuses a malformed line or a
   duplicate id.
 - When a waived item later turns out to be ported, the check prints a note that the waiver can be removed.

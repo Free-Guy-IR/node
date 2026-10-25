@@ -146,6 +146,14 @@ claims_unmerged() {
   printf '%s\n' "$1" | grep -Eiq 'unmerged|not( yet)?( been)? merged|never( been)? merged|revisit if upstream merges|still open|open pull request|awaiting( an?)?( upstream)? merge'
 }
 
+claims_unreleased() {
+  printf '%s\n' "$1" | grep -Eiq 'dev-only|unreleased|not( yet)? released|release contains it'
+}
+
+node_released() {
+  [ -n "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ]
+}
+
 node_on_release_line() {
   [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
   git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
@@ -842,6 +850,11 @@ check_node() {
       detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this commit; review it and port it or rewrite the waiver"
       unported=$((unported + 1))
       count_unported
+    elif [ -n "$waiver" ] && claims_unreleased "$waiver" && node_released "$sha"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unreleased or dev-only, but an upstream release tag now contains this commit; review it and port it or rewrite the waiver"
+      unported=$((unported + 1))
+      count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
       status=UNPORTED
@@ -898,6 +911,10 @@ check_node() {
     elif [ -n "$waiver" ] && claims_unmerged "$waiver" && node_on_release_line "$sha"; then
       status=UNPORTED
       detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this merge; review it and port it or rewrite the waiver"
+      count_unported
+    elif [ -n "$waiver" ] && claims_unreleased "$waiver" && node_released "$sha"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unreleased or dev-only, but an upstream release tag now contains this merge; review it and port it or rewrite the waiver"
       count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&
       { outside=$(node_scope_violations "$sha" "$scope"); [ -n "$outside" ]; }; then
@@ -979,6 +996,10 @@ tp_branch_only() {
   [ -z "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ] || return 0
   tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
     branch_only_heads "$2 main master dev stable testing unstable oldstable"
+}
+
+tp_released() {
+  [ -n "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ]
 }
 
 tp_on_release_line() {
@@ -1070,6 +1091,11 @@ check_thirdparty() {
     elif [ -n "$waiver" ] && claims_unmerged "$waiver" && tp_on_release_line "$sha" "$line"; then
       status=UNPORTED
       detail="the waiver says the upstream work is unmerged or still open, but a release line or a tag of upstream now carries this commit; review it and port it or rewrite the waiver"
+      unported=$((unported + 1))
+      count_unported
+    elif [ -n "$waiver" ] && claims_unreleased "$waiver" && tp_released "$sha"; then
+      status=UNPORTED
+      detail="the waiver says the upstream work is unreleased or dev-only, but an upstream release tag now contains this commit; review it and port it or rewrite the waiver"
       unported=$((unported + 1))
       count_unported
     elif [ -n "$waiver" ] && { scope=$(waiver_branch_scope "$sha"); [ -n "$scope" ]; } &&

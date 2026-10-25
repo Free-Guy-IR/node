@@ -1064,6 +1064,31 @@ git -C "$s/xray-up" branch -q -D side
 git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
 check stale-claim-on-a-merged-xray-commit 1 DRIFT_COMPONENTS="node xray"
 
+xray_release_claim() {
+  xray_fixture "$1" "$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
+  s=$tmp/$1
+  git -C "$s/xray-up" checkout -q -b side
+  printf 'package core\n\nvar raced = true\n' >"$s/xray-up/race.go"
+  git -C "$s/xray-up" add -A
+  commit "$s/xray-up" -m "XB fix a race on side"
+  git -C "$s/xray-up" checkout -q main
+  printf '%s rejected: an unreleased fix that does not touch server code\n' "$(sha_of "$s/xray-up" XB)" >>"$s/waivers"
+  git -C "$s/xray-up" merge -q --no-ff --no-edit side
+  git -C "$s/xray-up" branch -q -D side
+  if [ "$2" = tagged ]; then
+    git -C "$s/xray-up" tag v1.1.0 main
+    printf '%s rejected: a release the fork does not take\n' "$(git -C "$s/xray-up" rev-parse 'v1.1.0^{commit}')" >>"$s/waivers"
+  fi
+  git --git-dir="$s/cache/xray.git" fetch -q --prune "$s/xray-up" '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+}
+
+xray_release_claim stale-release-claim-on-a-tagged-xray-commit tagged
+check stale-release-claim-on-a-tagged-xray-commit 1 DRIFT_COMPONENTS="node xray"
+
+xray_release_claim release-claim-holds-on-an-untagged-xray-commit open
+check release-claim-holds-on-an-untagged-xray-commit 0 DRIFT_COMPONENTS="node xray"
+
 xray_fixture xray-pin-declared-in-another-stage "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-in-another-stage "s/^ARG SINGBOX_VERSION=v1\.0\.0\$/ARG SINGBOX_VERSION=v1.0.0\nARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-in-another-stage/xray-up" X1)/"
@@ -1247,6 +1272,22 @@ check branch-scope-token-in-parentheses-plain-wording 1
 
 d10_plain stale-claim-unmerged-alone pr-61 'upstream PR #61 is unmerged; it collides with the fork mtproto backend' merged
 check stale-claim-unmerged-alone 1
+
+d10_plain stale-release-claim-on-a-tagged-commit dev 'dev-only upstream #101; port when a node release contains it' tagged
+check stale-release-claim-on-a-tagged-commit 1
+
+d10_plain release-claim-holds-before-a-tag dev 'dev-only upstream #101; port when a node release contains it' open
+check release-claim-holds-before-a-tag 0
+
+d10_plain stale-release-claim-unreleased-alone dev 'an unreleased change that collides with the fork mtproto backend' tagged
+check stale-release-claim-unreleased-alone 1
+
+merge_branch_only stale-release-claim-on-a-tagged-merge 'dev-only merge that collides with the fork mtproto backend' merged
+git -C "$tmp/stale-release-claim-on-a-tagged-merge/upw" tag v9.9.9 main
+check stale-release-claim-on-a-tagged-merge 1
+
+merge_branch_only release-claim-holds-on-an-untagged-merge 'dev-only merge that collides with the fork mtproto backend' merged
+check release-claim-holds-on-an-untagged-merge 0
 
 d10_plain branch-scope-not-required-on-a-tagged-commit pr-9 'collides with the fork mtproto backend' tagged
 check branch-scope-not-required-on-a-tagged-commit 0
