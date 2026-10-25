@@ -264,13 +264,14 @@ func (wg *WireGuard) collectDesiredPeers(users []*common.User) (map[string]*Desi
 			continue
 		}
 
-		if existing, exists := desiredPeers[publicKey]; exists && existing.Email != email {
-			return nil, fmt.Errorf("wireguard public key %s is assigned to multiple users: %s and %s", publicKey, existing.Email, email)
+		canonicalKey := parsedKey.String()
+		if existing, exists := desiredPeers[canonicalKey]; exists && existing.Email != email {
+			return nil, fmt.Errorf("wireguard public key %s is assigned to multiple users: %s and %s", canonicalKey, existing.Email, email)
 		}
 
-		desiredPeers[publicKey] = &DesiredPeer{
+		desiredPeers[canonicalKey] = &DesiredPeer{
 			Email:         email,
-			PublicKey:     publicKey,
+			PublicKey:     canonicalKey,
 			ParsedKey:     parsedKey,
 			AllowedIPNets: allowedIPNets,
 		}

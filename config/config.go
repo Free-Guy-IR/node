@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
-	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -92,18 +93,21 @@ func fromEnv() (*Config, error) {
 		keyErr = errors.New("API_KEY must not be the nil UUID")
 	}
 
-	nodeHostStr := GetEnv("NODE_HOST", "0.0.0.0")
-	ipPattern := `^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$`
-	re := regexp.MustCompile(ipPattern)
-
-	if re.MatchString(nodeHostStr) {
-		cfg.NodeHost = nodeHostStr
-	} else {
-		log.Println(nodeHostStr, " is not a valid IP address.\n NODE_HOST will be set to 127.0.0.1")
-		cfg.NodeHost = "127.0.0.1"
-	}
+	cfg.NodeHost = parseNodeHost(GetEnv("NODE_HOST", "0.0.0.0"))
 
 	return cfg, keyErr
+}
+
+func parseNodeHost(value string) string {
+	host := strings.TrimSpace(value)
+	if strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+	if _, err := netip.ParseAddr(host); err != nil {
+		log.Printf("[Error] NODE_HOST %q is not an IP address (for example 0.0.0.0 or ::). Falling back to 127.0.0.1: only clients on this host can reach the node.", value)
+		return "127.0.0.1"
+	}
+	return host
 }
 
 // NewTestConfig creates a config for testing
