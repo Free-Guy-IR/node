@@ -1,6 +1,8 @@
 package xray
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -434,6 +436,23 @@ func (i *Inbound) accountsByEmailLocked() []api.Account {
 
 type Stats struct{}
 
+var shadowsocks2022PlaceholderKey = func() string {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return base64.StdEncoding.EncodeToString(key)
+}()
+
+func shadowsocks2022Placeholder(inbound *Inbound) *api.ShadowsocksAccount {
+	method, _ := inbound.Settings["method"].(string)
+	if inbound.Protocol != Shadowsocks || !strings.HasPrefix(method, "2022-blake3-aes") {
+		return nil
+	}
+	return &api.ShadowsocksAccount{
+		BaseAccount: api.BaseAccount{Email: "pasarguard-placeholder"},
+		Password:    common.EnsureBase64Password(shadowsocks2022PlaceholderKey, method),
+	}
+}
+
 func (c *Config) ToBytes() ([]byte, error) {
 	// Acquire read locks for all inbounds
 	for _, i := range c.InboundConfigs {
@@ -451,7 +470,11 @@ func (c *Config) ToBytes() ([]byte, error) {
 		}
 
 		if len(i.clients) == 0 {
-			i.Settings["clients"] = []any{}
+			if placeholder := shadowsocks2022Placeholder(i); placeholder != nil {
+				i.Settings["clients"] = []*api.ShadowsocksAccount{placeholder}
+			} else {
+				i.Settings["clients"] = []any{}
+			}
 			continue
 		}
 
