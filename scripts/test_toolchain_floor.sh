@@ -12,7 +12,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 pass=0
 failed=0
-digest=sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade
+digest=sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba
 alpine=sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 gomod_patch() {
@@ -22,7 +22,7 @@ gomod_patch() {
 fixture() {
   r=$tmp/$1
   mkdir -p "$r/.github/workflows" "$r/patches"
-  printf 'module example.com/node\n\ngo 1.26.3\n\ntoolchain go1.26.9\n\nrequire (\n\tgolang.org/x/sys v0.48.0\n)\n\nrequire (\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n)\n' >"$r/go.mod"
+  printf 'module example.com/node\n\ngo 1.26.3\n\ntoolchain go1.26.10\n\nrequire (\n\tgolang.org/x/sys v0.48.0\n)\n\nrequire (\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n)\n' >"$r/go.mod"
   cat >"$r/.github/workflows/run-tests.yml" <<'EOF'
 name: Test
 on: push
@@ -34,7 +34,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
   govulncheck:
     runs-on: ubuntu-latest
@@ -42,7 +42,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 EOF
   cat >"$r/.github/workflows/publish-release.yml" <<'EOF'
 name: Release
@@ -54,19 +54,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
 EOF
   printf 'name: Image\non: push\njobs:\n  image:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker build .\n' >"$r/.github/workflows/image.yml"
   cat >"$r/Dockerfile" <<EOF
 ARG XRAY_VERSION=v26.3.27
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.9-alpine@$digest AS builder
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS builder
 RUN make build
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.9-alpine@$digest AS singbox-builder
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS singbox-builder
 RUN go build ./cmd/sing-box
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.9-alpine@$digest AS xray-builder
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS xray-builder
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
@@ -81,7 +81,7 @@ RUN go build -o /out/xray ./main
 FROM alpine:3.24.2@$alpine
 COPY --from=builder /src/main /usr/local/bin/main
 EOF
-  printf "FROM --platform=\$BUILDPLATFORM golang:1.26.9-alpine@%s AS builder\nRUN go build ./...\n\nFROM alpine:3.24.2@%s\n" "$digest" "$alpine" >"$r/Dockerfile.wireguard"
+  printf "FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@%s AS builder\nRUN go build ./...\n\nFROM alpine:3.24.2@%s\n" "$digest" "$alpine" >"$r/Dockerfile.wireguard"
   gomod_patch v0.52.0 v0.58.0 >"$r/patches/xray-grpc-1.83.2.patch"
   printf 'Revoke sessions\n\ndiff --git a/app/x.go b/app/x.go\n--- a/app/x.go\n+++ b/app/x.go\n@@ -1 +1 @@\n-a\n+b\n' >"$r/patches/xray-session-revoke.patch"
   gomod_patch v0.58.0 v0.60.0 >"$r/patches/xray-x-net-0.60.0.patch"
@@ -115,34 +115,38 @@ check() {
 }
 
 fixture clean
-check clean 0 "11 pins checked, all at or above Go 1.26.9 and golang.org/x/net v0.60.0"
+check clean 0 "11 pins checked, all at or above Go 1.26.10 and golang.org/x/net v0.60.0"
 
 fixture toolchain-below
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.26.8/'
-check toolchain-below 1 "go.mod toolchain names Go 1.26.8, below the security floor 1.26.9"
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.9/'
+check toolchain-below 1 "go.mod toolchain names Go 1.26.9, below the security floor 1.26.10"
 
 fixture toolchain-old-release
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.26.6/'
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/'
 check toolchain-old-release 1 "go.mod toolchain names Go 1.26.6"
 
 fixture toolchain-two-digit-patch
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.26.10/'
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.11/'
 check toolchain-two-digit-patch 0
 
+fixture toolchain-three-digit-patch
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.100/'
+check toolchain-three-digit-patch 0
+
 fixture toolchain-next-minor
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.27.0/'
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.27.0/'
 check toolchain-next-minor 0
 
 fixture toolchain-release-candidate
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.27rc1/'
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.27rc1/'
 check toolchain-release-candidate 1 "which is not an exact release"
 
 fixture toolchain-dropped
 edit go.mod '/^toolchain /d'
-check toolchain-dropped 1 "go.mod go line (no toolchain line) names Go 1.26.3, below the security floor 1.26.9"
+check toolchain-dropped 1 "go.mod go line (no toolchain line) names Go 1.26.3, below the security floor 1.26.10"
 
 fixture toolchain-dropped-go-line-raised
-edit go.mod '/^toolchain /d; s/^go 1.26.3$/go 1.26.9/'
+edit go.mod '/^toolchain /d; s/^go 1.26.3$/go 1.26.10/'
 check toolchain-dropped-go-line-raised 0
 
 fixture toolchain-twice
@@ -183,76 +187,76 @@ printf '\nreplace (\n\tgolang.org/x/net v0.60.0 => ../net\n)\n' >>"$tmp/xnet-rep
 check xnet-replaced-in-block 1 "go.mod replaces golang.org/x/net"
 
 fixture ci-one-job-below
-edit .github/workflows/run-tests.yml "/^  govulncheck:/,\$s/go-version: \"1.26.9\"/go-version: \"1.26.6\"/"
-check ci-one-job-below 1 "run-tests.yml go-version names Go 1.26.6, below the security floor 1.26.9"
+edit .github/workflows/run-tests.yml "/^  govulncheck:/,\$s/go-version: \"1.26.10\"/go-version: \"1.26.6\"/"
+check ci-one-job-below 1 "run-tests.yml go-version names Go 1.26.6, below the security floor 1.26.10"
 
 fixture ci-unquoted
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.9"/go-version: 1.26.9/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: 1.26.10/'
 check ci-unquoted 0
 
 fixture ci-single-quoted-below
-edit .github/workflows/run-tests.yml "s/go-version: \"1.26.9\"/go-version: '1.26.8'/"
+edit .github/workflows/run-tests.yml "s/go-version: \"1.26.10\"/go-version: '1.26.8'/"
 check ci-single-quoted-below 1 "run-tests.yml go-version names Go 1.26.8"
 
 fixture ci-floating-minor
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.9"/go-version: "1.26"/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: "1.26"/'
 check ci-floating-minor 1 "run-tests.yml go-version names Go '1.26', which is not an exact release"
 
 fixture ci-floating-alias
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.9"/go-version: stable/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: stable/'
 check ci-floating-alias 1 "which is not an exact release"
 
 fixture ci-version-file
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.9"/go-version-file: go.mod/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version-file: go.mod/'
 check ci-version-file 1 "run-tests.yml sets up Go from go-version-file"
 
 fixture ci-setup-without-version
-edit .github/workflows/run-tests.yml '/go-version: "1.26.9"/d'
+edit .github/workflows/run-tests.yml '/go-version: "1.26.10"/d'
 check ci-setup-without-version 1 "run-tests.yml has 2 actions/setup-go steps but 0 go-version pins"
 
 fixture release-below
-edit .github/workflows/publish-release.yml 's/go-version: "1.26.9"/go-version: "1.26.8"/'
-check release-below 1 "publish-release.yml go-version names Go 1.26.8"
+edit .github/workflows/publish-release.yml 's/go-version: "1.26.10"/go-version: "1.26.9"/'
+check release-below 1 "publish-release.yml go-version names Go 1.26.9, below the security floor 1.26.10"
 
 fixture yaml-extension-below
-sed 's/1.26.9/1.26.6/' "$tmp/yaml-extension-below/.github/workflows/publish-release.yml" >"$tmp/yaml-extension-below/.github/workflows/extra.yaml"
+sed 's/1.26.10/1.26.6/' "$tmp/yaml-extension-below/.github/workflows/publish-release.yml" >"$tmp/yaml-extension-below/.github/workflows/extra.yaml"
 check yaml-extension-below 1 "extra.yaml go-version names Go 1.26.6"
 
 fixture image-one-stage-below
-edit Dockerfile 's/golang:1.26.9-alpine(@[^ ]+) AS xray-builder/golang:1.26.8-alpine\1 AS xray-builder/'
-check image-one-stage-below 1 "Dockerfile image golang:1.26.8-alpine names Go 1.26.8, below the security floor 1.26.9"
+edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS xray-builder/golang:1.26.9-alpine\1 AS xray-builder/'
+check image-one-stage-below 1 "Dockerfile image golang:1.26.9-alpine names Go 1.26.9, below the security floor 1.26.10"
 
 fixture image-without-digest
-edit Dockerfile 's/golang:1.26.9-alpine@[^ ]+ AS singbox-builder/golang:1.26.9-alpine AS singbox-builder/'
-check image-without-digest 1 "Dockerfile builds from golang:1.26.9-alpine without an @sha256 digest"
+edit Dockerfile 's/golang:1.26.10-alpine@[^ ]+ AS singbox-builder/golang:1.26.10-alpine AS singbox-builder/'
+check image-without-digest 1 "Dockerfile builds from golang:1.26.10-alpine without an @sha256 digest"
 
 fixture image-floating-tag
-edit Dockerfile 's/golang:1.26.9-alpine(@[^ ]+) AS builder/golang:1.26-alpine\1 AS builder/'
+edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS builder/golang:1.26-alpine\1 AS builder/'
 check image-floating-tag 1 "names Go '1.26', which is not an exact release"
 
 fixture image-registry-prefix-below
-edit Dockerfile 's/golang:1.26.9-alpine(@[^ ]+) AS builder/docker.io\/library\/golang:1.26.6-alpine\1 AS builder/'
+edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS builder/docker.io\/library\/golang:1.26.6-alpine\1 AS builder/'
 check image-registry-prefix-below 1 "Dockerfile image golang:1.26.6-alpine names Go 1.26.6"
 
 fixture image-from-build-arg
-edit Dockerfile "s/golang:1.26.9-alpine@[^ ]+ AS builder/\${GO_IMAGE} AS builder/"
+edit Dockerfile "s/golang:1.26.10-alpine@[^ ]+ AS builder/\${GO_IMAGE} AS builder/"
 check image-from-build-arg 1 "an image chosen by a build argument"
 
 fixture image-lowercase-from
-edit Dockerfile "s/^FROM --platform=\\\$BUILDPLATFORM golang:1.26.9-alpine(@[^ ]+) AS builder/from --platform=\$BUILDPLATFORM golang:1.26.6-alpine\\1 AS builder/"
+edit Dockerfile "s/^FROM --platform=\\\$BUILDPLATFORM golang:1.26.10-alpine(@[^ ]+) AS builder/from --platform=\$BUILDPLATFORM golang:1.26.6-alpine\\1 AS builder/"
 check image-lowercase-from 1 "Dockerfile image golang:1.26.6-alpine names Go 1.26.6"
 
 fixture image-two-digit-patch
-edit Dockerfile 's/golang:1.26.9-alpine/golang:1.26.10-alpine/g'
+edit Dockerfile 's/golang:1.26.10-alpine/golang:1.26.11-alpine/g'
 check image-two-digit-patch 0
 
 fixture wireguard-image-below
-edit Dockerfile.wireguard 's/golang:1.26.9-alpine/golang:1.26.6-alpine/'
+edit Dockerfile.wireguard 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
 check wireguard-image-below 1 "Dockerfile.wireguard image golang:1.26.6-alpine names Go 1.26.6"
 
 fixture no-golang-stage
-edit Dockerfile 's/golang:1.26.9-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
-edit Dockerfile.wireguard 's/golang:1.26.9-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
+edit Dockerfile 's/golang:1.26.10-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
+edit Dockerfile.wireguard 's/golang:1.26.10-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
 check no-golang-stage 1 "no Dockerfile builds from a golang image"
 
 fixture xray-patch-below
@@ -294,11 +298,11 @@ fixture xray-patch-sets-xnet-twice
 check xray-patch-sets-xnet-twice 1 "patches/xray-x-net-0.60.0.patch sets golang.org/x/net in go.mod more than once"
 
 fixture base-tree-shape
-edit go.mod 's/^toolchain go1.26.9$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
-edit .github/workflows/run-tests.yml 's/1.26.9/1.26.6/'
-edit .github/workflows/publish-release.yml 's/1.26.9/1.26.6/'
-edit Dockerfile 's/golang:1.26.9-alpine/golang:1.26.6-alpine/'
-edit Dockerfile.wireguard 's/golang:1.26.9-alpine/golang:1.26.6-alpine/'
+edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
+edit .github/workflows/run-tests.yml 's/1.26.10/1.26.6/'
+edit .github/workflows/publish-release.yml 's/1.26.10/1.26.6/'
+edit Dockerfile 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
+edit Dockerfile.wireguard 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
 gomod_patch v0.58.0 v0.59.0 >"$tmp/base-tree-shape/patches/xray-x-net-0.60.0.patch"
 check base-tree-shape 1 "11 problems in 11 pins"
 

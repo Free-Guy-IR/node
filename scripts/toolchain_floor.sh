@@ -3,7 +3,7 @@ set -eu
 set -o pipefail
 export LC_ALL=C
 
-go_floor=1.26.9
+go_floor=1.26.10
 xnet_floor=0.60.0
 
 if [ "$#" -gt 0 ]; then
