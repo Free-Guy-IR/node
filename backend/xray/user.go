@@ -309,6 +309,10 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 	}
 	defer unlock()
 
+	return x.reportRejections(x.syncUserLocked(ctx, user))
+}
+
+func (x *Xray) syncUserLocked(ctx context.Context, user *common.User) error {
 	proxySetting, err := setupUserAccount(user)
 	if err != nil {
 		return err
@@ -316,6 +320,7 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 
 	handler := x.handler
 	inbounds := x.config.InboundConfigs
+	rejections := &backend.Rejections{}
 
 	var errMessage strings.Builder
 
@@ -328,6 +333,7 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 
 		var err error
 		account, isActive := isActiveInbound(inbound, userInbounds, proxySetting)
+		account, isActive = inbound.admitUser(user.GetEmail(), account, isActive, rejections)
 		switch {
 		case isActive:
 			err = pushAccount(ctx, handler, inbound, account, inbound.stageAccount(account))
@@ -340,10 +346,15 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 		}
 	}
 
-	if errMessage.String() != "" {
-		return errors.New("failed to add user:" + errMessage.String())
+	if err := promoteWaiting(ctx, handler, inbounds); err != nil {
+		log.Println(err)
+		errMessage.WriteString("\n" + err.Error())
 	}
-	return nil
+
+	if errMessage.String() != "" {
+		return rejections.Join(errors.New("failed to add user:" + errMessage.String()))
+	}
+	return rejections.Join(nil)
 }
 
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
@@ -358,8 +369,8 @@ func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
 		return err
 	}
 
-	candidate.syncUsers(users)
-	return x.applyConfigWithRestart(ctx, candidate)
+	rejections := candidate.syncUsers(users)
+	return x.reportRejections(rejections.Join(x.applyConfigWithRestart(ctx, candidate)))
 }
 
 func (x *Xray) applyConfigWithRestart(ctx context.Context, candidate *Config) error {
@@ -413,8 +424,13 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 	}
 	defer unlock()
 
+	return x.reportRejections(x.updateUsersLocked(ctx, users))
+}
+
+func (x *Xray) updateUsersLocked(ctx context.Context, users []*common.User) error {
 	handler := x.handler
 	inboundByTag, updates := x.config.buildInboundUpdates(users)
+	rejections := &backend.Rejections{}
 	var errMessage strings.Builder
 
 	for tag, update := range updates {
@@ -424,6 +440,7 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 		}
 
 		inbound := inboundByTag[tag]
+		update.accounts, removeEmails = inbound.admit(update.accounts, removeEmails, rejections)
 		steps, leaving := inbound.stageUpdate(update.accounts, removeEmails)
 
 		for _, email := range leaving {
@@ -441,11 +458,16 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 		}
 	}
 
-	if errMessage.String() != "" {
-		return errors.New("failed to update users:" + errMessage.String())
+	if err := promoteWaiting(ctx, handler, x.config.InboundConfigs); err != nil {
+		log.Println(err)
+		errMessage.WriteString("\n" + err.Error())
 	}
 
-	return nil
+	if errMessage.String() != "" {
+		return rejections.Join(errors.New("failed to update users:" + errMessage.String()))
+	}
+
+	return rejections.Join(nil)
 }
 
 func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
@@ -460,6 +482,6 @@ func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) 
 		return err
 	}
 
-	candidate.updateUsers(users)
-	return x.applyConfigWithRestart(ctx, candidate)
+	rejections := candidate.updateUsers(users)
+	return x.reportRejections(rejections.Join(x.applyConfigWithRestart(ctx, candidate)))
 }

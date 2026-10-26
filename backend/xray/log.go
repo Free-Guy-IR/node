@@ -66,6 +66,14 @@ func (c *Core) recordProcessLog(output string) {
 	c.captureRuntimeLogLine(output)
 }
 
+func (c *Core) noteNodeLog(line string) {
+	c.RecordRuntimeLog(line)
+	select {
+	case c.logsChan <- line:
+	default:
+	}
+}
+
 func (c *Core) captureStartupLogLine(output string) {
 	c.RecordStartupLog(output)
 

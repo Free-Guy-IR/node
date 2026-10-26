@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 
@@ -60,6 +61,7 @@ type Inbound struct {
 	exclude        bool
 	clients        map[string]api.Account // Runtime-only map: email -> account (never serialized)
 	unsettled      map[string]struct{}
+	waiting        map[string]api.Account
 }
 
 func lastEntryPerEmail(users []*common.User) []*common.User {
@@ -76,14 +78,18 @@ func lastEntryPerEmail(users []*common.User) []*common.User {
 	return unique
 }
 
-func (c *Config) syncUsers(users []*common.User) {
+func (c *Config) syncUsers(users []*common.User) *backend.Rejections {
 	users = lastEntryPerEmail(users)
+	rejections := &backend.Rejections{}
 	for _, i := range c.InboundConfigs {
 		if i.exclude {
 			continue
 		}
+		incumbents := i.credentialHolders()
 		i.syncUsers(users)
+		i.settleCredentials(incumbents, nil, false, rejections)
 	}
+	return rejections
 }
 
 type inboundUpdate struct {
@@ -132,7 +138,8 @@ func (c *Config) buildInboundUpdates(users []*common.User) (map[string]*Inbound,
 	return inboundByTag, updates
 }
 
-func (c *Config) updateUsers(users []*common.User) {
+func (c *Config) updateUsers(users []*common.User) *backend.Rejections {
+	rejections := &backend.Rejections{}
 	inboundByTag, updates := c.buildInboundUpdates(users)
 	for tag, inbound := range inboundByTag {
 		update := updates[tag]
@@ -140,8 +147,11 @@ func (c *Config) updateUsers(users []*common.User) {
 		for email := range update.removeEmailSet {
 			removeEmails = append(removeEmails, email)
 		}
+		incumbents := inbound.credentialHolders()
 		inbound.updateUsers(update.accounts, removeEmails)
+		inbound.settleCredentials(incumbents, removeEmails, true, rejections)
 	}
+	return rejections
 }
 
 func (i *Inbound) syncUsers(users []*common.User) {

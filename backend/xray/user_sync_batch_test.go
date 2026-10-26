@@ -54,8 +54,8 @@ func TestUpdateUsersAndSyncUsersLetTheLastEntryForAUserWinInTheConfig(t *testing
 	disabled := syncTestUser("1.alice")
 
 	for name, apply := range map[string]func(*Config, []*common.User){
-		"updateUsers": (*Config).updateUsers,
-		"syncUsers":   (*Config).syncUsers,
+		"updateUsers": func(c *Config, users []*common.User) { c.updateUsers(users) },
+		"syncUsers":   func(c *Config, users []*common.User) { c.syncUsers(users) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, err := NewConfig(syncTestInbounds, nil)

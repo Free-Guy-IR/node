@@ -33,6 +33,7 @@ type Xray struct {
 	stuckGrace  time.Duration
 	shutDown    bool
 	restartCore func(*Config) error
+	readyPoll   time.Duration
 }
 
 var errShutDown = errors.New("xray has been shut down")
@@ -74,9 +75,10 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 		return nil, err
 	}
 
+	var rejections *backend.Rejections
 	if len(users) > 0 {
 		log.Printf("syncing %d users on startup", len(users))
-		xrayConfig.syncUsers(users)
+		rejections = xrayConfig.syncUsers(users)
 		// Verify users were synced by counting clients in all inbounds
 		totalClients := 0
 		for _, inbound := range xrayConfig.InboundConfigs {
@@ -117,6 +119,7 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 	go xray.checkXrayHealth(xCtx)
 
 	log.Println("xray started, Version:", xray.Version())
+	_ = xray.reportRejections(rejections.Join(nil))
 
 	return xray, nil
 }

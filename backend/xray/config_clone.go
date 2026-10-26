@@ -80,6 +80,7 @@ func (c *Config) Clone() (*Config, error) {
 		original.mu.RLock()
 		inbound.exclude = original.exclude
 		inbound.clients = cloneClients(original.clients)
+		inbound.waiting = cloneClients(original.waiting)
 		original.mu.RUnlock()
 	}
 

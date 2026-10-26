@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 )
@@ -386,8 +387,14 @@ func newCredentialXray(t *testing.T, core *credentialCore) *Xray {
 		t.Fatal(err)
 	}
 
-	x := &Xray{config: cfg, handler: handler, core: &Core{}}
+	x := &Xray{config: cfg, handler: handler, core: &Core{
+		logsChan:       make(chan string, 64),
+		logPhase:       logPhaseRuntime,
+		startupLogSize: 200,
+		runtimeLogs:    newStartupLogRing(64),
+	}}
 	x.restartCore = core.restart
+	x.readyPoll = 5 * time.Millisecond
 	return x
 }
 
@@ -460,12 +467,11 @@ func requireCoreHoldsExactlyTheNodeState(t *testing.T, x *Xray, core *credential
 func TestAStartupConfigGivesASharedCredentialToTheOldestUser(t *testing.T) {
 	for _, kind := range credentialKinds() {
 		t.Run(kind.name, func(t *testing.T) {
-			logs := captureNodeLog(t)
 			cfg, err := NewConfig(credentialInbounds, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.syncUsers([]*common.User{
+			rejections := cfg.syncUsers([]*common.User{
 				kind.claimant("12", kind.tag),
 				kind.holder("9", kind.tag),
 				kind.claimant("10", kind.tag),
@@ -480,8 +486,11 @@ func TestAStartupConfigGivesASharedCredentialToTheOldestUser(t *testing.T) {
 			if !slices.Equal(got, []string{"3", "9"}) {
 				t.Fatalf("the config emits %v on %s, want the oldest holder 9 and the unrelated 3", got, kind.tag)
 			}
-			requireRefusalLogged(t, logs, "10", "9")
-			requireRefusalLogged(t, logs, "12", "9")
+			want := fmt.Sprintf("its %s on inbound %s is already held by user 9", map[string]string{"vless": "vless id", "trojan": "trojan password", "vmess": "vmess id"}[kind.name], kind.tag)
+			rejected := rejections.Users()
+			if len(rejected) != 2 || rejected[0].Email != "10" || rejected[1].Email != "12" || rejected[0].Reason != want || rejected[1].Reason != want {
+				t.Fatalf("the config build names %+v, want 10 and 12 refused with %q", rejected, want)
+			}
 		})
 	}
 }
@@ -760,4 +769,38 @@ func TestUsersSharingAVlessIDOnARealCore(t *testing.T) {
 		conn = openVlessStream(t, port, uuid.MustParse(variantVlessID), target)
 		requireFlowing(t, conn, "after the holder left")
 	})
+}
+
+func TestASyncNamesEveryRefusedUserForTheController(t *testing.T) {
+	kind := credentialKinds()[0]
+	core := newCredentialCore(false, kind.tag, kind.key)
+	x := newCredentialXray(t, core)
+	ctx := syncTestContext(t)
+	if err := x.UpdateUsers(ctx, []*common.User{kind.holder("7", kind.tag)}); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := map[string]struct {
+		email string
+		apply func() error
+	}{
+		"syncUserLocked":    {email: "12", apply: func() error { return x.syncUserLocked(ctx, kind.claimant("12", kind.tag)) }},
+		"updateUsersLocked": {email: "13", apply: func() error { return x.updateUsersLocked(ctx, []*common.User{kind.claimant("13", kind.tag)}) }},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call.apply()
+			var report *backend.RejectedUsersError
+			if !errors.As(err, &report) {
+				t.Fatalf("the refusal is not a named rejection: %v", err)
+			}
+			rejected, systemic := backend.SplitRejected(err)
+			if systemic != nil {
+				t.Fatalf("a per-user refusal carried a systemic error: %v", systemic)
+			}
+			if len(rejected) != 1 || rejected[0].Email != call.email || !strings.Contains(rejected[0].Reason, "vless id on inbound vless is already held by user 7") {
+				t.Fatalf("the rejection does not name %s and its holder: %+v", call.email, rejected)
+			}
+		})
+	}
 }

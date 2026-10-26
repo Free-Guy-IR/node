@@ -40,10 +40,18 @@ func startupErrorWithTail(core *Core, tailSize int, reason string) error {
 	return fmt.Errorf("%s; no fatal xray startup log was detected. Recent xray logs:\n%s", reason, strings.Join(tail, "\n"))
 }
 
+func (x *Xray) readyPollInterval() time.Duration {
+	if x.readyPoll > 0 {
+		return x.readyPoll
+	}
+	return time.Second
+}
+
 func (x *Xray) checkXrayStatus(baseCtx context.Context) error {
-	apiTicker := time.NewTicker(1 * time.Second)
+	poll := x.readyPollInterval()
+	apiTicker := time.NewTicker(poll)
 	defer apiTicker.Stop()
-	errorTicker := time.NewTicker(2 * time.Second)
+	errorTicker := time.NewTicker(2 * poll)
 	defer errorTicker.Stop()
 
 	for {
