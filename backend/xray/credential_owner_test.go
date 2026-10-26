@@ -804,3 +804,87 @@ func TestASyncNamesEveryRefusedUserForTheController(t *testing.T) {
 		})
 	}
 }
+
+func TestAUserMovingOntoAHeldCredentialLosesItsOldOne(t *testing.T) {
+	for _, kind := range credentialKinds() {
+		for _, stock := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stock=%v", kind.name, stock), func(t *testing.T) {
+				core := newCredentialCore(stock, kind.tag, kind.key)
+				x := newCredentialXray(t, core)
+				ctx := syncTestContext(t)
+				if err := x.UpdateUsers(ctx, []*common.User{kind.holder("7", kind.tag), ownCredentialUser("12", kind.tag)}); err != nil {
+					t.Fatal(err)
+				}
+				logs := captureNodeLog(t)
+
+				if err := x.SyncUser(ctx, kind.claimant("12", kind.tag)); err != nil {
+					t.Fatalf("a per-user refusal must not fail the sync: %v", err)
+				}
+				requireRefusalLogged(t, logs, "12", "7")
+				if core.holds(kind.tag, "12") {
+					t.Fatal("12 keeps its old credential after moving onto one that 7 holds")
+				}
+				if got := core.holder(kind.tag, kind.key); got != "7" {
+					t.Fatalf("the credential is held by %q, want its holder 7", got)
+				}
+				requireCoreHoldsExactlyTheNodeState(t, x, core)
+			})
+		}
+	}
+}
+
+func TestARestartingUpdateThatRemovesTheHolderInstallsTheWaitingUser(t *testing.T) {
+	for _, kind := range credentialKinds() {
+		t.Run(kind.name, func(t *testing.T) {
+			core := newCredentialCore(false, kind.tag, kind.key)
+			x := newCredentialXray(t, core)
+			ctx := syncTestContext(t)
+			if err := x.UpdateUsers(ctx, []*common.User{kind.holder("7", kind.tag)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.SyncUser(ctx, kind.claimant("12", kind.tag)); err != nil {
+				t.Fatalf("a per-user refusal must not fail the sync: %v", err)
+			}
+
+			candidate, err := x.config.Clone()
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate.updateUsers([]*common.User{kind.holder("7")})
+			if err := x.restartCore(candidate); err != nil {
+				t.Fatalf("the core refused the restarting update's config: %v", err)
+			}
+			if got := core.holder(kind.tag, kind.key); got != "12" {
+				t.Fatalf("after a restarting update removed the holder the credential is held by %q, want the waiting 12", got)
+			}
+		})
+	}
+}
+
+func TestAFullSyncThatLeavesOutAWaitingUserNeverInstallsIt(t *testing.T) {
+	for _, kind := range credentialKinds() {
+		t.Run(kind.name, func(t *testing.T) {
+			core := newCredentialCore(false, kind.tag, kind.key)
+			x := newCredentialXray(t, core)
+			ctx := syncTestContext(t)
+			if err := x.UpdateUsers(ctx, []*common.User{kind.holder("7", kind.tag), ownCredentialUser("3", kind.tag)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := x.SyncUser(ctx, kind.claimant("12", kind.tag)); err != nil {
+				t.Fatalf("a per-user refusal must not fail the sync: %v", err)
+			}
+
+			candidate, err := x.config.Clone()
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate.syncUsers([]*common.User{ownCredentialUser("3", kind.tag)})
+			if err := x.restartCore(candidate); err != nil {
+				t.Fatalf("the core refused the full sync's config: %v", err)
+			}
+			if core.holds(kind.tag, "12") || core.holder(kind.tag, kind.key) != "" {
+				t.Fatalf("a full sync without 12 installed it; the credential is held by %q", core.holder(kind.tag, kind.key))
+			}
+		})
+	}
+}
