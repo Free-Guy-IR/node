@@ -297,6 +297,37 @@ fixture xray-patch-sets-xnet-twice
 { gomod_patch v0.58.0 v0.60.0; printf 'diff --git a/go.mod b/go.mod\n--- a/go.mod\n+++ b/go.mod\n@@ -9,1 +9,1 @@\n-\tgolang.org/x/net v0.60.0\n+\tgolang.org/x/net v0.58.0\n'; } >"$tmp/xray-patch-sets-xnet-twice/patches/xray-x-net-0.60.0.patch"
 check xray-patch-sets-xnet-twice 1 "patches/xray-x-net-0.60.0.patch sets golang.org/x/net in go.mod more than once"
 
+fixture stage-lowercase-as
+edit Dockerfile 's/ AS xray-builder$/ as xray-builder/'
+gomod_patch v0.58.0 v0.59.0 >"$tmp/stage-lowercase-as/patches/xray-x-net-0.60.0.patch"
+check stage-lowercase-as 1 "the Xray binary (Dockerfile patch order) uses golang.org/x/net v0.59.0"
+
+fixture stage-mixed-case-name
+edit Dockerfile 's/ AS xray-builder$/ As Xray-Builder/'
+gomod_patch v0.58.0 v0.59.0 >"$tmp/stage-mixed-case-name/patches/xray-x-net-0.60.0.patch"
+check stage-mixed-case-name 1 "the Xray binary (Dockerfile patch order) uses golang.org/x/net v0.59.0"
+
+fixture stage-renamed
+edit Dockerfile 's/ AS xray-builder$/ AS core-builder/'
+check stage-renamed 1 "the Dockerfile has no xray-builder stage"
+
+fixture stage-renamed-glob-still-checked
+edit Dockerfile 's/ AS xray-builder$/ AS core-builder/'
+gomod_patch v0.58.0 v0.59.0 >"$tmp/stage-renamed-glob-still-checked/patches/xray-x-net-0.60.0.patch"
+check stage-renamed-glob-still-checked 1 "the Xray binary (make build_xray patch order) uses golang.org/x/net v0.59.0"
+
+fixture apply-in-other-stage-not-counted
+edit Dockerfile 's@^RUN make build$@RUN git apply --verbose /patches/other-xnet.patch \&\& make build@'
+gomod_patch v0.58.0 v0.60.0 >"$tmp/apply-in-other-stage-not-counted/patches/other-xnet.patch"
+printf 'Other\n\ndiff --git a/app/y.go b/app/y.go\n--- a/app/y.go\n+++ b/app/y.go\n@@ -1 +1 @@\n-a\n+b\n' >"$tmp/apply-in-other-stage-not-counted/patches/xray-grpc-1.83.2.patch"
+cp "$tmp/apply-in-other-stage-not-counted/patches/xray-grpc-1.83.2.patch" "$tmp/apply-in-other-stage-not-counted/patches/xray-x-net-0.60.0.patch"
+check apply-in-other-stage-not-counted 1 "no patch applied by the Dockerfile xray-builder stage sets golang.org/x/net"
+
+fixture apply-after-stage-ignored
+printf 'FROM alpine:3.24.2@%s AS later\nRUN git apply --verbose /patches/other-lower.patch\n' "$alpine" >>"$tmp/apply-after-stage-ignored/Dockerfile"
+gomod_patch v0.60.0 v0.58.0 >"$tmp/apply-after-stage-ignored/patches/other-lower.patch"
+check apply-after-stage-ignored 0 "11 pins checked"
+
 fixture base-tree-shape
 edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
 edit .github/workflows/run-tests.yml 's/1.26.10/1.26.6/'

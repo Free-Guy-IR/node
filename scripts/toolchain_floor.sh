@@ -181,28 +181,47 @@ final_xnet() {
   done
 }
 
-if [ -f Dockerfile ] && grep -q 'AS xray-builder' Dockerfile; then
+xray_stage=
+xray_stage_found=0
+if [ -f Dockerfile ] && xray_stage=$(awk '
+  tolower($1) == "from" {
+    in_stage = (NF >= 3 && tolower($(NF - 1)) == "as" && tolower($NF) == "xray-builder")
+    if (in_stage) found = 1
+  }
+  in_stage { print }
+  END { exit found ? 0 : 1 }
+' Dockerfile); then
+  xray_stage_found=1
+fi
+
+if [ "$xray_stage_found" = 0 ]; then
+  checked=$((checked + 1))
+  refuse "the Dockerfile has no xray-builder stage, so the Xray binary's x/net cannot be checked against v$xnet_floor"
+else
   docker_patches=()
   while IFS= read -r patch; do
     [ -n "$patch" ] || continue
     docker_patches+=("patches/$patch")
   done <<EOF
-$(grep -oE 'git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch' Dockerfile | sed -E 's@.*/patches/@@')
+$(printf '%s\n' "$xray_stage" | grep -oE 'git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch' | sed -E 's@.*/patches/@@')
 EOF
   final=
   [ "${#docker_patches[@]}" = 0 ] || final_xnet "${docker_patches[@]}"
   if [ -z "$final" ]; then
+    checked=$((checked + 1))
     refuse "no patch applied by the Dockerfile xray-builder stage sets golang.org/x/net, so the Xray binary's x/net cannot be checked against v$xnet_floor"
   else
     require_xnet "the Xray binary (Dockerfile patch order)" "$final"
   fi
-  final=
-  [ "${#glob_patches[@]}" = 0 ] || final_xnet "${glob_patches[@]}"
-  if [ -z "$final" ]; then
-    refuse "no patches/xray-*.patch sets golang.org/x/net, so the make build_xray binary's x/net cannot be checked against v$xnet_floor"
-  else
-    require_xnet "the Xray binary (make build_xray patch order)" "$final"
-  fi
+fi
+
+final=
+[ "${#glob_patches[@]}" = 0 ] || final_xnet "${glob_patches[@]}"
+if [ -z "$final" ]; then
+  checked=$((checked + 1))
+  refuse "no patches/xray-*.patch sets golang.org/x/net, so the make build_xray binary's x/net cannot be checked against v$xnet_floor"
+else
+  require_xnet "the Xray binary (make build_xray patch order)" "$final"
 fi
 
 if [ "$problems" -gt 0 ]; then
