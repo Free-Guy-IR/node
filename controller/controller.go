@@ -49,6 +49,9 @@ type Controller struct {
 
 	lifecycleMu    sync.RWMutex
 	closed         bool
+	startMu        sync.Mutex
+	start          *startInProgress
+	closing        bool
 	userSyncs      userSyncRegistry
 	syncDrainGrace time.Duration
 	newBackend     func(context.Context, *common.Backend, int, int) (backend.Backend, error)
@@ -97,6 +100,7 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 }
 
 func (c *Controller) Disconnect() {
+	c.abortStart(false)
 	c.lockLifecycle()
 	defer c.unlockLifecycle()
 

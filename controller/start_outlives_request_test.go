@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -122,4 +123,62 @@ func TestDisconnectAbortsAStartInProgress(t *testing.T) {
 
 func TestCloseAbortsAStartInProgress(t *testing.T) {
 	abortsAStartInProgress(t, "Close", func(c *Controller) { c.Close() })
+}
+
+type detachedSyncBackend struct {
+	backend.Backend
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (b *detachedSyncBackend) Started() bool   { return true }
+func (b *detachedSyncBackend) Version() string { return "detached-sync" }
+func (b *detachedSyncBackend) Shutdown()       {}
+
+func (b *detachedSyncBackend) SyncUsers(ctx context.Context, _ []*common.User) error {
+	ready, cancel := backend.DetachFromCaller(ctx, time.Minute)
+	defer cancel()
+	b.once.Do(func() { close(b.entered) })
+	<-ready.Done()
+	return ready.Err()
+}
+
+func TestAFullSyncWhoseCallerLeftDoesNotHoldAStartHostage(t *testing.T) {
+	c, _, release := slowStartController(t, 10*time.Millisecond)
+	defer close(release)
+	t.Cleanup(c.Close)
+	c.syncDrainGrace = 100 * time.Millisecond
+	waiting := &detachedSyncBackend{entered: make(chan struct{})}
+	c.mu.Lock()
+	c.backend = waiting
+	c.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- c.SyncUsersAll(ctx, nil) }()
+	<-waiting.entered
+	cancel()
+
+	startDone := make(chan error, 1)
+	go func() {
+		c.LockControl()
+		defer c.UnlockControl()
+		startDone <- c.ReplaceBackend(context.Background(), xrayStart())
+	}()
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start is still waiting behind a full sync whose caller left and whose wait ignores that")
+	}
+	select {
+	case err := <-syncDone:
+		if err == nil {
+			t.Fatal("the full sync that Start cut short reported success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the full sync never returned")
+	}
 }

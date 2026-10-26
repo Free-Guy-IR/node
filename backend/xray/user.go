@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
 )
@@ -372,7 +373,9 @@ func (x *Xray) applyConfigWithRestart(ctx context.Context, candidate *Config) er
 	}
 	noteCoreProgress(ctx)
 
-	if err := x.checkXrayStatus(ctx); err != nil {
+	readyCtx, cancel := backend.DetachFromCaller(ctx, fullSyncReadyTimeout)
+	defer cancel()
+	if err := x.checkXrayStatus(readyCtx); err != nil {
 		if restoreErr := x.restorePreviousConfig(previous); restoreErr != nil {
 			return fmt.Errorf("%w; failed to restore previous xray config: %v", err, restoreErr)
 		}

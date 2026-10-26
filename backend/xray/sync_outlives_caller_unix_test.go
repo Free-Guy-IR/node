@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/config"
 )
@@ -125,5 +126,50 @@ func TestSyncUsersOutlivesTheCaller(t *testing.T) {
 	x.mu.RUnlock()
 	if kept {
 		t.Fatal("the full sync left xray on the previous config")
+	}
+}
+
+func TestAFullSyncWhoseCallerLeftStillYieldsToALifecycleAbort(t *testing.T) {
+	stats := &bootingStatsService{}
+	x := newBootingCoreXray(t, stats)
+	previous := x.config
+
+	abort, cancelAbort := context.WithCancel(context.Background())
+	defer cancelAbort()
+	ctx, cancel := context.WithCancel(backend.WithSyncAbort(context.Background(), abort))
+	defer cancel()
+	syncErr := make(chan error, 1)
+	go func() { syncErr <- x.SyncUsers(ctx, nil) }()
+	waitFor(t, "the full sync starts its candidate core", x.core.Started)
+	candidate := bootingCorePID(x)
+
+	cancel()
+	time.Sleep(1500 * time.Millisecond)
+	select {
+	case err := <-syncErr:
+		t.Fatalf("the full sync ended when only its caller left: %v", err)
+	default:
+	}
+
+	cancelAbort()
+	waitFor(t, "the aborted sync restores the previous core", func() bool {
+		pid := bootingCorePID(x)
+		return pid != 0 && pid != candidate
+	})
+	stats.healthy.Store(true)
+
+	select {
+	case err := <-syncErr:
+		if err == nil {
+			t.Fatal("a full sync aborted for a lifecycle change reported success")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a full sync aborted for a lifecycle change still runs 10s later")
+	}
+	x.mu.RLock()
+	restored := x.config == previous
+	x.mu.RUnlock()
+	if !restored {
+		t.Fatal("an aborted full sync did not restore the previous config")
 	}
 }

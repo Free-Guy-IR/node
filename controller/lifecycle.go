@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 const defaultUserSyncDrainGrace = 10 * time.Second
+
+const startTimeout = 3 * time.Minute
 
 var (
 	ErrBackendNotInitialized = status.Error(codes.Unavailable, "backend not initialized")
@@ -29,7 +32,13 @@ type userSyncRegistry struct {
 }
 
 func (r *userSyncRegistry) track(ctx context.Context) (context.Context, func()) {
-	ctx, cancel := context.WithCancel(ctx)
+	abort, cancelAbort := context.WithCancel(context.Background())
+	ctx, cancelSync := context.WithCancel(ctx)
+	ctx = backend.WithSyncAbort(ctx, abort)
+	cancel := func() {
+		cancelSync()
+		cancelAbort()
+	}
 	r.mu.Lock()
 	if r.cancels == nil {
 		r.cancels = make(map[uint64]context.CancelFunc)
@@ -116,7 +125,46 @@ func (c *Controller) fanOutUserSync(ctx context.Context, apply func(context.Cont
 	return errors.Join(errs...)
 }
 
+type startInProgress struct {
+	cancel context.CancelFunc
+}
+
+func (c *Controller) detachStart(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), startTimeout)
+	start := &startInProgress{cancel: cancel}
+	c.startMu.Lock()
+	if c.closing {
+		cancel()
+	} else {
+		c.start = start
+	}
+	c.startMu.Unlock()
+
+	return ctx, func() {
+		c.startMu.Lock()
+		if c.start == start {
+			c.start = nil
+		}
+		c.startMu.Unlock()
+		cancel()
+	}
+}
+
+func (c *Controller) abortStart(closing bool) {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	if closing {
+		c.closing = true
+	}
+	if c.start != nil {
+		c.start.cancel()
+	}
+}
+
 func (c *Controller) ReplaceBackend(ctx context.Context, b *common.Backend) error {
+	ctx, cancel := c.detachStart(ctx)
+	defer cancel()
+
 	c.lockLifecycle()
 	defer c.unlockLifecycle()
 
@@ -126,10 +174,17 @@ func (c *Controller) ReplaceBackend(ctx context.Context, b *common.Backend) erro
 	if c.Backend() != nil {
 		c.disconnect()
 	}
-	return c.startBackend(ctx, b)
+	if err := c.startBackend(ctx, b); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("core not ready within %s: %w", startTimeout, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Controller) Close() {
+	c.abortStart(true)
 	c.lockLifecycle()
 	defer c.unlockLifecycle()
 

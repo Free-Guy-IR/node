@@ -15,6 +15,8 @@ import (
 	"github.com/pasarguard/node/config"
 )
 
+const fullSyncReadyTimeout = 3 * time.Minute
+
 type Xray struct {
 	config      *Config
 	cfg         *config.Config
