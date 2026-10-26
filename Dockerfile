@@ -1,6 +1,6 @@
 ARG XRAY_VERSION=v26.3.27
 
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} make NAME=main build
 # SINGBOX_EXECUTABLE_PATH) requires to report per-user traffic. Version and tag set are
 # pinned to match what was built and traffic-tested (incl. Salamander-obfuscated
 # Hysteria2 against real QUIC-blocking ISPs) for this fork.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS singbox-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS singbox-builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -57,7 +57,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 # instead of silently shipping an unpatched core. The source is pinned to a commit and
 # the checkout is asserted against it, the same way the sing-box stage does, because a
 # git tag can be moved and a tag alone would not tell us we built what we reviewed.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS xray-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS xray-builder
 
 ARG TARGETOS
 ARG TARGETARCH

@@ -30,7 +30,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
 
       - name: Get project dependencies
@@ -97,7 +97,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
 
       - name: Get project dependencies
@@ -169,7 +169,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
 
       - name: Install govulncheck
@@ -193,7 +193,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
 
       - name: Get project dependencies
@@ -257,7 +257,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           check-latest: true
 
       - name: Install actionlint and shellcheck
