@@ -1282,6 +1282,12 @@ check release-claim-holds-before-a-tag 0
 d10_plain stale-release-claim-unreleased-alone dev 'an unreleased change that collides with the fork mtproto backend' tagged
 check stale-release-claim-unreleased-alone 1
 
+d10_plain stale-release-claim-not-yet-released-alone dev 'a change not yet released upstream that collides with the fork mtproto backend' tagged
+check stale-release-claim-not-yet-released-alone 1
+
+d10_plain stale-release-claim-release-contains-it-alone dev 'collides with the fork mtproto backend; port when a node release contains it' tagged
+check stale-release-claim-release-contains-it-alone 1
+
 merge_branch_only stale-release-claim-on-a-tagged-merge 'dev-only merge that collides with the fork mtproto backend' merged
 git -C "$tmp/stale-release-claim-on-a-tagged-merge/upw" tag v9.9.9 main
 check stale-release-claim-on-a-tagged-merge 1
