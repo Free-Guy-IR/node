@@ -88,6 +88,11 @@ with the same digest, it goes on; a registry error fails closed.
   `scripts/upstream_drift_test.sh` and `scripts/upstream_drift_bypass_test.sh`. The target is phony, so a file
   named `test-drift` in the checkout cannot turn it into a no-op.
 
+- Q: How long may the job that runs the drift suites run, and on which runner? -> A: The two suites add about 15 to
+  17 minutes, so `repo-hygiene` is bounded by `timeout-minutes: 30` instead of the 360-minute default. It runs on
+  `ubuntu-24.04`, pinned, because `ubuntu-latest` moves to Ubuntu 26.04 in November 2026, whose rust-coreutils the
+  drift checker and its suites have never been tested on; moving the pin is a reviewed change.
+
 ## Requirements
 
 - **FR-001**: No workflow file may exist at a retired path. The retired paths are listed in the policy.
@@ -107,6 +112,8 @@ with the same digest, it goes on; a registry error fails closed.
 - **FR-017**: A step of `run-tests.yml` runs `make test-drift`; the step fails when either drift suite fails,
   passes only when both pass, and still runs both suites when a file named `test-drift` exists in its working
   directory.
+- **FR-018**: The `repo-hygiene` job of `run-tests.yml` runs on `ubuntu-24.04` and sets a numeric
+  `timeout-minutes` from 1 to 30.
 
 ## Out of repository: settings for the owner
 

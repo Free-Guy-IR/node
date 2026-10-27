@@ -20,3 +20,5 @@ image or repository setting change.
 - [ ] T013 Record RED and GREEN runs in `acct-lead-state/evidence/node-ci`, the ledger and the KG
 - [ ] T014 [VD-1] RED: the step test requires a `run-tests.yml` step that runs `make test-drift` and, with the real Makefile and both suites stubbed, fails when either suite fails, passes when both pass, and is not skipped by a file named `test-drift`
 - [ ] T015 [VD-1] `make test-drift` step in `repo-hygiene`, `test-drift` declared phony, `scripts/workflow_gates.lock` regenerated with `scripts/workflowgate`
+- [ ] T016 [VD-1] RED: `workflowgate steps` exports each job's `runs-on` and `timeout-minutes`, and the step test requires `repo-hygiene` to run on `ubuntu-24.04` with a numeric `timeout-minutes` from 1 to 30
+- [ ] T017 [VD-1] `repo-hygiene` gets `runs-on: ubuntu-24.04` and `timeout-minutes: 30`, `scripts/workflow_gates.lock` regenerated
