@@ -18,3 +18,5 @@ image or repository setting change.
 - [ ] T011 [F7] Reachability check in `resolve`, `environment: release` on `publish`
 - [ ] T012 README and `docs/upstream-parity.md`
 - [ ] T013 Record RED and GREEN runs in `acct-lead-state/evidence/node-ci`, the ledger and the KG
+- [ ] T014 [VD-1] RED: the step test requires a `run-tests.yml` step that runs `make test-drift` and, with the real Makefile and both suites stubbed, fails when either suite fails, passes when both pass, and is not skipped by a file named `test-drift`
+- [ ] T015 [VD-1] `make test-drift` step in `repo-hygiene`, `test-drift` declared phony, `scripts/workflow_gates.lock` regenerated with `scripts/workflowgate`

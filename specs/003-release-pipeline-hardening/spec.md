@@ -81,6 +81,13 @@ that tag when there is one.
 **Acceptance**: when `:<tag>` exists with another digest, Publish Release fails without moving it; when it exists
 with the same digest, it goes on; a registry error fails closed.
 
+### Session 2026-10-27 (VD-1)
+
+- Q: How does CI notice a change that breaks the drift checker itself? -> A: The `repo-hygiene` job of
+  `run-tests.yml` runs `make test-drift`, which runs both synthetic suites of the checker,
+  `scripts/upstream_drift_test.sh` and `scripts/upstream_drift_bypass_test.sh`. The target is phony, so a file
+  named `test-drift` in the checkout cannot turn it into a no-op.
+
 ## Requirements
 
 - **FR-001**: No workflow file may exist at a retired path. The retired paths are listed in the policy.
@@ -97,6 +104,9 @@ with the same digest, it goes on; a registry error fails closed.
 - **FR-008**: Run blocks contain no `|| true`, `|| :` or `set +e`.
 - **FR-009**: The policy, its tests and the step tests run in the `workflow-policy` job.
 - **FR-010** to **FR-016**: the behaviours of User Stories 3 to 7.
+- **FR-017**: A step of `run-tests.yml` runs `make test-drift`; the step fails when either drift suite fails,
+  passes only when both pass, and still runs both suites when a file named `test-drift` exists in its working
+  directory.
 
 ## Out of repository: settings for the owner
 
