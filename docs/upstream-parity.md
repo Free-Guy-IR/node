@@ -380,8 +380,9 @@ Heads checked:
 
 **xray**
 
-- Advisories: one, GHSA-5wf9-h793-w73c. It is waived as not applicable: a client-side `pinnedPeerCertSha256` check
-  that only matters in users' apps.
+- Advisories: one, GHSA-5wf9-h793-w73c. It was waived as not applicable on 2026-09-24: a client-side
+  `pinnedPeerCertSha256` check that only matters in users' apps. Since 2026-10-27 it is ported:
+  `xray-pinned-ca-servername.patch` carries `64fada32b5b9` (see below), and both waivers are removed.
 - Security-looking commits: 29.
   - 6 are ported by 0.6.21 patches: `e5a9fb7`, `8f15190`, `8ee131c`, `0bafca9`, `a2cec2e` and `d878fc8`.
   - 9 are pre-squash branch commits, waived as superseded.
@@ -462,6 +463,13 @@ and passes with the fix.
   `xray-stats-register-race.patch`, an adapted backport (see below).
 - `598bde7`, the Router API data race: upstream's refactor does not apply to the pin, so `xray-router-race.patch` is
   a fork fix. The commit stays waived as pending for the rest of the refactor.
+- `64fada32b5b9`, GHSA-5wf9-h793-w73c (GO-2026-6651), taken on 2026-10-27 as `xray-pinned-ca-servername.patch`.
+  A pinned CA with no server name verified the chain with an empty DNSName, so any certificate that CA issued, for
+  any host, was accepted. The patch is upstream's three hunks without comments. The Hysteria hunk is adapted to
+  the pin, whose client struct also carries `ctx`. Five tests sit in the Xray tree. The pinned-CA test fails on the
+  pin (a certificate for another host is accepted) and passes with the patch. The Dockerfile guards the
+  verifier check and both dialer call sites. The 10-21 snapshot of prod core 1 has no `pinnedPeerCertSha256` key,
+  so the bug was not live there.
 
 On 2026-10-10 the XHTTP client races `77f98eb` and `eef6e63` were taken early too, as
 `xray-xhttp-client-race.patch`. They had been waived as pending the v26.9.x pin move, because no production core

@@ -72,6 +72,7 @@ COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
+COPY patches/xray-pinned-ca-servername.patch /patches/xray-pinned-ca-servername.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-router-race.patch /patches/xray-router-race.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
@@ -103,6 +104,11 @@ RUN git init -q . \
  && grep -q "golang.org/x/text v0.41.0 // indirect$" go.mod \
  && git apply --verbose /patches/xray-http-100-continue.patch \
  && grep -qF "len(ResponseHeader1xx) >= 4 && bytes.Equal" proxy/http/server.go \
+ && git apply --verbose /patches/xray-pinned-ca-servername.patch \
+ && grep -qF 'return errors.New("Pinning CA needs a valid ServerName")' transport/internet/tls/config.go \
+ && grep -qF "config := tlsConfig.GetTLSConfig(tls.WithDestination(dest))" transport/internet/grpc/dial.go \
+ && ! grep -qF "config.ServerName = address.Domain()" transport/internet/grpc/dial.go \
+ && grep -qE "tlsConfig:[[:space:]]+tlsConfig.GetTLSConfig\(tls.WithDestination\(dest\)\)," transport/internet/hysteria/dialer.go \
  && git apply --verbose /patches/xray-quic-sniff.patch \
  && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
