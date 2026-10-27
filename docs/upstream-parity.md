@@ -36,10 +36,13 @@ State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-check
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
-| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead (2026-09-24); the node stays on grpc 1.83.2. The Go vulnerability database still lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), although the fix is verified in v1.84.0 `http2_server.go`, so the bump would turn govulncheck red. Waived as `pending` until the database entry is corrected. The fork's method port of `keepAliveStale` (`40248f2`) needs neither the gofmt nor the upstream test fix |
+| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead on 2026-09-24 because the Go vulnerability database listed released v1.84.0 under GO-2026-6443 (golang/vulndb #6511, #6580); the database entry changed on 2026-10-06, and `1d0181a` ports it on 2026-10-27 (`Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`), with the cardinality tests of `ada0048`. The gofmt and test hunks do not apply to the fork's watchdog port |
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24; ported in 0.6.21 by `40006fe`, which carries `Upstream: be2c445f7f486043d0efc4dfbe408c4a382869f8` |
 | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445` on 2026-09-24; ported in 0.6.21 by `f9c4f05` (merged into release/v0.6.21 at `01eed71`), which carries `Upstream: 4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` |
 | `3a3d5c58efff747a12ac57b014802f4f855896df` | deps: gopsutil 4.26.8 to 4.26.9 (#95) | new on upstream `dev` on 2026-10-01; ported in 0.6.21 by `53044cc`, which carries `Upstream: 3a3d5c58efff747a12ac57b014802f4f855896df`. Same module bumps and the same `go.sum` lines as upstream (purego v0.11.1, perfstat `88456608a4f6`, go-sysconf v0.4.0, numcpus v0.12.0) |
+| `1ae411b76c376aed89b54673a66b7615568f45f4` | deps: golang.org/x/sys 0.48.0 to 0.49.0 (#104) | released in v0.5.5; ported on 2026-10-27 by `a86224f`, which carries its `Upstream:` line. Same `go.mod` and `go.sum` hunks as upstream |
+| `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `9f89bd4`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
+| `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `ff6f801`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `acfe4d3` (the fix) and `63ca286` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `71d000a` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
 
@@ -51,6 +54,9 @@ On 2026-10-10 it moved to Go 1.26.9 in `85a53e5`, with golang.org/x/net 0.60.0 i
 GO-2026-6617, 6613, 6612, 6611, 6610, 6608, 6607, 6605, 6603, 6600 and 6599; Go 1.26.7 and 1.26.8 were released but
 fix none of them. `615fac8` added `scripts/toolchain_floor.sh` to the repo-hygiene job, which refuses any pin below
 Go 1.26.9 or x/net 0.60.0.
+On 2026-10-26 it moved to Go 1.26.10 in `a4219e1`, which fixes GO-2026-6809 (CVE-2026-111943, crypto/x509), and
+`f3964af` raised the floor guard to 1.26.10. `a570f6a` makes the guard find the xray-builder stage case-insensitively
+and read the Xray patch order only from that stage (F-SEC1026-V1).
 
 Notes on the ported commits:
 
@@ -430,9 +436,9 @@ Heads checked:
 
 **node**
 
-- `52d5aab` (grpc 1.84.0, #91) is held out of 0.6.21 and waived as `pending`: the Go vulnerability database still
-  lists released v1.84.0 as affected by GO-2026-6443 (golang/vulndb #6511, #6580), and the fix is verified in v1.84.0
-  `http2_server.go`. It is ported when the database entry is corrected.
+- `52d5aab` (grpc 1.84.0, #91) was held out of 0.6.21 and waived as `pending` while the Go vulnerability database
+  listed released v1.84.0 under GO-2026-6443 (golang/vulndb #6511, #6580). The entry changed on 2026-10-06, and
+  `1d0181a` ports it on 2026-10-27.
 - `be2c445` (#93) and `4a9d0cf` (#90) are ported by `40006fe` and `f9c4f05`. The node section of the run of 2026-09-25 lists
   33 upstream commits outside the target: 7 ported, 1 empty, 25 waived, 0 unported. It also lists 5 fork commits with
   an upstream parent, all allowlisted, and 1 upstream merge with no changes of its own.
