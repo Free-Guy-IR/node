@@ -5,7 +5,7 @@
 - Version change: 1.1.2 -> 1.1.3 (PATCH: one Release Constraints value; no principle added, removed or redefined).
 - Modified: Release Constraints, Go toolchain 1.26.9 -> 1.26.10 (fixes GO-2026-6809, CVE-2026-111943, reachable from
   the node's HTTPS listener through crypto/x509 with Go 1.26.9).
-- Approval: pending; the change goes through PG-NODE, a non-author verifier and the 3/3 review gate.
+- Approval: Approved by main session under the owner's standing delegation of 2026-10-27, for GO-2026-6809.
 - Artifacts brought in line in the same change: Dockerfile and Dockerfile.wireguard builder stages, go.mod
   `toolchain go1.26.10`, .github/workflows/run-tests.yml and publish-release.yml (a4219e1); the toolchain floor guard
   (f3964af); specs/002-accounting-defects plan.md, quickstart.md and the open task T029, and
