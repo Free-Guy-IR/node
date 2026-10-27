@@ -428,6 +428,10 @@ race_controller=0
 race_backend=0
 plain_overlap=0
 patch_race=0
+drift_both_pass=0
+drift_test_caught=0
+drift_bypass_caught=0
+drift_stray_file=0
 while IFS=$'\t' read -r job idx; do
   [ ! -s "$H/steps/$WF_TESTS/$job/$idx.wd" ] || continue
   script="$H/steps/$WF_TESTS/$job/$idx.sh"
@@ -470,6 +474,34 @@ while IFS=$'\t' read -r job idx; do
       patch_race=$((patch_race + 1))
     fi
   fi
+  if grep -q 'test-drift' "$script"; then
+    for mode in pass test-fails bypass-fails stray-file; do
+      name="cov-drift-$mode-$job-$idx"
+      new_case "$name"
+      wd="$H/cases/$name/wd"
+      mkdir -p "$wd/scripts"
+      cp "$root/Makefile" "$wd/Makefile"
+      test_rc=0
+      bypass_rc=0
+      [ "$mode" != test-fails ] || test_rc=1
+      [ "$mode" != bypass-fails ] || bypass_rc=1
+      printf 'echo drift-test-suite-ran\nexit %s\n' "$test_rc" >"$wd/scripts/upstream_drift_test.sh"
+      printf 'echo drift-bypass-suite-ran\nexit %s\n' "$bypass_rc" >"$wd/scripts/upstream_drift_bypass_test.sh"
+      [ "$mode" != stray-file ] || : >"$wd/test-drift"
+      CASE_WD="$wd" exec_step "$H/cases/$name" "$WF_TESTS" "$job" "$idx" PATH=/usr/bin:/bin:/usr/sbin:/sbin
+      rc=$?
+      ran_test=0
+      ran_bypass=0
+      ! grep -q '^drift-test-suite-ran$' "$H/cases/$name/log" || ran_test=1
+      ! grep -q '^drift-bypass-suite-ran$' "$H/cases/$name/log" || ran_bypass=1
+      case "$mode" in
+        pass) [ "$rc" = 0 ] && [ "$ran_test" = 1 ] && [ "$ran_bypass" = 1 ] && drift_both_pass=$((drift_both_pass + 1)) ;;
+        test-fails) [ "$rc" != 0 ] && [ "$ran_test" = 1 ] && drift_test_caught=$((drift_test_caught + 1)) ;;
+        bypass-fails) [ "$rc" != 0 ] && [ "$ran_bypass" = 1 ] && drift_bypass_caught=$((drift_bypass_caught + 1)) ;;
+        stray-file) [ "$rc" = 0 ] && [ "$ran_test" = 1 ] && [ "$ran_bypass" = 1 ] && drift_stray_file=$((drift_stray_file + 1)) ;;
+      esac
+    done
+  fi
 done < <(awk -F'\t' -v wf="$WF_TESTS" '$1 == wf && $4 == "run" { print $2 "\t" $3 }' "$H/steps/index")
 if [ "$guard_caught" -ge 1 ] && [ "$guard_clean" -ge 1 ]; then
   ok
@@ -495,6 +527,16 @@ if [ "$patch_race" -ge 1 ]; then
   ok
 else
   bad "make test_xray_patches runs without GOFLAGS=-race and CGO_ENABLED=1, so the Xray patch packages are not race-tested"
+fi
+if [ "$drift_both_pass" -ge 1 ] && [ "$drift_test_caught" -ge 1 ] && [ "$drift_bypass_caught" -ge 1 ]; then
+  ok
+else
+  bad "no step of $WF_TESTS runs make test-drift and fails with either drift suite (both pass $drift_both_pass, drift suite caught $drift_test_caught, bypass suite caught $drift_bypass_caught), so a broken drift checker passes the gate"
+fi
+if [ "$drift_stray_file" -ge 1 ]; then
+  ok
+else
+  bad "make test-drift runs neither drift suite when a file named test-drift exists in its working directory (stray-file runs $drift_stray_file), so one tracked file turns the drift suites off"
 fi
 
 DS="Compare with every upstream branch, tag, release and advisory"
