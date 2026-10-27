@@ -538,6 +538,23 @@ if [ "$drift_stray_file" -ge 1 ]; then
 else
   bad "make test-drift runs neither drift suite when a file named test-drift exists in its working directory (stray-file runs $drift_stray_file), so one tracked file turns the drift suites off"
 fi
+hygiene_runs_on=$(awk -F'\t' -v wf="$WF_TESTS" '$1 == wf && $2 == "repo-hygiene" { print $3; exit }' "$H/steps/runners")
+hygiene_timeout=$(awk -F'\t' -v wf="$WF_TESTS" '$1 == wf && $2 == "repo-hygiene" { print $4; exit }' "$H/steps/runners")
+if [ "$hygiene_runs_on" = ubuntu-24.04 ]; then
+  ok
+else
+  bad "repo-hygiene of $WF_TESTS runs on '${hygiene_runs_on:-nothing}', not the pinned ubuntu-24.04, so a move of ubuntu-latest changes the coreutils the drift suites run on"
+fi
+case "$hygiene_timeout" in
+  '' | - | *[!0-9]*) bad "repo-hygiene of $WF_TESTS has no numeric timeout-minutes ('${hygiene_timeout:-nothing}'), so a hung drift suite holds a runner for the 360-minute default" ;;
+  *)
+    if [ "$hygiene_timeout" -ge 1 ] && [ "$hygiene_timeout" -le 30 ]; then
+      ok
+    else
+      bad "repo-hygiene of $WF_TESTS sets timeout-minutes $hygiene_timeout, outside 1 to 30"
+    fi
+    ;;
+esac
 
 DS="Compare with every upstream branch, tag, release and advisory"
 for kind in ok unported crash die; do

@@ -70,7 +70,7 @@ func exportSteps(workflows []*workflow, out string) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
-	var index, jobsIndex strings.Builder
+	var index, jobsIndex, runners strings.Builder
 	for _, w := range workflows {
 		for _, name := range w.jobOrder {
 			job := w.job(name)
@@ -96,6 +96,19 @@ func exportSteps(workflows []*workflow, out string) error {
 				deps = "-"
 			}
 			fmt.Fprintf(&jobsIndex, "%s\t%s\t%s\t%s\t%s\n", w.name, name, deps, concurrency, environment)
+			runsOn := "-"
+			switch v := job["runs-on"].(type) {
+			case nil:
+			case string:
+				runsOn = v
+			default:
+				runsOn = "<not a single label>"
+			}
+			timeout := "-"
+			if v, ok := job["timeout-minutes"]; ok && v != nil {
+				timeout = scalar(v)
+			}
+			fmt.Fprintf(&runners, "%s\t%s\t%s\t%s\n", w.name, name, runsOn, timeout)
 			for i, step := range steps(job) {
 				if step == nil {
 					continue
@@ -129,5 +142,8 @@ func exportSteps(workflows []*workflow, out string) error {
 	if err := os.WriteFile(filepath.Join(out, "index"), []byte(index.String()), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(out, "jobs"), []byte(jobsIndex.String()), 0o644)
+	if err := os.WriteFile(filepath.Join(out, "jobs"), []byte(jobsIndex.String()), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(out, "runners"), []byte(runners.String()), 0o644)
 }

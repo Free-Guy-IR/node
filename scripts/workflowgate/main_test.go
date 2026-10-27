@@ -256,4 +256,29 @@ func TestStepsExport(t *testing.T) {
 	if !strings.Contains(string(jobs), "publish-release.yml\tpublish\ttests,drift\t-\t-\n") {
 		t.Fatalf("jobs = %q", jobs)
 	}
+	runners, err := os.ReadFile(filepath.Join(out, "runners"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runners), "publish-release.yml\tpublish\tubuntu-latest\t-\n") {
+		t.Fatalf("runners = %q", runners)
+	}
+	pinned := strings.Replace(gatedRelease, "    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-24.04\n    timeout-minutes: 30\n", 1)
+	listed := strings.Replace(gatedRelease, "    runs-on: ubuntu-latest\n", "    runs-on: [self-hosted, ubuntu-24.04]\n", 1)
+	for body, want := range map[string]string{
+		pinned: "publish-release.yml\tpublish\tubuntu-24.04\t30\n",
+		listed: "publish-release.yml\tpublish\t<not a single label>\t-\n",
+	} {
+		dir := t.TempDir()
+		if err := exportSteps(load(t, map[string]string{"publish-release.yml": body}), dir); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "runners"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("runners = %q, want a line %q", got, want)
+		}
+	}
 }
