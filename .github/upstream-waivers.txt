@@ -39,8 +39,8 @@ f72ac0efacdbbfa155a1d491cceb8ce4908eab13 pending: released in node v0.5.5 (47857
 5cbcb5fdc16a82c819e2c095637e807c5665ea3d pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
 bb40094ba11bfa81ae917ab22f986e90ad9bb052 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
 8ad52fed26401566dea3e7fd99295ccdcb4fb506 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
-71466f2a82c6c5e92d9a3c9e41944491c38abb76 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
-25a8d740514256a1e109b10360fbc53cb80e9148 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
+71466f2a82c6c5e92d9a3c9e41944491c38abb76 pending: released in node v0.5.5 (47857d4, 2026-10-22); its restart-race fix (#113) is being ported by NODE-XRAY-RACE on the xrayrace line, and this branch does not contain that port until:2026-11-08
+25a8d740514256a1e109b10360fbc53cb80e9148 pending: declined for now as a feature: #105 applies routing and outbound changes without restarting xray, while the fork's Start always rebuilds the core and converges users; a live apply would need tracking of live routing-RPC edits and a rule for degraded starts, and no bug is open; revisit with the xray pin move F-XRAY-PIN-V261021 until:2026-11-20
 946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
 d30948378d7831827f56f174333b3f254a228d45 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
 1549c96621837b3fd7391697adc09b2c6278fac8 pending: released in node v0.5.5 (47857d4, 2026-10-22); port in progress, owner TBD by PG-NODE until:2026-11-08
