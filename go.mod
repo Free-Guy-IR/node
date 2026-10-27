@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/9seconds/mtg/v2 v2.1.8-0.20260609205628-d095108334de
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/joho/godotenv v1.5.1
