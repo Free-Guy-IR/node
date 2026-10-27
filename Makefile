@@ -42,7 +42,7 @@ ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
 ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
-.PHONY: clean build build_xray test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard
+.PHONY: clean build build_xray test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift
 
 build:
 	CGO_ENABLED=0 go build -o $(OUTPUT) $(PARAMS) $(MAIN)

@@ -298,3 +298,6 @@ jobs:
 
       - name: Refuse tracked executables and files over 5 MB
         run: bash scripts/check_tracked_files.sh
+
+      - name: Test the upstream drift checker
+        run: make test-drift
