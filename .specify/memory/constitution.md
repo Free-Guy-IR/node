@@ -2,17 +2,20 @@
 
 ## Sync Impact Report
 
+- Version change: 1.1.3 -> 1.1.4 (PATCH). Modified: the commit SHA references only, corrected to the ones delivered
+  on node main. No principles added or removed; the 1.1.3 entries below are otherwise unchanged.
+- Approval: PATCH 1.1.3 -> 1.1.4, SHA-only wording correction (F-NODE-DOC-STALE-SHAS); approved 2026-10-27 by main under the owner's standing delegation of 2026-10-27; not reviewed by the owner personally.
 - Version change: 1.1.2 -> 1.1.3 (PATCH: one Release Constraints value; no principle added, removed or redefined).
 - Modified: Release Constraints, Go toolchain 1.26.9 -> 1.26.10 (fixes GO-2026-6809, CVE-2026-111943, reachable from
   the node's HTTPS listener through crypto/x509 with Go 1.26.9).
 - Approval: Approved by main session under the owner's standing delegation of 2026-10-27, for GO-2026-6809.
 - Artifacts brought in line in the same change: Dockerfile and Dockerfile.wireguard builder stages, go.mod
-  `toolchain go1.26.10`, .github/workflows/run-tests.yml and publish-release.yml (a4219e1); the toolchain floor guard
-  (f3964af); specs/002-accounting-defects plan.md, quickstart.md and the open task T029, and
+  `toolchain go1.26.10`, .github/workflows/run-tests.yml and publish-release.yml (410815f); the toolchain floor guard
+  (5f9706b); specs/002-accounting-defects plan.md, quickstart.md and the open task T029, and
   specs/003-release-pipeline-hardening plan.md.
 - Templates checked, no change needed: .specify/templates/plan-template.md, spec-template.md, tasks-template.md,
   checklist-template.md and constitution-template.md name no toolchain version.
-- Previous amendments: 1.1.1 -> 1.1.2, Go toolchain 1.26.6 -> 1.26.9 (85a53e5); 1.1.0 -> 1.1.1, Go toolchain
+- Previous amendments: 1.1.1 -> 1.1.2, Go toolchain 1.26.6 -> 1.26.9 (4c37a93); 1.1.0 -> 1.1.1, Go toolchain
   1.26.3 -> 1.26.6 for GO-2026-6090 (345febd, ce09efe).
 
 ## Core Principles
@@ -94,4 +97,4 @@ a Sync Impact Report, and a semantic version bump of this file (MAJOR for remove
 principles, MINOR for added or materially expanded ones, PATCH for wording). Every plan's
 Constitution Check and every review MUST cite the principles it verified.
 
-**Version**: 1.1.3 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-10-27
+**Version**: 1.1.4 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-10-28

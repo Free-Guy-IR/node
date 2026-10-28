@@ -36,26 +36,26 @@ State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-check
 | `e6dad6e3aa5c537c7bf2eb2ccd2c0fcd231a49fb` | `StartOrAttach` always restarts a running backend | rejected, waived: it only edits `StartOrAttach`, which the fork does not carry |
 | `ca24af0b58f59a25870422369e36f1b31882e5d7` | `StartOrAttach` restarts only on a config change | rejected, waived: this is the "same config = heartbeat" behaviour |
 | `d44ca8e986dd92cfd76c2981c06e92f6356b61ac` | `keepAliveStale` reads the clock itself | ported in 0.6.21 with the watchdog (`40248f2`) |
-| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead on 2026-09-24 because the Go vulnerability database listed released v1.84.0 under GO-2026-6443 (golang/vulndb #6511, #6580); the database entry changed on 2026-10-06, and `1d0181a` ports it on 2026-10-27 (`Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`), with the cardinality tests of `ada0048`. The gofmt and test hunks do not apply to the fork's watchdog port |
+| `52d5aab33ee5dd0426ccb5d202dc06c36a500162` | deps: grpc 1.83.2 to 1.84.0 (#91), plus gofmt and an upstream test fix for `keepAliveStale` | held out of 0.6.21 by the release lead on 2026-09-24 because the Go vulnerability database listed released v1.84.0 under GO-2026-6443 (golang/vulndb #6511, #6580); the database entry changed on 2026-10-06, and `3e35775` ports it on 2026-10-27 (`Upstream: 52d5aab33ee5dd0426ccb5d202dc06c36a500162`), with the cardinality tests of `eeafcd4`. The gofmt and test hunks do not apply to the fork's watchdog port |
 | `be2c445f7f486043d0efc4dfbe408c4a382869f8` | xray: leave unchanged users alone during user sync (#93) | the fork's own contribution, merged upstream on 2026-09-24; ported in 0.6.21 by `40006fe`, which carries `Upstream: be2c445f7f486043d0efc4dfbe408c4a382869f8` |
 | `4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` | feat(wireguard): support configurable server interface MTU (#90) | new on upstream `dev` after `be2c445` on 2026-09-24; ported in 0.6.21 by `f9c4f05` (merged into release/v0.6.21 at `01eed71`), which carries `Upstream: 4a9d0cf8bd38d82f391c9152f64dad6eab7ead93` |
 | `3a3d5c58efff747a12ac57b014802f4f855896df` | deps: gopsutil 4.26.8 to 4.26.9 (#95) | new on upstream `dev` on 2026-10-01; ported in 0.6.21 by `53044cc`, which carries `Upstream: 3a3d5c58efff747a12ac57b014802f4f855896df`. Same module bumps and the same `go.sum` lines as upstream (purego v0.11.1, perfstat `88456608a4f6`, go-sysconf v0.4.0, numcpus v0.12.0) |
-| `1ae411b76c376aed89b54673a66b7615568f45f4` | deps: golang.org/x/sys 0.48.0 to 0.49.0 (#104) | released in v0.5.5; ported on 2026-10-27 by `a86224f`, which carries its `Upstream:` line. Same `go.mod` and `go.sum` hunks as upstream |
-| `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `9f89bd4`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
-| `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `ff6f801`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
+| `1ae411b76c376aed89b54673a66b7615568f45f4` | deps: golang.org/x/sys 0.48.0 to 0.49.0 (#104) | released in v0.5.5; ported on 2026-10-27 by `d82517b`, which carries its `Upstream:` line. Same `go.mod` and `go.sum` hunks as upstream |
+| `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `a074e52`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
+| `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `bb210c9`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
-| `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `acfe4d3` (the fix) and `63ca286` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `71d000a` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
+| `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
 Each carries an `Upstream: <full sha>` trailer, which is how the drift check recognises a partial or combined port.
 The toolchain moved to Go 1.26.6 in `345febd` (fixes GO-2026-6090), with a govulncheck CI job from `47ef6ee`.
-On 2026-10-10 it moved to Go 1.26.9 in `85a53e5`, with golang.org/x/net 0.60.0 in `005d863`, which together fix
+On 2026-10-10 it moved to Go 1.26.9 in `4c37a93`, with golang.org/x/net 0.60.0 in `1a62e65`, which together fix
 GO-2026-6617, 6613, 6612, 6611, 6610, 6608, 6607, 6605, 6603, 6600 and 6599; Go 1.26.7 and 1.26.8 were released but
-fix none of them. `615fac8` added `scripts/toolchain_floor.sh` to the repo-hygiene job, which refuses any pin below
+fix none of them. `a0b54fd` added `scripts/toolchain_floor.sh` to the repo-hygiene job, which refuses any pin below
 Go 1.26.9 or x/net 0.60.0.
-On 2026-10-26 it moved to Go 1.26.10 in `a4219e1`, which fixes GO-2026-6809 (CVE-2026-111943, crypto/x509), and
-`f3964af` raised the floor guard to 1.26.10. `a570f6a` makes the guard find the xray-builder stage case-insensitively
+On 2026-10-26 it moved to Go 1.26.10 in `410815f`, which fixes GO-2026-6809 (CVE-2026-111943, crypto/x509), and
+`5f9706b` raised the floor guard to 1.26.10. `4189871` makes the guard find the xray-builder stage case-insensitively
 and read the Xray patch order only from that stage (F-SEC1026-V1).
 
 Notes on the ported commits:
@@ -438,7 +438,7 @@ Heads checked:
 
 - `52d5aab` (grpc 1.84.0, #91) was held out of 0.6.21 and waived as `pending` while the Go vulnerability database
   listed released v1.84.0 under GO-2026-6443 (golang/vulndb #6511, #6580). The entry changed on 2026-10-06, and
-  `1d0181a` ports it on 2026-10-27.
+  `3e35775` ports it on 2026-10-27.
 - `be2c445` (#93) and `4a9d0cf` (#90) are ported by `40006fe` and `f9c4f05`. The node section of the run of 2026-09-25 lists
   33 upstream commits outside the target: 7 ported, 1 empty, 25 waived, 0 unported. It also lists 5 fork commits with
   an upstream parent, all allowlisted, and 1 upstream merge with no changes of its own.
@@ -514,12 +514,12 @@ The one new upstream commit is `f72ac0e` (#99) on `dev`. It is ported:
   every protocol. The user's peer then stayed on the device and in the peer store until the next `Start` or full sync,
   its freed IP could be given to another user while the old peer still held it, and handing its key to another user in
   the same batch failed the batch with "already assigned to user".
-- **The port.** `63ca286` adds upstream's two tests first; on `8959c50` both fail ("expected exactly one Remove for the
-  stale peer, got []" for both shapes, and "already assigned to user"). `acfe4d3` takes upstream's change: every user
+- **The port.** `bbc488e` adds upstream's two tests first; on `8959c50` both fail ("expected exactly one Remove for the
+  stale peer, got []" for both shapes, and "already assigned to user"). `cbb63a0` takes upstream's change: every user
   with a non-empty email in the request counts as touched, and only the normalized users become desired peers. The fork
   keeps its own stats flush before a partial sync removes peers, so the removed peer's last traffic is sampled before
   its stats entry is marked deleted.
-- **The interleaving test.** `71d000a` adds `TestLosingWireGuardAccessConvergesUnderConcurrentSyncsFullSyncsAndStarts`.
+- **The interleaving test.** `4f0bbc5` adds `TestLosingWireGuardAccessConvergesUnderConcurrentSyncsFullSyncsAndStarts`.
   Eight groups hand their IP from user to user, half of them with the key; the user who loses access is sent with empty
   `peer_ips`, without WireGuard credentials, without proxies, or without the inbound; each change goes out as two
   `SyncUser` calls, one `UpdateUsers` batch, one chunked batch or `UpdateUsersAndRestart`, racing full syncs, restarts,
@@ -542,7 +542,7 @@ The one new upstream commit is `f72ac0e` (#99) on `dev`. It is ported:
   `wireguard` kernel module. The Linux test host has no `wireguard` module loaded, and loading one on that production
   host is not done for a test; the `wireguard-integration` job of `run-tests.yml` runs them on GitHub's runner.
 - **Drift check.** `DRIFT_COMPONENTS=node` reports `f72ac0e` as `UNPORTED` on `8959c50` (exit 1) and as `PORTED` on
-  `71d000a`, with 0 unported items.
+  `4f0bbc5`, with 0 unported items.
 
 ### govulncheck on the patched Xray build
 
@@ -556,7 +556,7 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   takes upstream `24e6f6d`'s x/crypto 0.57.0 and clears them.
 - On 2026-10-10 (database of 2026-10-08), the same run with that patch and Go 1.26.6 found 12 symbol-reachable ids:
   GO-2026-6617, 6612, 6611, 6610 and 6603 in x/net 0.59.0 and the standard library, and 6613, 6609, 6608, 6607, 6605,
-  6600 and 6599 in the standard library. `e691a18` renames the patch to `xray-x-net-0.60.0.patch` and moves Xray to
+  6600 and 6599 in the standard library. `4f358c2` renames the patch to `xray-x-net-0.60.0.patch` and moves Xray to
   x/net 0.60.0, and the builder image moves to Go 1.26.9. With both, the run finds none at symbol or package level.
 - Two ids are still listed at module level. Neither has a symbol-level or a package-level result:
 
@@ -592,7 +592,7 @@ guards cover every fix: it runs the stage's apply-and-guard chain on the pinned 
 non-test file from one patch at a time and requires the chain or the linux/amd64 build to fail. On 2026-09-30 all 55
 removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevoke/operation.go`, `singbridge/pipe.go`,
 `shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
-(r2-B review). On 2026-10-11, at node `47434b9`, all 56 removals fail; the 56th is the `packet.go` diff of
+(r2-B review). On 2026-10-11, at node `125a51e`, all 56 removals fail; the 56th is the `packet.go` diff of
 `xray-ss2022-singbridge-close-race.patch`.
 
 Every `go test` line of `make test_xray_patches` states its own race mode: `-race` with `CGO_ENABLED=1`, or
@@ -805,13 +805,13 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
     `TestAShadowsocks2022UDPFlowEndedByADuplicatedDatagramLeavesNoSessionRegistered` run the real Shadowsocks 2022 path
     and now run under `-race` as well.
 - **Measured on 2026-10-10 and 2026-10-11:**
-  - Before the fix, at node `a692620` (the pin, the earlier patches and these tests), each of the four new tests failed
+  - Before the fix, at node `dd782ad` (the pin, the earlier patches and these tests), each of the four new tests failed
     in 10 of 10 separate `-race` processes. The racing and interleaving tests reported the race at `packet.go:105`
     against `:57` and `:74`. Re-run with the 1-minute load below 20, the racing test failed 10 of 10 at `-count=10`.
   - The two Shadowsocks 2022 tests under `-race` before the fix: the invalid-packet test failed in 8 of 10 processes at
     a load near 100 and in 9 of 10 at a load below 20; the duplicated-datagram test failed 10 of 10 at both. Every
     failure reported the race at `packet.go:105` against `:54` or `:74`.
-  - With the fix, at node `47434b9`: the four tests at `-race -count=20` passed 80 of 80 with no race report, and
+  - With the fix, at node `125a51e`: the four tests at `-race -count=20` passed 80 of 80 with no race report, and
     the interleaving test at `-race -count=10` passed 10 of 10. Both Shadowsocks 2022 tests at `-race -count=10`
     passed 10 of 10 with no race report. Each of these held at a load near 130 and again at a load below 20.
   - Mutants, each run with the four tests at `-race -count=3`. Reverting the whole fix fails 12 of 12. A `Close`
@@ -861,21 +861,21 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
   the -race CI run honest and protects a future XHTTP outbound. The server-side XHTTP code is untouched.
 - **Why now:** CI runs `make test_xray_patches` with `GOFLAGS=-race`. Upstream's own `TestDialWithRemoteAddr` failed on
   these races (run 37916395457), and the splithttp `TestTrustedHeaderScenarios` line hits the same two families.
-- **Tests:** `client_race_test.go` is fork code, committed before the fix (`c989eb0`).
+- **Tests:** `client_race_test.go` is fork code, committed before the fix (`08475ef`).
   - One -race test for each race: `TestAStreamDownBodySetWhileAReadWaitsIsDeliveredWhole`,
     `TestAFailedStreamDownMarksTheClientClosedWhileOthersPollIt`,
     `TestUploadWriterCountsEachWriteWhileTheUploaderReleasesItsBuffers` and
     `TestUploadWriterDeliversLargeWritesExactlyOnceToAConcurrentUploader`.
   - `TestAStreamClosedBeforeItsResponseClosesTheLateBodyOnce` holds the close-before-response behaviour: the late
     body is closed exactly once and a read returns no data.
-  - `TestConcurrentClosesRacingTheResponseCloseItsBodyOnceAndWakeTheWaitingRead` (`a9c1735`, added after a review)
+  - `TestConcurrentClosesRacingTheResponseCloseItsBodyOnceAndWakeTheWaitingRead` (`10c22bd`, added after a review)
     covers the path eef6e63 made safe: in each of 50 rounds a Read waits while two goroutines close the stream as the
     response arrives. The Read must return only bytes of this stream's body, and the body must be closed exactly
     once.
   - The interleaving test `TestConcurrentStreamsOpenReadAndCloseWithoutLosingOrDuplicatingData` runs 96 stream-down,
     early-close, failed, stream-up and packet-up requests at once on one client while another goroutine polls
     `IsClosed`. It checks that each stream reads exactly its own body and that every response body is closed exactly
-    once. It waits for each scripted body before counting closes (`0cef49e`): an early-close stream returns before
+    once. It waits for each scripted body before counting closes (`b93ea8e`): an early-close stream returns before
     its body exists, and without the wait one `-test.count=10` iteration in ten failed with no data race.
   - On the pin with every fork patch, under -race, in separate processes: `TestDialWithRemoteAddr` failed 20 of 20 runs
     and the splithttp `TestTrustedHeaderScenarios` 5 of 5, all with data races. Five of the six new tests failed 10 of

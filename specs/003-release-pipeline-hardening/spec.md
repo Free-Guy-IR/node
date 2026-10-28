@@ -10,7 +10,7 @@
 in-repository fix ships with a test that fails on its parent and passes on the fix. Fixes that only a repository
 setting can make are prepared with evidence for the owner and are not applied."
 
-**Base**: `e1fc852` on `release/v0.6.21-acct-ci4` (32bb663 plus the failing policy tests of 050ed73).
+**Base**: `e1fc852` on `release/v0.6.21-acct-ci4` (32bb663 plus the failing policy tests of e1fc852).
 
 ## Clarifications
 
