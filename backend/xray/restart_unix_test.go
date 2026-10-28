@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,6 +114,24 @@ func waitUntil(t *testing.T, what string, condition func() bool) {
 	}
 }
 
+func healthLoopIsRestarting() bool {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	for stack := range strings.SplitSeq(string(buf), "\n\n") {
+		if strings.Contains(stack, ".(*Xray).checkXrayHealth") && strings.Contains(stack, ".(*Xray).restartCoreWithConfig") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSyncUsersDoesNotStartXrayAfterShutdown(t *testing.T) {
 	x := newFakeCoreXray(t, &fakeStatsService{})
 
@@ -121,7 +141,7 @@ func TestSyncUsersDoesNotStartXrayAfterShutdown(t *testing.T) {
 
 	x.Shutdown()
 
-	for start := time.Now(); time.Since(start) < 3*time.Second; time.Sleep(10 * time.Millisecond) {
+	for start := time.Now(); time.Since(start) < 15*time.Second; time.Sleep(10 * time.Millisecond) {
 		if x.core.Started() {
 			t.Fatal("the full-sync rollback started xray again after Shutdown")
 		}
@@ -132,7 +152,7 @@ func TestSyncUsersDoesNotStartXrayAfterShutdown(t *testing.T) {
 			t.Fatal("SyncUsers reported success after Shutdown")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("SyncUsers still running 10s after Shutdown")
+		t.Fatal("SyncUsers still running 25s after Shutdown")
 	}
 }
 
@@ -180,10 +200,11 @@ func TestHealthRestartLeavesACoreThatAFullSyncReplaced(t *testing.T) {
 		x.syncMu.Unlock()
 		t.Fatal("the health loop sent no probe")
 	}
-	time.Sleep(300 * time.Millisecond)
-	if x.core.Started() {
-		x.syncMu.Unlock()
-		t.Fatal("the health loop restarted xray while a full sync held syncMu")
+	for start := time.Now(); time.Since(start) < 5*time.Second; time.Sleep(20 * time.Millisecond) {
+		if x.core.Started() || healthLoopIsRestarting() {
+			x.syncMu.Unlock()
+			t.Fatal("the health loop restarted xray while a full sync held syncMu")
+		}
 	}
 
 	if err := x.restartCoreWithConfig(x.config); err != nil {
