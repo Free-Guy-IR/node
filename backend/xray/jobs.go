@@ -92,16 +92,15 @@ func (x *Xray) checkXrayHealth(baseCtx context.Context) {
 		if tail := x.core.RuntimeLogTail(10); len(tail) > 0 {
 			log.Printf("last %d xray log lines before restart:\n%s", len(tail), strings.Join(tail, "\n"))
 		}
-		restarted, err := x.RestartUnlessReplaced(observed)
+		restarted, err := x.RestartUnlessReplaced(baseCtx, observed)
+		consecutiveFailures = 0
 		switch {
 		case err != nil:
 			log.Println(err.Error())
 		case !restarted:
-			log.Println("a user sync already replaced the core, health restart skipped")
-			consecutiveFailures = 0
+			log.Println("a user sync replaced the core or it answers again, health restart skipped")
 		default:
 			log.Println("xray restarted")
-			consecutiveFailures = 0
 		}
 	}
 
@@ -117,12 +116,8 @@ func (x *Xray) checkXrayHealth(baseCtx context.Context) {
 			}
 
 			observed := x.core.state.Load()
-			ctx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
-			_, err := x.GetSysStats(ctx)
-			cancel()
-
-			if err != nil {
-				if errors.Is(err, context.Canceled) {
+			if err := x.probe(baseCtx); err != nil {
+				if baseCtx.Err() != nil {
 					return
 				}
 

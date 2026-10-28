@@ -291,7 +291,7 @@ func TestAHealthRestartThatCancelledASyncRestartsEvenIfTheCoreWasReplaced(t *tes
 		t.Fatal("the user sync never reached the core")
 	}
 
-	restarted, err := h.x.RestartUnlessReplaced(observed)
+	restarted, err := h.x.RestartUnlessReplaced(context.Background(), observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestAHealthRestartStillRestartsACoreThatWasStoppedOrNeverReplaced(t *testin
 	h := newRestartHarness(t, syncTestInbounds)
 
 	observed := h.x.core.state.Load()
-	restarted, err := h.x.RestartUnlessReplaced(observed)
+	restarted, err := h.x.RestartUnlessReplaced(context.Background(), observed)
 	if err != nil || !restarted {
 		t.Fatalf("a health restart of a core nobody replaced returned restarted=%v err=%v", restarted, err)
 	}
@@ -319,7 +319,7 @@ func TestAHealthRestartStillRestartsACoreThatWasStoppedOrNeverReplaced(t *testin
 
 	observed = h.x.core.state.Load()
 	h.x.core.Stop()
-	restarted, err = h.x.RestartUnlessReplaced(observed)
+	restarted, err = h.x.RestartUnlessReplaced(context.Background(), observed)
 	if err != nil || !restarted {
 		t.Fatalf("a health restart of a core that was stopped meanwhile returned restarted=%v err=%v", restarted, err)
 	}
@@ -332,7 +332,7 @@ func TestAHealthRestartStillRestartsACoreThatWasStoppedOrNeverReplaced(t *testin
 		t.Fatal(err)
 	}
 	replaced := h.x.core.state.Load()
-	restarted, err = h.x.RestartUnlessReplaced(observed)
+	restarted, err = h.x.RestartUnlessReplaced(context.Background(), observed)
 	if err != nil || restarted {
 		t.Fatalf("a health restart of a core that was already replaced and runs returned restarted=%v err=%v", restarted, err)
 	}

@@ -140,12 +140,27 @@ func revokeInboundUser(ctx context.Context, handler *api.XrayHandler, tag, email
 	return fmt.Errorf("revoke %s on %s: %w", email, tag, err)
 }
 
-func (x *Xray) lockSync(ctx context.Context) func() {
-	x.syncMu.Lock()
+func (x *Xray) lockSync(ctx context.Context) (func(), error) {
+	locked := make(chan struct{})
+	go func() {
+		x.syncMu.Lock()
+		close(locked)
+	}()
+
+	select {
+	case <-locked:
+	case <-ctx.Done():
+		go func() {
+			<-locked
+			x.syncMu.Unlock()
+		}()
+		return nil, ctx.Err()
+	}
+
 	if x.syncEntered != nil {
 		x.syncEntered(ctx)
 	}
-	return x.syncMu.Unlock
+	return x.syncMu.Unlock, nil
 }
 
 type userSync struct {
@@ -168,8 +183,16 @@ func abortedForRestart(ctx context.Context) bool {
 	return errors.Is(context.Cause(ctx), errSyncAbortedForRestart)
 }
 
-func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func()) {
-	unlock := x.lockSync(ctx)
+func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func(), error) {
+	unlock, err := x.lockSync(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return nil, nil, err
+	}
+
 	holder := &userSync{}
 	holder.progress.Store(time.Now().UnixNano())
 	syncCtx, cancel := context.WithCancelCause(ctx)
@@ -188,7 +211,7 @@ func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func()) {
 		x.holderMu.Unlock()
 		cancel(nil)
 		unlock()
-	}
+	}, nil
 }
 
 func (x *Xray) stuckSyncLimit() time.Duration {
@@ -218,7 +241,10 @@ func (x *Xray) abortStuckUserSync() bool {
 
 func (x *Xray) lockSyncForRestart() (func(), bool) {
 	locked := make(chan func(), 1)
-	go func() { locked <- x.lockSync(context.Background()) }()
+	go func() {
+		unlock, _ := x.lockSync(context.Background())
+		locked <- unlock
+	}()
 
 	ticker := time.NewTicker(stuckSyncPoll)
 	defer ticker.Stop()
@@ -276,7 +302,10 @@ func revokeLeavingUser(ctx context.Context, handler *api.XrayHandler, inbound *I
 }
 
 func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
-	ctx, unlock := x.lockUserSync(ctx)
+	ctx, unlock, err := x.lockUserSync(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	proxySetting, err := setupUserAccount(user)
@@ -317,7 +346,10 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
-	ctx, unlock := x.lockUserSync(ctx)
+	ctx, unlock, err := x.lockUserSync(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	candidate, err := x.config.Clone()
@@ -372,7 +404,10 @@ func (x *Xray) restorePreviousConfig(previous *Config) error {
 }
 
 func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
-	ctx, unlock := x.lockUserSync(ctx)
+	ctx, unlock, err := x.lockUserSync(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	handler := x.handler
@@ -411,7 +446,10 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 }
 
 func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
-	ctx, unlock := x.lockUserSync(ctx)
+	ctx, unlock, err := x.lockUserSync(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	candidate, err := x.config.Clone()

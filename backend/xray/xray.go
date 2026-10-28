@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"sync"
@@ -34,8 +35,10 @@ type Xray struct {
 var errShutDown = errors.New("xray has been shut down")
 
 const (
-	defaultStuckGrace = 60 * time.Second
-	stuckSyncPoll     = 250 * time.Millisecond
+	defaultStuckGrace   = 60 * time.Second
+	stuckSyncPoll       = 250 * time.Millisecond
+	restartReadyTimeout = 30 * time.Second
+	healthProbeTimeout  = 3 * time.Second
 )
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
@@ -134,16 +137,44 @@ func (x *Xray) Started() bool {
 func (x *Xray) Restart() error {
 	unlock, _ := x.lockSyncForRestart()
 	defer unlock()
-	return x.restartCoreWithConfig(x.activeConfig())
+	return x.restartLocked(context.Background())
 }
 
-func (x *Xray) RestartUnlessReplaced(observed *coreState) (bool, error) {
+func (x *Xray) RestartUnlessReplaced(ctx context.Context, observed *coreState) (bool, error) {
 	unlock, cancelledSync := x.lockSyncForRestart()
 	defer unlock()
-	if current := x.core.state.Load(); !cancelledSync && current != observed && startedFromState(current) {
+	if !cancelledSync && x.coreServesSince(ctx, observed) {
 		return false, nil
 	}
-	return true, x.restartCoreWithConfig(x.activeConfig())
+	return true, x.restartLocked(ctx)
+}
+
+func (x *Xray) coreServesSince(ctx context.Context, observed *coreState) bool {
+	current := x.core.state.Load()
+	if !startedFromState(current) {
+		return false
+	}
+	return current != observed || x.probe(ctx) == nil
+}
+
+func (x *Xray) probe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+	defer cancel()
+	_, err := x.GetSysStats(ctx)
+	return err
+}
+
+func (x *Xray) restartLocked(ctx context.Context) error {
+	if err := x.restartCoreWithConfig(x.activeConfig()); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, restartReadyTimeout)
+	defer cancel()
+	if err := x.checkXrayStatus(ctx); err != nil {
+		return fmt.Errorf("xray API not ready within %s after restart: %w", restartReadyTimeout, err)
+	}
+	return nil
 }
 
 func (x *Xray) restartCoreWithConfig(config *Config) error {
