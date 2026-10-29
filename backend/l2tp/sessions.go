@@ -87,9 +87,7 @@ func scanSessions(tag string) sessionScan {
 	var scan sessionScan
 	entries, err := listDir(sessionStateDir)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			scan.listErr = err
-		}
+		scan.listErr = err
 		return scan
 	}
 	for _, e := range entries {
@@ -186,9 +184,7 @@ func scanFinalRecords(tag string) finalScan {
 	var scan finalScan
 	entries, err := listDir(sessionFinalDir)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			scan.listErr = err
-		}
+		scan.listErr = err
 		return scan
 	}
 	scan.records = make([]finalRecord, 0, len(entries))

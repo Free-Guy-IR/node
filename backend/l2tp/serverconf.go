@@ -228,6 +228,10 @@ func (o *L2TP) writeIPScripts() error {
 			return err
 		}
 	}
+	return makeRunDirs()
+}
+
+func makeRunDirs() error {
 	for _, dir := range []string{sessionFinalDir, pppdRecordDir, sessionStateDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err

@@ -1,6 +1,7 @@
 package l2tp
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 
@@ -49,6 +50,9 @@ func (o *L2TP) depositHandOver(h *accountingHandOver) {
 }
 
 func (o *L2TP) startWithAccounting(start func() error) error {
+	if err := makeRunDirs(); err != nil {
+		return fmt.Errorf("create l2tp run directories: %w", err)
+	}
 	taken := takeHandOver(o.config.InboundTag)
 	o.mu.Lock()
 	if taken != nil {
