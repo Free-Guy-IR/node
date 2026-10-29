@@ -22,3 +22,4 @@ image or repository setting change.
 - [ ] T015 [VD-1] `make test-drift` step in `repo-hygiene`, `test-drift` declared phony, `scripts/workflow_gates.lock` regenerated with `scripts/workflowgate`
 - [ ] T016 [VD-1] RED: `workflowgate steps` exports each job's `runs-on` and `timeout-minutes`, and the step test requires `repo-hygiene` to run on `ubuntu-24.04` with a numeric `timeout-minutes` from 1 to 30
 - [ ] T017 [VD-1] `repo-hygiene` gets `runs-on: ubuntu-24.04` and `timeout-minutes: 30`, `scripts/workflow_gates.lock` regenerated
+- [ ] T024 [UBU2604-WG] The WireGuard E2E client key is written under `/etc/wireguard`, the only key path the AppArmor profile `wg` that Ubuntu 26.04 ships for `/usr/bin/wg` allows (`file rw @{etc_rw}/wireguard/{,**}`); a key under `/tmp` is refused with `fopen: Permission denied` on `ubuntu-latest` 26.04 runners. GREEN is the `wireguard-integration` job on a 26.04 runner
