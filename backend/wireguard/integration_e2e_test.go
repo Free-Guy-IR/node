@@ -185,7 +185,9 @@ func wireGuardServerPublicKey(t *testing.T, wg *WireGuard) string {
 func startWGHTTPServerAtIP(t *testing.T, serverIP string) string {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", net.JoinHostPort(serverIP, "0"))
+	listener, err := listenWhenAddressReady(func() (net.Listener, error) {
+		return net.Listen("tcp", net.JoinHostPort(serverIP, "0"))
+	}, addressReadyDeadline)
 	if err != nil {
 		t.Fatalf("failed to start test webserver on %s: %v", serverIP, err)
 	}
