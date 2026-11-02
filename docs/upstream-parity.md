@@ -13,14 +13,18 @@ reason. An item is any of these:
 
 State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-checked on 2026-10-07 (see
 [Node state on 2026-10-07](#node-state-on-2026-10-07)) and on 2026-10-10 (see
-[Node state on 2026-10-10](#node-state-on-2026-10-10)); the third-party sections still describe 2026-09-24.
+[Node state on 2026-10-10](#node-state-on-2026-10-10)). On 2026-11-02 all five sections were re-checked against the
+upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older state sections are kept as history.
 
 ## Fork point
 
 - The fork merged upstream tag `v0.5.4` (`e9a9ba286413c404854b80c847b588b620426660`) in `9267b04`
   ("merge upstream PasarGuard/node v0.5.4 into fork", 2026-08-31). Everything reachable from `v0.5.4` is therefore in
   the fork's history.
-- Upstream `main` has no commit after `v0.5.4`. All later upstream work is on `dev`.
+- On 2026-10-10 upstream `main` was still at `v0.5.4`. Upstream has since released `v0.5.5`
+  (`47857d43fe777f30f9ecc5f2ffe4ca0b037507cb`, 2026-10-22) and `v0.5.6` (`675bdaa24a3a67847f2094e518f1ae4d8460aa01`,
+  2026-10-27) from `dev`, and on 2026-11-02 `main` is at `v0.5.6`. The fork has not merged either tag: their commits
+  are ported one by one, or waived, in the table below and in `.github/upstream-waivers.txt`.
 - The other upstream branches are merged or open pull-request branches. They are listed in
   [Other upstream branches](#other-upstream-branches).
 
@@ -45,6 +49,9 @@ State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-check
 | `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `bb210c9`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
+| `03f66e9b4817a961d3085134b3e1d532fd57862d` | deps: grpc 1.84.0 to 1.85.0 (#122) | on upstream `dev` only, in no tag (2026-11-02). Held under the release-only rule and waived as `pending` until 2026-11-30; the waiver says `dev-only`, so the check turns it `UNPORTED` the day an upstream tag contains it. See [State on 2026-11-02](#state-on-2026-11-02) |
+| `68e84193ace5216cbe8faf572fa3533402005cb2` | deps: gopsutil 4.26.9 to 4.26.10 (#121) | on upstream `dev` only, in no tag (2026-11-02). Held and waived like #122 |
+| `ebb0d02944bdf4f7166819d31466a224f0daf7e2` | fix(wireguard): fix apparmor permission denied in e2e tests | on upstream `dev` only, in no tag (2026-11-02). Superseded, waived: the fork fixed the same failure in `b8679894` four days earlier; the AppArmor-unloading half is not taken. See [State on 2026-11-02](#state-on-2026-11-02) |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
@@ -186,21 +193,24 @@ Other open upstream work that was reviewed:
 ## Other upstream branches
 
 The drift check reads every PasarGuard/node branch and tag, not only `main` and `dev`. On 2026-10-07 the branches were
-as below; on 2026-10-10 only `dev` had moved, to `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` (#99).
+as below; on 2026-10-10 only `dev` had moved, to `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` (#99). On 2026-11-02 only
+`main`, `dev`, `chunck`, `debug` and `pr-61` exist; the heads of that day are in the table, and the branches deleted
+since are marked.
 
 | branch | head | status in the fork |
 |---|---|---|
-| `main` | `e9a9ba286413c404854b80c847b588b620426660` | merged (`v0.5.4`) |
-| `dev` | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` (2026-10-10; `7be885ff5410ac7fdb92fa21cf7901a416be5f05` on 2026-10-07) | see the table above |
-| `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` | fully in the fork's history, nothing to list |
+| `main` | `675bdaa24a3a67847f2094e518f1ae4d8460aa01` (`v0.5.6`, 2026-11-02; `e9a9ba286413c404854b80c847b588b620426660`, `v0.5.4`, on 2026-10-10) | `v0.5.4` merged; the `v0.5.5` and `v0.5.6` commits are ported or waived one by one |
+| `dev` | `ebb0d02944bdf4f7166819d31466a224f0daf7e2` (2026-11-02; `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` on 2026-10-10; `7be885ff5410ac7fdb92fa21cf7901a416be5f05` on 2026-10-07) | see the table above |
+| `api-key` | `11baa23f1caf1173907ba7cb6dc963c5db660bad` (deleted upstream by 2026-11-02) | fully in the fork's history, nothing to list |
 | `chunck` | `c194114eb1971d2e252fa1d117d655122c356d35` | `c194114` is a branch-only prototype; upstream squash-merged chunked user sync as `4f8568b` (#23), which the fork has. Superseded, waived |
 | `debug` | `8047fad98ec7e9955a405a97bf90a2411d8d6678` | `af0846e` and `8047fad` add diagnostic logging and were never merged upstream. Not applicable, waived |
-| `fix/xray-api` | `d09e5064d02555735ee815c8483dc88c42a8f669` | `2ae8ca9` and `d09e506` are pre-squash commits of `2cecc87` (#31), which the fork has. Superseded, waived |
-| `refactor/inbound-map-storage` | `72f7b4f0d0acde96cc642d2dd73defe5540921e6` | `0c44dc6` and `72f7b4f` are pre-squash commits of `c3f9e61` (#24), which the fork has. Superseded, waived |
+| `fix/xray-api` | `d09e5064d02555735ee815c8483dc88c42a8f669` (deleted upstream by 2026-11-02) | `2ae8ca9` and `d09e506` are pre-squash commits of `2cecc87` (#31), which the fork has. They were waived as superseded; no upstream ref reaches them any more, so the run of 2026-11-02 matched nothing for them and their waivers were removed |
+| `refactor/inbound-map-storage` | `72f7b4f0d0acde96cc642d2dd73defe5540921e6` (deleted upstream by 2026-11-02) | `0c44dc6` and `72f7b4f` are pre-squash commits of `c3f9e61` (#24), which the fork has. Waived as superseded until 2026-11-02, when their waivers were removed for the same reason |
 | `pr-61` | `4eb26fbd00387c88a4bcaf5c1d9e9e8dc4604b62` | 15 commits of the open PR #61. Rejected, waived (see below) |
-| `masque` | `b7442879ef0f67b692474e0e668d65f29df8de49` | new on 2026-10-01, an open feature branch that is not on `dev`. `243b818` adds a MASQUE proxy type with new panel-node fields in `common/service.proto`; `f0877ce` moves xray-core to the `v26.9.30` prerelease for native MASQUE accounts; `b744287` merges `dev` into it, and its own changes are the `go.mod`/`go.sum` resolution. Not ported: it changes the panel-node protocol and needs an Xray pin move past the fork's patched `v26.3.27`. Waived as `pending` until 2026-11-06, so the check fails again if it is not decided by then |
+| `masque` | `b7442879ef0f67b692474e0e668d65f29df8de49` (deleted upstream by 2026-11-02) | new on 2026-10-01, a feature branch that was not on `dev`. `243b818` adds a MASQUE proxy type with new panel-node fields in `common/service.proto`; `f0877ce` moves xray-core to the `v26.9.30` prerelease for native MASQUE accounts; `b744287` merges `dev` into it. Upstream squash-merged the branch as `88d5e75db621` (#96, "add Masque proxy support"; its message lists both commits), released it in `v0.5.6` and deleted the branch. The three branch waivers (`pending` until 2026-11-06) matched nothing on 2026-11-02 and were removed; the feature is tracked by the `pending` waiver of `88d5e75` (until 2026-11-20, owned by NODE-SYNC-055, ported with the Xray pin move) |
 
-All 42 upstream tags, `v0.0.1` to `v0.5.4`, are in the fork's history.
+Of the 44 upstream tags on 2026-11-02, the 42 from `v0.0.1` to `v0.5.4` are in the fork's history. `v0.5.5` and `v0.5.6`
+are not merged; their commits are ported or waived one by one.
 
 PR #61, "add MTProto proxy backend via telemt", is open and not merged. It adds `MTPROTO = 2` to `BackendType` and a
 telemt-based backend. The fork already ships its own MTProto backend on its mtg fork as `MTPROTO = 4`
@@ -543,6 +553,70 @@ The one new upstream commit is `f72ac0e` (#99) on `dev`. It is ported:
   host is not done for a test; the `wireguard-integration` job of `run-tests.yml` runs them on GitHub's runner.
 - **Drift check.** `DRIFT_COMPONENTS=node` reports `f72ac0e` as `UNPORTED` on `8959c50` (exit 1) and as `PORTED` on
   `4f0bbc5`, with 0 unported items.
+
+### State on 2026-11-02
+
+The scheduled drift run 41444668606 (job 125274699079) on `main` `b8679894` failed with 12 unported items. A full run of all five sections
+on node `0dce28fd` the same day, with a fresh fetch, found 15: three new commits on upstream node `dev`, eleven Xray TUN
+inbound commits and the Xray release `v26.10.31`. After the waiver changes below the same run exits 0 with
+`upstream-drift: 0 unported items across [node xray sing-box sing-quic mtg]` and prints no stale-waiver note.
+
+Heads checked on 2026-11-02 (the drift check's own fetch, `git ls-remote` and the GitHub releases API):
+
+- PasarGuard/node: `main` `675bdaa24a3a67847f2094e518f1ae4d8460aa01` (`v0.5.6`, the newest of 44 tags and the newest
+  GitHub release, published 2026-10-27; `v0.5.5` is `47857d43fe777f30f9ecc5f2ffe4ca0b037507cb`), `dev`
+  `ebb0d02944bdf4f7166819d31466a224f0daf7e2`, `chunck` `c194114eb1971d2e252fa1d117d655122c356d35`, `debug`
+  `8047fad98ec7e9955a405a97bf90a2411d8d6678`, `pr-61` `4eb26fbd00387c88a4bcaf5c1d9e9e8dc4604b62`. `api-key`, `fix/xray-api`,
+  `refactor/inbound-map-storage` and `masque` no longer exist.
+- XTLS/Xray-core: `main` `7c8dbcb4bbec7f80d16070069e0b2f7bf3aca62c` and 83 branches active since the pin; the newest
+  release is `v26.10.31` `a4a3dff5b20c2faae567b742c172c7b95e75c083`, a final release published 2026-10-31. Upstream
+  deleted the tags `v26.9.8` (`37ceb8b`), `v26.10.10` (`701af60`), `v26.10.17` (`92ccc93`) and `v26.10.29` (`0afec66`);
+  their commits are in `v26.10.21` and `v26.10.31`, which stay waived.
+- SagerNet/sing-box: `oldstable` `78d3eeedacdda487eca7f2793e29973cb2f8a86c` and 8 active branches; `stable`
+  `c005f35300ce76427dc285481ec5695f5b179cd2` is `v1.14.4`, the newest final tag.
+- SagerNet/sing-quic: `main` `7e0a5869a5f49ed0a685143345dfda0448bbc708`; the newest final tag is `v0.7.1`
+  `8601a428f4db7fc011b3656080bf4c428ca62417`.
+- 9seconds/mtg: `master` `2026e32e229f88ccb20831edc4874213e42d9e65`; no release after the pin.
+
+Counts of the passing run: node 57 upstream commits outside the target (13 ported, 1 empty, 43 waived), 5 allowed fork
+entries and 5 allowed rewritten merges, 1 waived upstream merge; xray 56 security-looking commits and 15 releases;
+sing-box 27 and 11; sing-quic 5 and 4; mtg 1 and 0; one xray and one sing-box advisory.
+
+New items and their decisions:
+
+| item | decision | evidence |
+|---|---|---|
+| node `03f66e9b4817a961d3085134b3e1d532fd57862d` (#122, grpc 1.85.0) and `68e84193ace5216cbe8faf572fa3533402005cb2` (#121, gopsutil 4.26.10) | `pending` until 2026-11-30, held under the release-only rule | dependabot bumps of `go.mod` and `go.sum` only, on `dev` and in no tag. The reason says `dev-only`, so the check turns each one `UNPORTED` the day an upstream tag contains it, and it is then ported. govulncheck v1.8.0 (database of 2026-10-27) lists no grpc or gopsutil id for the node module |
+| node `ebb0d02944bdf4f7166819d31466a224f0daf7e2` (WireGuard E2E AppArmor) | `superseded` | the fork fixed the same Ubuntu 26.04 `wg` profile denial in `b8679894` on 2026-10-29 by writing the client key under `/etc/wireguard`; with it the three E2E sync tests pass on ubuntu-latest (job 123832855477, no `Permission denied`). Upstream's other half unloads the `wg` and `wg-quick` AppArmor profiles from `TestMain` and from `make install_wg`; it is not taken, because it weakens the host's confinement and the fork's fix needs none of it |
+| Xray `96387150473461be90372fb1a217bbcda3f47b5f`, `6b45eadf45790cd1a656a5156c496f877d4893af`, `c684201cd86db483eef5d9765c39446418d0ec9d`, `2218fec1735ce5bc9af389352e5ac901b0270c65`, `9ffa0f0552bcda4e6b3166282940db83cfde788b`, `2933b0c8d5dbc0b95752f79e73029149b57b6852`, `bb4cd4b6d38101b62ee0b92bfd399b8d99a377b2`, `468f745fc28f61a50ddc7a666b7a1f852a05a2d5` | `not-applicable`, `branch:windows-tun-wfp-all` | the eight commits of branch `windows-tun-wfp-all` (head `9638715`), matched on the word leak in `autoSystemWfpBlockLeak`. Each touches only `proxy/tun` (the Windows WFP filters in `tun_windows*.go`, the option's value parser `wfp_leak.go`, the README) and the TUN config parser `infra/conf/tun.go`, with their tests. The option came after the pin with `1f30491`; at `v26.3.27` `proxy/tun` has no WFP file and neither `infra/conf/tun.go` nor `proxy/tun/config.proto` knows the option. The node image runs Linux and `backend/xray` never emits a tun inbound |
+| Xray `6cdd323ad82fe21bb9c1d06e6a5c5f909de2ffaf` (#7288) | `not-applicable` | the same TUN option, merged into `main` and released in `v26.10.31`, so it has no branch scope |
+| Xray `f2f292c90ce100093cfad5849bafadd49e873d26` and `266df8c6448ba01709be0dae7bb2ede6d258f756` | `superseded`, `branch:windows-tun-wfp-ports` | the two commits of branch `windows-tun-wfp-ports`, squash-merged as `6cdd323`. The tip `266df8c` equals `6cdd323` in every file the branch touches; the one `proxy/tun` difference, `config.pb.go`, comes from `main`'s regeneration `d1140de` and differs the same way between their parents `0afec66` and `316e07a` |
+| Xray release `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) | `pending` until 2026-11-20, in the same form as `v26.10.21` | 29 non-merge commits after `v26.10.21`; the only security-looking one is `6cdd323`. Its HTTP inbound change `bc7c895` (#7298) edits `proxy/http/server.go`, which `xray-http-100-continue.patch` also changes, and is to be checked against that patch at the pin move |
+
+Waivers removed because the run matched nothing for them (the check's own instruction):
+
+- node `2ae8ca9`, `d09e506` (`fix/xray-api`), `0c44dc6`, `72f7b4f` (`refactor/inbound-map-storage`) and `243b818`,
+  `f0877ce`, `b744287` (`masque`): their branches were deleted and no upstream ref reaches them (checked with
+  `git for-each-ref --contains` against every fetched head and tag). The masque work is tracked by `88d5e75`, above.
+- node `3a3d5c5` and `f72ac0e`: the check marks both `PORTED` by the trailers of `53044cc` and of `bbc488e` and
+  `cbb63a0`, so their `pending` waivers were no longer needed.
+- Xray `37ceb8b`, `701af60` and `92ccc93`: release waivers of the tags `v26.9.8`, `v26.10.10` and `v26.10.17`, which
+  upstream deleted. Their commits are in `v26.10.21` and `v26.10.31`. The fixes their reasons named keep their own
+  waivers: `7da5dae`, `eddad37`, `00cde72` and `ac5d8a8`.
+- Xray `b291961` (`privateip`) and `72b4d0c` (`limit-geodata-downloader`, "pb bypass"): both branches were deleted.
+  The `infra/conf/xray.go` hunk of `b291961` is the same as that of `43c29f8` (#7249), and the `app/geodata` checks of
+  `72b4d0c` are carried by `48f62b8` (#7267); both are on `main` and in `v26.10.31`, whose waiver names them. Neither
+  is reachable at the pin: `requiresTransportSecurity` came with `d7fa207`, and `app/geodata` and
+  `infra/conf/geodata.go` do not exist in `v26.3.27`. That closes the reachability question that NODE-MISC-UPX held
+  them for.
+
+Pending waivers that fall due soon (none is extended here):
+
+- 2026-11-06: the three `masque` waivers, removed above, so nothing falls due that day.
+- 2026-11-08: ten node `v0.5.5` items, `47857d4` (the version bump), `24e2b12`, `bb40094`, `8ad52fe`, `71466f2`,
+  `946ab6a`, `d309483`, `1549c96`, `bd745b5` and `d359a8f`, owned by NODE-SYNC-055 and NODE-XRAY-RACE.
+- 2026-11-10: node `a3d2d2f` (NODE-WG) and `33ab5fb` (NODE-SYNC-055 and NODE-XRAY-RACE), and Xray `8d0a7cf` (the
+  SS2022 races on branch `ss2022`, a decision owed by NODE-MISC-UPX).
 
 ### govulncheck on the patched Xray build
 
