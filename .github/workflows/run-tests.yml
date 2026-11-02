@@ -175,11 +175,16 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
+      - name: Test the govulncheck waiver gate
+        run: bash scripts/test_govulncheck_gate.sh
+
       - name: Fail on reachable vulnerabilities
         env:
           GOOS: linux
           GOARCH: amd64
-        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
+        run: |
+          "$(go env GOPATH)/bin/govulncheck" -format json ./... > "$RUNNER_TEMP/govulncheck.json"
+          python3 scripts/govulncheck_gate.py .github/govulncheck-waivers.txt "$RUNNER_TEMP/govulncheck.json"
 
   mtproto-fronting:
     runs-on: ubuntu-latest

@@ -201,6 +201,7 @@ must_refuse "local composite action" upstream-drift.yml \
   $'        uses: actions/checkout@v7\n' $'        uses: ./.github/actions/checkout\n'
 
 for owned in /.github/workflows/ /.github/actions/ /.github/CODEOWNERS /.github/upstream-waivers.txt \
+  /.github/govulncheck-waivers.txt /scripts/govulncheck_gate.py /scripts/test_govulncheck_gate.sh \
   /scripts/workflow_policy.sh /scripts/workflowgate/ /scripts/workflow_gates.lock /scripts/image_tag_policy.sh \
   /scripts/upstream_drift.sh /scripts/test_workflow_policy.sh /scripts/test_image_tag_policy.sh \
   /scripts/test_workflow_steps.sh /scripts/release_tag_commit.sh; do

@@ -2,6 +2,9 @@
 /.github/actions/ @Free-Guy-IR
 /.github/CODEOWNERS @Free-Guy-IR
 /.github/upstream-waivers.txt @Free-Guy-IR
+/.github/govulncheck-waivers.txt @Free-Guy-IR
+/scripts/govulncheck_gate.py @Free-Guy-IR
+/scripts/test_govulncheck_gate.sh @Free-Guy-IR
 /scripts/workflow_policy.sh @Free-Guy-IR
 /scripts/workflowgate/ @Free-Guy-IR
 /scripts/workflow_gates.lock @Free-Guy-IR
