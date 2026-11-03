@@ -194,10 +194,19 @@ func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func(), error
 		return nil, nil, err
 	}
 
+	abortParent := backend.SyncAbort(ctx)
+	if abortParent == nil {
+		abortParent = context.Background()
+	}
+	abort, cancelAbort := context.WithCancelCause(abortParent)
+	syncCtx, cancelSync := context.WithCancelCause(backend.WithSyncAbort(ctx, abort))
+
 	holder := &userSync{}
 	holder.progress.Store(time.Now().UnixNano())
-	syncCtx, cancel := context.WithCancelCause(ctx)
-	holder.cancel = cancel
+	holder.cancel = func(cause error) {
+		cancelSync(cause)
+		cancelAbort(cause)
+	}
 	syncCtx = context.WithValue(syncCtx, syncHolderKey{}, holder)
 
 	x.holderMu.Lock()
@@ -210,7 +219,8 @@ func (x *Xray) lockUserSync(ctx context.Context) (context.Context, func(), error
 			x.syncHolder = nil
 		}
 		x.holderMu.Unlock()
-		cancel(nil)
+		cancelSync(nil)
+		cancelAbort(nil)
 		unlock()
 	}, nil
 }
