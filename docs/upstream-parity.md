@@ -611,6 +611,10 @@ Waivers removed because the run matched nothing for them (the check's own instru
   `git for-each-ref --contains` against every fetched head and tag). The masque work is tracked by `88d5e75`, above.
 - node `3a3d5c5` and `f72ac0e`: the check marks both `PORTED` by the trailers of `53044cc` and of `bbc488e` and
   `cbb63a0`, so their `pending` waivers were no longer needed.
+- node `24e2b12` (#55) and `a3d2d2f` (#101): the check marks both `PORTED` by the cherry-pick trailers of `38744465`
+  and `3998a572` on main, so their `pending` waivers were no longer needed (2026-11-04). On the same day the `v0.5.6`
+  version bump `675bdaa` moved from `pending` to `not-applicable`, like `47857d4` and `739eab9`, to match the panel's
+  `upstream-forks/node.md`.
 - Xray `37ceb8b`, `701af60` and `92ccc93`: release waivers of the tags `v26.9.8`, `v26.10.10` and `v26.10.17`, which
   upstream deleted. Their commits are in `v26.10.21` and `v26.10.31`. The fixes their reasons named keep their own
   waivers: `7da5dae`, `eddad37`, `00cde72` and `ac5d8a8`.
