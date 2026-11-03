@@ -253,7 +253,7 @@ The script reads every pin from the checked commit, never from a hardcoded value
 | component | upstream | pin read from | pin on 2026-11-03 | line branch |
 |---|---|---|---|---|
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
-| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `3f35dc15e0b4` | `oldstable` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `899005e1b8bf` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
 | `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `7d0f004a01dd`) | `master` |
 
@@ -730,6 +730,26 @@ behind 0, checked on 2026-11-03). None needs a node-side port: the node links th
 | `0df3d4d4227713e78b1538581a7b68f479ec9f4b` | an ordinary stop is not an accept-loop failure (`internal/cli/run_proxy.go`) | ancestor of `1563871b36dd` (ahead 88, behind 0) | not linked: mtg CLI only; the node's own stop and accept-loop supervision is `backend/mtproto/supervise.go` |
 | `27246c2a7e431b7d63ac0749fd1575a84e68c6b0` | preserve the v2 network constructor signature (`network/v2/network.go`) | ancestor of `1563871b36dd` (ahead 71, behind 0) | `network/v2`: `buildNetwork` in `backend/mtproto/mtproto.go` calls `networkv2.NewWithTCPNotSentLowat` with `DefaultTCPNotSentLowat` (`950d39a9`) |
 | `63049fa39c43cac9059343f8840fc75b4f9edd62` | preserve the sign of Telegram DC ids (`mtglib/obfuscation/handshake_frame.go`, `mtglib/proxy.go`) | ancestor of `1563871b36dd` (ahead 89, behind 0) | the `mtglib` handshake on every stream; behaviour change recorded in `950d39a9`: a dd (plain) media request for DC -N reaches Telegram as -N, so one node must pass a real-traffic media check through a dd link before the fleet rollout |
+
+### State on 2026-11-03: the sing-box pin moves to `899005e1b8bf`
+
+`SINGBOX_COMMIT` moves from `3f35dc15e0b408aa75343944a984a0c295b562d4` to
+`899005e1b8bf093c6bc9dd83dd8e147f6b02609b`, the head of Free-Guy-IR/sing-box `main` on 2026-11-03: 9 commits ahead of
+the old pin and 0 behind it (GitHub compare). `SINGBOX_VERSION` stays `v1.13.21`, and the fork's `go.mod` is unchanged,
+so sing-quic stays `v0.6.5`.
+
+- The 9 commits touch only `third_party/sing-vmess/vless`. Fork `c0ff5ba0281c` is a verbatim port of upstream
+  SagerNet/sing-vmess `a0c58542bd9d99b00ea0c3cfacce6f03cf8a4017` ("Fix vision close after direct write",
+  `vless/vision.go`, +12 -4): after a direct write, `VisionConn.Close` now closes the underlying `netConn` too. The
+  other 8 add `vision_close_test.go`, `vision_close_fill_unix_test.go` and `vision_close_fill_other_test.go`, which
+  cover Close after a direct write and Close with a write stuck on a real connection.
+- CI on the fork for `899005e1b8bf`: Fork Verify run `41631171010` and Fork Vulncheck run `41631171118`, both
+  `completed`/`success`.
+- The node commit that moves the pin carries `Upstream: a0c58542bd9d99b00ea0c3cfacce6f03cf8a4017`. The drift check
+  does not watch sing-vmess, so that line and this entry are its record.
+- F-VSB-1 is not fixed by this move: the fork's `go.mod` at `899005e1b8bf` still takes sing `v0.8.14`, sing-mux
+  `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`. It stays open, owned by NODE-LEAD, due
+  2026-11-20.
 
 ### govulncheck on the patched Xray build
 
