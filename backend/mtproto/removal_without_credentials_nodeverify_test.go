@@ -47,8 +47,8 @@ func nvMtprotoMember(email, secret string, inbounds ...string) *common.User {
 }
 
 func nvServes(b *Backend, username string) bool {
-	for _, inst := range b.instances {
-		if _, ok := b.secretsForInstance(inst.domain)[username]; ok {
+	for tag, inst := range b.instances {
+		if _, ok := b.secretsForInstance(tag, inst.domain)[username]; ok {
 			return true
 		}
 	}

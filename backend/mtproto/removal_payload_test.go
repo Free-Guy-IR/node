@@ -168,7 +168,7 @@ func TestPanelMainMtprotoRemovalsRacingReaddsAndFullSyncsLeaveNoStaleUserAndLose
 		}
 		storm.Go(func() {
 			for running() {
-				_ = backend.secretsForInstance("example.com")
+				_ = backend.secretsForInstance(removalTag, "example.com")
 				_, _ = backend.GetUserOnlineStats(ctx, removalAlice)
 			}
 		})

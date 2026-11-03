@@ -15,6 +15,7 @@ import (
 type secretEntry struct {
 	email    string
 	keyBytes [mtglib.SecretKeyLength]byte
+	inbounds map[string]struct{}
 }
 
 // mtprotoCredential extracts the (username, keyBytes) pair an MtprotoUser
@@ -63,6 +64,26 @@ func (b *Backend) revokeIdentity(user *common.User) []string {
 	return revoked
 }
 
+func inboundsLost(username string, before, after secretEntry) []sessionScope {
+	var lost []sessionScope
+	for tag := range before.inbounds {
+		if _, kept := after.inbounds[tag]; !kept {
+			lost = append(lost, sessionScope{tag: tag, username: username})
+		}
+	}
+	return lost
+}
+
+func inboundsLostBetween(before, after map[string]secretEntry) []sessionScope {
+	var lost []sessionScope
+	for username, entry := range before {
+		if next, ok := after[username]; ok && next.keyBytes == entry.keyBytes {
+			lost = append(lost, inboundsLost(username, entry, next)...)
+		}
+	}
+	return lost
+}
+
 func revokedBetween(before, after map[string]secretEntry) []string {
 	var revoked []string
 	for username, entry := range before {
@@ -73,13 +94,18 @@ func revokedBetween(before, after map[string]secretEntry) []string {
 	return revoked
 }
 
-func (b *Backend) wantsUser(user *common.User) bool {
+func (b *Backend) instanceTags(user *common.User) map[string]struct{} {
+	tags := make(map[string]struct{})
 	for _, tag := range user.GetInbounds() {
 		if _, ok := b.instances[tag]; ok {
-			return true
+			tags[tag] = struct{}{}
 		}
 	}
-	return false
+	return tags
+}
+
+func (b *Backend) wantsUser(user *common.User) bool {
+	return len(b.instanceTags(user)) > 0
 }
 
 // applyInitialUsers seeds Backend.secretsByID before any mtglib.Proxy is
@@ -90,10 +116,14 @@ func (b *Backend) applyInitialUsers(users []*common.User) {
 
 	for _, user := range users {
 		username, keyBytes, ok := mtprotoCredential(user)
-		if !ok || !b.wantsUser(user) {
+		if !ok {
 			continue
 		}
-		entries[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes}
+		tags := b.instanceTags(user)
+		if len(tags) == 0 {
+			continue
+		}
+		entries[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes, inbounds: tags}
 	}
 
 	b.mu.Lock()
@@ -105,12 +135,15 @@ func (b *Backend) applyInitialUsers(users []*common.User) {
 // bytes as every other instance, but this instance's own fake-TLS domain as
 // Host (Secret.Host is what a Telegram client validates SNI against, and it
 // travels inline inside the secret string itself - see mtglib/secret.go).
-func (b *Backend) secretsForInstance(domain string) map[string]mtglib.Secret {
+func (b *Backend) secretsForInstance(tag, domain string) map[string]mtglib.Secret {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	out := make(map[string]mtglib.Secret, len(b.secretsByID))
 	for username, entry := range b.secretsByID {
+		if _, on := entry.inbounds[tag]; !on {
+			continue
+		}
 		out[username] = mtglib.Secret{Key: entry.keyBytes, Host: domain}
 	}
 
@@ -143,7 +176,7 @@ func (b *Backend) pushSecretsToInstances() {
 		if inst.proxy == nil {
 			continue
 		}
-		inst.proxy.UpdateSecrets(b.secretsForInstance(inst.domain))
+		inst.proxy.UpdateSecrets(b.secretsForInstance(inst.tag, inst.domain))
 	}
 }
 
@@ -161,8 +194,9 @@ func (b *Backend) syncAllUsers(users []*common.User) {
 
 	b.mu.RLock()
 	revoked := revokedBetween(before, b.secretsByID)
+	lost := inboundsLostBetween(before, b.secretsByID)
 	b.mu.RUnlock()
-	liveSessionRegistry.revoke(revoked)
+	liveSessionRegistry.revokeScoped(revoked, lost)
 }
 
 // updateUsers incrementally upserts/removes the given users. A user with no
@@ -177,6 +211,7 @@ func (b *Backend) updateUsers(users []*common.User) {
 	defer b.userSyncMu.Unlock()
 
 	var revoked []string
+	var lost []sessionScope
 	b.mu.Lock()
 	if b.secretsByID == nil {
 		b.secretsByID = make(map[string]secretEntry)
@@ -188,22 +223,26 @@ func (b *Backend) updateUsers(users []*common.User) {
 			continue
 		}
 		previous, existed := b.secretsByID[username]
-		if !b.wantsUser(user) {
+		tags := b.instanceTags(user)
+		if len(tags) == 0 {
 			if existed {
 				revoked = append(revoked, username)
 			}
 			delete(b.secretsByID, username)
 			continue
 		}
+		next := secretEntry{email: user.GetEmail(), keyBytes: keyBytes, inbounds: tags}
 		if existed && previous.keyBytes != keyBytes {
 			revoked = append(revoked, username)
+		} else if existed {
+			lost = append(lost, inboundsLost(username, previous, next)...)
 		}
-		b.secretsByID[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes}
+		b.secretsByID[username] = next
 	}
 	b.mu.Unlock()
 
 	b.pushSecretsToInstances()
-	liveSessionRegistry.revoke(revoked)
+	liveSessionRegistry.revokeScoped(revoked, lost)
 }
 
 // removeUsers removes the given users' secrets, live.
