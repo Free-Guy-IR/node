@@ -75,6 +75,8 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
           provenance: mode=max
           sbom: true
           cache-from: type=gha
