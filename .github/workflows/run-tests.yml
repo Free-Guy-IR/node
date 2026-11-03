@@ -51,6 +51,28 @@ jobs:
       - name: Replay the image build's Xray patch guards
         run: make test_xray_guards XRAY_GUARD_SRC="$RUNNER_TEMP/xray-guard-src"
 
+      - name: Build the pinned sing-box the image ships
+        run: make build_singbox SINGBOX_SRC="$RUNNER_TEMP/sing-box-src" SINGBOX_OUTPUT="$RUNNER_TEMP/sing-box"
+
+      - name: Run the live sing-box Hysteria2 tests against the pinned build
+        env:
+          REQUIRED_TESTS: >-
+            TestLiveSmoke_SingBoxProcessStartsAndReportsStats
+            TestAnEmptyHysteria2PasswordIsNeverAccepted
+            TestSharedHysteria2PasswordBillsTheSameUserEveryTime
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/singbox-live.log"
+          read -r -a required <<< "${REQUIRED_TESTS}"
+          pattern="^($(IFS='|'; echo "${required[*]}"))\$"
+          SINGBOX_SMOKE_BINARY="$RUNNER_TEMP/sing-box" XRAY_EXECUTABLE_PATH=/usr/local/bin/xray CGO_ENABLED=1 go test -race -count=1 -timeout 10m -v -run "${pattern}" ./backend/singbox/ 2>&1 | tee "$log"
+          for name in "${required[@]}"; do
+            if ! grep -Eq "^--- PASS: ${name} \(" "$log"; then
+              echo "::error title=Required sing-box test did not pass::${name}"
+              exit 1
+            fi
+          done
+
       - name: install wg
         run: make install_wg
 

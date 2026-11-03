@@ -42,7 +42,7 @@ ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
 ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
-.PHONY: clean build build_xray test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift
+.PHONY: clean build build_xray build_singbox test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift
 
 build:
 	CGO_ENABLED=0 go build -o $(OUTPUT) $(PARAMS) $(MAIN)
@@ -155,6 +155,24 @@ build_xray:
 	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done
 	cd "$(XRAY_SRC)" && echo "xray $(XRAY_COMMIT) needs go $$(sed -n 's/^go //p' go.mod); building with $$(GOTOOLCHAIN=local go version)"
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$(XRAY_OUTPUT)" ./main
+
+SINGBOX_REPO ?= $(shell sed -n 's/^ARG SINGBOX_REPO=//p' Dockerfile)
+SINGBOX_COMMIT ?= $(shell sed -n 's/^ARG SINGBOX_COMMIT=//p' Dockerfile)
+SINGBOX_VERSION ?= $(shell sed -n 's/^ARG SINGBOX_VERSION=//p' Dockerfile)
+SINGBOX_TAGS ?= $(shell sed -n 's/^ARG SINGBOX_TAGS=//p' Dockerfile)
+SINGBOX_SRC ?= $(CURDIR)/sing-box-src
+SINGBOX_OUTPUT ?= $(SINGBOX_SRC)/sing-box
+
+build_singbox:
+	test -n "$(SINGBOX_REPO)" && test -n "$(SINGBOX_COMMIT)" && test -n "$(SINGBOX_VERSION)" && test -n "$(SINGBOX_TAGS)" && test -n "$(SINGBOX_SRC)"
+	rm -rf "$(SINGBOX_SRC)"
+	git init -q "$(SINGBOX_SRC)"
+	git -C "$(SINGBOX_SRC)" remote add origin $(SINGBOX_REPO)
+	git -C "$(SINGBOX_SRC)" fetch -q --depth 1 origin $(SINGBOX_COMMIT)
+	git -C "$(SINGBOX_SRC)" checkout -q FETCH_HEAD
+	test "$$(git -C "$(SINGBOX_SRC)" rev-parse HEAD)" = "$(SINGBOX_COMMIT)"
+	cd "$(SINGBOX_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -tags "$(SINGBOX_TAGS)" -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$(SINGBOX_VERSION)' -s -w -buildid=" -o "$(SINGBOX_OUTPUT)" ./cmd/sing-box
+	"$(SINGBOX_OUTPUT)" version
 
 XRAY_GUARD_SRC ?= $(CURDIR)/xray-guard-src
 

@@ -242,12 +242,12 @@ upstream months after our pin, and nothing had noticed them. The drift check the
 
 The script reads every pin from the checked commit, never from a hardcoded value, through the same Dockerfile reader as the xray build (so a declaration on a continuation line or behind a CRLF counts), and the way docker resolves it: from the `ARG` declaration in the stage that builds (`xray-builder` for `XRAY_COMMIT`, `singbox-builder` for the sing-box pins), falling back to a global declaration only when that stage declares the `ARG` without a value. Two declarations with a value in that stage, or two global ones it falls back to, stop the run with exit 2, and so does a Dockerfile in which that stage does not exist the way docker reads it (a continuation line can swallow its `FROM`):
 
-| component | upstream | pin read from | pin on 2026-09-24 | line branch |
+| component | upstream | pin read from | pin on 2026-11-03 | line branch |
 |---|---|---|---|---|
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
-| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.14` (`25a600db24f7`) | `oldstable` |
-| `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.1` (`907fec5e8e6b`) | `main` |
-| `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `c543d656a39a`) | `master` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `3f35dc15e0b4` | `oldstable` |
+| `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
+| `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `7d0f004a01dd`) | `master` |
 
 Three rules keep the pins honest:
 
@@ -623,6 +623,55 @@ Pending waivers that fall due soon (none is extended here):
 - 2026-11-10: node `a3d2d2f` (NODE-WG) and `33ab5fb` (#58, NODE-LEAD: partly ported on main by `797adcf0`,
   `9c99b8a1` and `83932cb0`; seven upstream ToBytes tests remain), and Xray `8d0a7cf` (the
   SS2022 races on branch `ss2022`, a decision owed by NODE-MISC-UPX).
+
+### State on 2026-11-03: the sing-box pin moves to v1.13.21
+
+The Dockerfile's `singbox-builder` stage moves from `SINGBOX_COMMIT` `4a87f503d6c1279a81c8c0ec7eb6a8ff1c7af44c`
+(`SINGBOX_BRANCH` `v1.13.14-hotreload`, 2026-09-14) to `3f35dc15e0b408aa75343944a984a0c295b562d4`, the head of
+Free-Guy-IR/sing-box `main` on 2026-11-03: 37 commits ahead of the old pin and 0 behind it. `SINGBOX_VERSION` moves
+from `v1.13.14` to `v1.13.21`: the fork has no tags, and its commit `f533a6ba6` imports upstream `v1.13.21`
+(`628cb31ffa79cffffd34c2f9cde6cae044e4fc12`), so the variable names that upstream tag as the rule above requires. The
+fork's `go.mod` now requires sing-quic `v0.6.5` (`38ed9a3f2`), the version its `third_party` copy carries.
+
+What the move brings to the image:
+
+- sing-quic Hysteria2 fixes taken into the fork's `third_party` copy: client handshake hang and dead connection leak
+  (`8522d2ab2`), server handshake not bounded (`8c28cd5c8`), dead connection leak (`bb472a10f`), Salamander key race
+  (`fc9108ed5`), UDP sessions not closed on connection close (`cd90536b0`), and the vectorised Salamander write
+  (`216f614ea`, upstream sing-quic `88be83fe62a55baa4277ea3f6862c5f92daff9dc`).
+- sing-quic `e702a73535d54797eac67075f1464bb4c4e7a9f3` (fork `cabf51734`, with its bounds tests in `6edbfc24f`): before
+  it, an authenticated Hysteria2 client could crash the server with a crafted request.
+- Hysteria2 authentication published once, atomically, per session (`f493fd0dc`), and an authentication registered
+  before a removal can miss it (`d21dff6cd`).
+- The protocol input validation fixes of upstream sing-box `52f9bad034d291fc16869a396bf812508d50ecd6` (1.14 line,
+  ported to 1.13 as `a930417d2`), sing-vmess `9b95ab8`, sing-shadowsocks, sing-shadowsocks2 and sing-shadowtls, and the
+  fork's dependency raise of x/net, x/crypto, x/text and grpc past their reachable advisories (`18a8e225b`).
+
+Evidence for the move:
+
+- The fork tree at `3f35dc15e0b4` builds with the image's tags for linux/amd64, linux/arm64 and darwin/arm64 with Go
+  1.26.10, and `sing-box version` reports `v1.13.21`, revision `3f35dc15e0b4`.
+- `make build_singbox` builds the pin the way the Dockerfile does, from the Dockerfile's own `ARG` values. The `test`
+  job of `run-tests.yml` now builds it and runs the live Hysteria2 tests against it under the race detector:
+  `TestLiveSmoke_SingBoxProcessStartsAndReportsStats`, `TestAnEmptyHysteria2PasswordIsNeverAccepted` and
+  `TestSharedHysteria2PasswordBillsTheSameUserEveryTime`. The job fails when any of them does not pass, so a skip
+  cannot pass for a run. Before this change no CI job had a sing-box binary, and every live test skipped.
+- On Linux (the omnidev host, the same test binary) the three pass with the new pin. On macOS the two Hysteria2 tests
+  pass with the whole `backend/singbox` package under `-race`.
+- Three other live tests, `TestLiveSmoke_ConcurrentSyncUserCoalescesIntoOneRestart`,
+  `TestQueueUser_TightSequentialCallsCoalesceIntoOneRestart` and `TestSyncUser_UnchangedUserSetSkipsRestart`, fail
+  the same way with the old pin `4a87f503d6c1` and with the new one: they look for the user in the generated config
+  file or for a new file mtime, while a hot-reloaded user change goes through the clash API and never rewrites the
+  file. They are Linux-only and had never run in CI. They are tracked as finding F-R5-SB-1 and are not part of the CI
+  step until they are rewritten for the hot-reload path.
+
+Drift check on the moved pin (all five sections, a fresh fetch on 2026-11-03): sing-box has 16 security-looking
+commits and 5 releases after `v1.13.21`, sing-quic 0 and 2 after `v0.6.5`, all waived, 0 unported. The 24 waivers
+that named sing-box commits up to `v1.13.21` and sing-quic commits up to `v0.6.5` matched nothing and are removed:
+sing-box `6766b17`, `bd602b6`, `f260e77`, `d763884`, `890544e`, `ee808c4`, `7067276`, `0f17638`, `63d4cdf`,
+`c639c27`, `d5c6c6a`, `3708fa1`, `17ec3c7`, `45ca32d`, `b5ebaa1`, `56f91df` (`v1.13.20`) and `628cb31`
+(`v1.13.21`); sing-quic `b767090`, `35e2070`, `9bc0c88`, `8cdd427`, `2afc335`, `39c8586` and `d83826c` (`v0.6.5`).
+The same run found the new mtg release `v2.3.0`, which is recorded in its own commit.
 
 ### govulncheck on the patched Xray build
 

@@ -26,13 +26,13 @@ FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c807
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG SINGBOX_VERSION=v1.13.14
+ARG SINGBOX_VERSION=v1.13.21
 ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api
 # Our fork of sing-box v1.13.14: adds a clash_api PUT /hysteria2/users endpoint so
 # Hysteria2 user changes apply live, without restarting the core (no dropped sessions).
 ARG SINGBOX_REPO=https://github.com/Free-Guy-IR/sing-box.git
-ARG SINGBOX_BRANCH=v1.13.14-hotreload
-ARG SINGBOX_COMMIT=4a87f503d6c1279a81c8c0ec7eb6a8ff1c7af44c
+ARG SINGBOX_BRANCH=main
+ARG SINGBOX_COMMIT=3f35dc15e0b408aa75343944a984a0c295b562d4
 
 RUN apk update && apk add --no-cache git
 
