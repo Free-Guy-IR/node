@@ -47,7 +47,7 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `1ae411b76c376aed89b54673a66b7615568f45f4` | deps: golang.org/x/sys 0.48.0 to 0.49.0 (#104) | released in v0.5.5; ported on 2026-10-27 by `d82517b`, which carries its `Upstream:` line. Same `go.mod` and `go.sum` hunks as upstream |
 | `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `a074e52`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
 | `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `bb210c9`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
-| `946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd` | fix(xray): keep Shadowsocks 2022 inbounds multi-user when they start empty (#114) | released in v0.5.5; ported on 2026-11-02 by `3d18e70` (the fix) and `fb11076` (the tests, committed first and failing on main), which both carry its `Upstream:` line. The tests are upstream's with the user key literal renamed to `example-user-one-key`, because the pre-push secret guard refuses a `Password:` literal without an example marker. The placeholder code is upstream's; it sits in the empty-client branch of `ToBytes` because the fork has not yet taken #58's snapshot serialiser, so merging #58 must move it into `wireClientsLocked`. chacha20 is left alone, as upstream does |
+| `946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd` | fix(xray): keep Shadowsocks 2022 inbounds multi-user when they start empty (#114) | released in v0.5.5; ported on 2026-11-02 by `3d18e70` (the fix) and `fb11076` (the tests, committed first and failing on main), which both carry its `Upstream:` line. The tests are upstream's with the user key literal renamed to `example-user-one-key`, because the pre-push secret guard refuses a `Password:` literal without an example marker. The placeholder code is upstream's. Since `797adcf0`, the fork's port of #58's snapshot serialiser, rebased onto this port, it sits in the empty-client case of `(*Inbound).wireClientsLocked` in `backend/xray/config.go`, where upstream has it in `snapshotInboundForSerialization`: `ToBytes` marshals a snapshot, so an empty `2022-blake3-aes` Shadowsocks inbound is serialised with one `pasarguard-placeholder` client, whose key is drawn once per process, and the live inbound is never written. `TestTheSnapshotSerialisesExactlyWhatTheMutatingSerialiserDid` compares the snapshot byte for byte with the pre-#58 serialiser, placeholder included (`config_wire_test.go`), and the #114 tests in `shadowsocks2022_tobytes_test.go` pass on it (go1.26.10, 2026-11-03). chacha20 is left alone, as upstream does |
 | `71466f2a82c6c5e92d9a3c9e41944491c38abb76` | fix(xray): close restart races that drop removals or leave a stray core (#113) | released in v0.5.5; ported on 2026-11-03 by the fork's health-restart and sync-hold series pushed in `26bba5a8`; `c2ed9854` carries its `Upstream:` line, NODE-VERIFY-R3 passed the unit (verdicts/node-58-113.md). Its `canHoldUsers` hunk in `backend/xray/config.go` and its two tests `TestCanHoldUsersOnlyExcludesProtocolsWithoutUsers` and `TestUserSyncsSkipInboundsThatCannotHoldUsers` are superseded, not ported: the fork sends a delta-sync removal to an inbound only when that inbound held the user or a call to it for that user is unsettled (`stageRemovalLocked`), so an inbound that never holds users gets none of the remove calls upstream skips, whatever its protocol. `TestNodeVerifyUserSyncsSendNothingToInboundsThatCannotHoldUsers` (`backend/xray/cannot_hold_users_nodeverify_test.go`, written by NODE-VERIFY, adopted in `921eb1db`) is the evidence: `UpdateUsers` and `SyncUser` on a config with socks, mixed, http and dokodemo-door inbounds plus `API_INBOUND` send calls to the vless inbound only (finding F-R4-3) |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
@@ -658,6 +658,15 @@ What the move brings to the image:
 - The protocol input validation fixes of upstream sing-box `52f9bad034d291fc16869a396bf812508d50ecd6` (1.14 line,
   ported to 1.13 as `a930417d2`), sing-vmess `9b95ab8`, sing-shadowsocks, sing-shadowsocks2 and sing-shadowtls, and the
   fork's dependency raise of x/net, x/crypto, x/text and grpc past their reachable advisories (`18a8e225b`).
+  `52f9bad0` is a partial port, although `d189e942` names it in an `Upstream:` line: `a930417d2` carries only its
+  sing-box source hunks, and the library halves of the same fix, SagerNet/sing `8d939df03478` (`common/domain/matcher.go`),
+  sing-mux `caf09fe32475` (`brutal.go`, `h2mux.go`, `protocol.go`) and sing-tun `0bdadeb4c934` (`flow_*.go`,
+  `stack_*.go`, `ping/ping.go`), are missing from the image: the fork's `go.mod` at `3f35dc15e0b4` takes sing
+  `v0.8.14`, sing-mux `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`, and each of the three
+  commits is ahead of that tag (GitHub compare, 2026-11-03). The drift check does not watch these three repositories,
+  so this entry is their record: NODE-LEAD owns them, to be taken with the next sing-box pin move and no later than
+  2026-11-20 (finding F-VSB-1). NODE-VERIFY judged from their file lists and the production config (one Hysteria2
+  inbound, one direct outbound) that none of the three is on a path the node reaches; no live config dump was checked.
 
 Evidence for the move:
 
@@ -676,6 +685,17 @@ Evidence for the move:
   file or for a new file mtime, while a hot-reloaded user change goes through the clash API and never rewrites the
   file. They are Linux-only and had never run in CI. They are tracked as finding F-R5-SB-1 and are not part of the CI
   step until they are rewritten for the hot-reload path.
+- F-R5-SB-1 is known test debt that predates the move, owned by NODE-LEAD. Evidence: NODE-VERIFY ran the three on
+  Linux (omnidev) with one test binary against both pins, `3f35dc15` and `4a87f503`, and all three fail on both. The
+  normalised failure lines of the two runs are identical apart from the version and goroutine count lines of the
+  passing smoke test; the first two fail at their `expected generated config to contain ... user` assertions, and the
+  third (`TestSyncUser_UnchangedUserSetSkipsRestart`) measures restarts by the config file's mtime, which the
+  hot-reload path does not change (verdict `node-sbpin-nodeverify.md`, check 4). CI does not run them:
+  `backend/singbox/coalesce_test.go` is `//go:build linux`, the live step's `-run` pattern names only the three
+  Hysteria2 tests, and the race step of the same job (`go test -race ./controller/... ./backend/...`) sets no
+  `SINGBOX_SMOKE_BINARY` and has no `/usr/local/bin/sing-box`, so `discoverSingBoxBinary` skips them there; no other
+  workflow runs `backend/singbox`. They stay unchanged until NODE-LEAD rewrites them to check the users the core
+  reports through the clash API instead of the config file.
 
 Drift check on the moved pin (all five sections, a fresh fetch on 2026-11-03): sing-box has 16 security-looking
 commits and 5 releases after `v1.13.21`, sing-quic 0 and 2 after `v0.6.5`, all waived, 0 unported. The 24 waivers
