@@ -163,6 +163,21 @@ RUN git init -q . \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
  && git apply --verbose /patches/xray-validator-credential-owner.patch \
+ && grep -qF "held, loaded := v.users.LoadOrStore(key, u)" proxy/vless/validator.go \
+ && grep -qF "v.users.CompareAndDelete(ProcessUUID(u.(*protocol.MemoryUser).Account.(*MemoryAccount).ID.UUID()), u)" proxy/vless/validator.go \
+ && grep -qF "v.email.CompareAndDelete(le, u)" proxy/vless/validator.go \
+ && ! grep -qF "v.users.Store(" proxy/vless/validator.go \
+ && ! grep -qF "v.users.Delete(" proxy/vless/validator.go \
+ && grep -qF "held, loaded := v.users.LoadOrStore(key, u)" proxy/trojan/validator.go \
+ && grep -qF "v.users.CompareAndDelete(hexString(u.(*protocol.MemoryUser).Account.(*MemoryAccount).Key), u)" proxy/trojan/validator.go \
+ && grep -qF "v.email.CompareAndDelete(le, u)" proxy/trojan/validator.go \
+ && ! grep -qF "v.users.Store(" proxy/trojan/validator.go \
+ && ! grep -qF "v.users.Delete(" proxy/trojan/validator.go \
+ && grep -qF "if holder, held := v.aeadDecoderHolder.Holder(key).(*protocol.MemoryUser); held && !strings.EqualFold(holder.Email, u.Email) {" proxy/vmess/validator.go \
+ && grep -qF "v.aeadDecoderHolder.RemoveUserHeldBy(cmdkeyfl, u)" proxy/vmess/validator.go \
+ && ! grep -qF "v.aeadDecoderHolder.RemoveUser(cmdkeyfl)" proxy/vmess/validator.go \
+ && grep -qF "if item, found := a.decoders[string(key[:])]; found && item.ticket == ticket {" proxy/vmess/aead/authid.go \
+ && grep -qF "h.usersByEmail.removeHeldBy(user)" proxy/vmess/inbound/inbound.go \
  && git apply --verbose /patches/xray-websocket-early-data.patch \
  && grep -qF "func (d *delayDialConn) LocalAddr() net.Addr {" transport/internet/websocket/dialer.go \
  && grep -qF "func (d *delayDialConn) RemoteAddr() net.Addr {" transport/internet/websocket/dialer.go \

@@ -1174,6 +1174,40 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
     TCP twin of the race test.
 - **Removal condition:** drop the patch when the pin moves past `8626311`.
 
+### FORK DEVIATION: a removed user never takes another user's credential (patches/xray-validator-credential-owner.patch)
+
+- **The bug at the pin (F-REJECT-VLESS-TROJAN):**
+  - `proxy/vless/validator.go` keys users by `ProcessUUID(id)`, which zeroes bytes 6-7. `Add` stores the key with the
+    last writer winning, and `Del` deletes the removed user's key whoever holds it now.
+  - `proxy/trojan/validator.go` does the same with the hex SHA-224 of the password.
+  - `proxy/vmess/validator.go` adds every user's AEAD decoder under its command key, the last writer winning, and
+    `Remove` deletes the decoder of the removed user's key whoever holds it now.
+  - So two emails on one credential (a VLESS id equal after bytes 6-7 are zeroed, the same Trojan password, the same
+    VMess id) authenticate as one user, and removing either one locks the other out until a full restart.
+- **Upstream:** no XTLS/Xray-core branch has an ownership-aware `Add` or `Del` in these validators. Checked on
+  2026-10-12 on every upstream branch (main `2bea2df6a1f4`): the VLESS and Trojan validators differ from the pin only
+  in one `var` line, and the VMess validator and `aead/authid.go` are identical to the pin. The patch has no
+  `Upstream:` line.
+- **The fork fix:**
+  - VLESS and Trojan: `Add` uses `LoadOrStore` and refuses a key that a registered user of another email holds,
+    rolling back its own email entry; an add whose email a concurrent `Del` removed does not keep the key; `Del`
+    removes the email entry and the key with `CompareAndDelete`, so only what still belongs to the removed user goes.
+  - VMess: `Add` refuses a command key whose decoder belongs to a user of another email; `Remove` deletes the decoder
+    only while it belongs to the removed user (`AuthIDDecoderHolder.Holder` and `RemoveUserHeldBy`); the handler
+    drops the email entry of a user its validator refused.
+  - Users without an email keep the pin's last-writer behaviour.
+- **Behaviour change:** an inbound whose static config lists two emails on one credential no longer starts. The node
+  never writes such a config: it keeps one holder per credential when it builds the config (see
+  `backend/xray/credential.go`).
+- **Tests:** `TestAUserWhoseCredentialAnotherUserHoldsIsRefused`, `TestRemovingAUserLeavesACredentialAnotherUserHolds`,
+  `TestEveryHeldUserAuthenticatesAsItselfUnderChurn`, `TestAUserReaddedWithItsOwnCredentialKeepsIt` and
+  `TestUsersWithoutAnEmailMayShareACredential` in `proxy/vless`, `proxy/trojan` and `proxy/vmess`, plus
+  `TestAUserTheValidatorRefusesLeavesNoEmailEntry` and `TestRefusedAddsRacingARemoveAndReaddKeepEveryEmailEntryTrue`
+  in `proxy/vmess/inbound`. On the pin the first three fail in all three packages and both handler tests fail.
+  `make test_xray_patches` runs them under `-race`.
+- **Removal condition:** drop the patch when an ownership-aware `Del` (and the matching `Add` refusal) reaches an
+  Xray release the fork pins.
+
 ### FORK DEVIATION: Dockerfile.xray removed
 
 - **Upstream file:** PasarGuard/node's `Dockerfile.xray` builds the node and ships the prebuilt upstream Xray release
