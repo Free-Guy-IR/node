@@ -112,6 +112,13 @@ func cpuBusyTotal(t cpu.TimesStat) (all, busy float64) {
 	return busy + t.Idle, busy
 }
 
+func counterDelta(prev, cur uint64) uint64 {
+	if cur < prev {
+		return cur
+	}
+	return cur - prev
+}
+
 // bandwidthDelta returns aggregate incoming (rx) and outgoing (tx) bytes
 // between two IO counter snapshots. Loopback (lo) is excluded.
 func bandwidthDelta(first, second []net.IOCountersStat) (uint64, uint64) {
@@ -129,8 +136,8 @@ func bandwidthDelta(first, second []net.IOCountersStat) (uint64, uint64) {
 			continue
 		}
 		if p, ok := prev[c.Name]; ok {
-			totalRxBytes += c.BytesRecv - p.BytesRecv
-			totalTxBytes += c.BytesSent - p.BytesSent
+			totalRxBytes += counterDelta(p.BytesRecv, c.BytesRecv)
+			totalTxBytes += counterDelta(p.BytesSent, c.BytesSent)
 		}
 	}
 
