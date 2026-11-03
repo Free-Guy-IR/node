@@ -20,6 +20,7 @@ const (
 	nftPostroutingChain   = "postrouting"
 	nftForwardHook        = "forward"
 	nftCommentPrefix      = "pg_node_l2tp "
+	nftManglePriority     = -150
 )
 
 type nftChain struct {
@@ -200,10 +201,11 @@ type nftRuleset struct {
 }
 
 type nftListedChain struct {
-	Family string `json:"family"`
-	Table  string `json:"table"`
-	Name   string `json:"name"`
-	Hook   string `json:"hook"`
+	Family string          `json:"family"`
+	Table  string          `json:"table"`
+	Name   string          `json:"name"`
+	Hook   string          `json:"hook"`
+	Prio   json.RawMessage `json:"prio"`
 }
 
 func nftForwardBaseChains() ([]nftChain, error) {
@@ -232,12 +234,20 @@ func parseForwardBaseChains(data []byte) ([]nftChain, error) {
 		if chain.Hook != nftForwardHook || (chain.Family != "ip" && chain.Family != "inet") {
 			continue
 		}
-		if chain.Table == nftTable {
+		if chain.Table == nftTable || nftMangleChain(chain) {
 			continue
 		}
 		chains = append(chains, nftChain{family: chain.Family, table: chain.Table, name: chain.Name})
 	}
 	return chains, nil
+}
+
+func nftMangleChain(chain nftListedChain) bool {
+	if chain.Table == "mangle" {
+		return true
+	}
+	var prio int
+	return json.Unmarshal(chain.Prio, &prio) == nil && prio == nftManglePriority
 }
 
 func removeNFTRulesWithComment(chain nftChain, commentPrefix string) error {
