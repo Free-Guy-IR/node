@@ -64,6 +64,26 @@ func (b *Backend) revokeIdentity(user *common.User) []string {
 	return revoked
 }
 
+func inboundsLost(username string, before, after secretEntry) []sessionScope {
+	var lost []sessionScope
+	for tag := range before.inbounds {
+		if _, kept := after.inbounds[tag]; !kept {
+			lost = append(lost, sessionScope{tag: tag, username: username})
+		}
+	}
+	return lost
+}
+
+func inboundsLostBetween(before, after map[string]secretEntry) []sessionScope {
+	var lost []sessionScope
+	for username, entry := range before {
+		if next, ok := after[username]; ok && next.keyBytes == entry.keyBytes {
+			lost = append(lost, inboundsLost(username, entry, next)...)
+		}
+	}
+	return lost
+}
+
 func revokedBetween(before, after map[string]secretEntry) []string {
 	var revoked []string
 	for username, entry := range before {
@@ -174,8 +194,9 @@ func (b *Backend) syncAllUsers(users []*common.User) {
 
 	b.mu.RLock()
 	revoked := revokedBetween(before, b.secretsByID)
+	lost := inboundsLostBetween(before, b.secretsByID)
 	b.mu.RUnlock()
-	liveSessionRegistry.revoke(revoked)
+	liveSessionRegistry.revokeScoped(revoked, lost)
 }
 
 // updateUsers incrementally upserts/removes the given users. A user with no
@@ -190,6 +211,7 @@ func (b *Backend) updateUsers(users []*common.User) {
 	defer b.userSyncMu.Unlock()
 
 	var revoked []string
+	var lost []sessionScope
 	b.mu.Lock()
 	if b.secretsByID == nil {
 		b.secretsByID = make(map[string]secretEntry)
@@ -209,15 +231,18 @@ func (b *Backend) updateUsers(users []*common.User) {
 			delete(b.secretsByID, username)
 			continue
 		}
+		next := secretEntry{email: user.GetEmail(), keyBytes: keyBytes, inbounds: tags}
 		if existed && previous.keyBytes != keyBytes {
 			revoked = append(revoked, username)
+		} else if existed {
+			lost = append(lost, inboundsLost(username, previous, next)...)
 		}
-		b.secretsByID[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes, inbounds: tags}
+		b.secretsByID[username] = next
 	}
 	b.mu.Unlock()
 
 	b.pushSecretsToInstances()
-	liveSessionRegistry.revoke(revoked)
+	liveSessionRegistry.revokeScoped(revoked, lost)
 }
 
 // removeUsers removes the given users' secrets, live.

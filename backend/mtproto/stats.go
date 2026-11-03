@@ -206,6 +206,7 @@ func (a *eventAccumulator) snapshotLocked(tag string) []stats.Sample {
 // own eventAccumulator (each instance's Proxy has one, since a given
 // streamID only ever belongs to one instance's listener).
 type mtprotoEventStream struct {
+	tag          string
 	accumulator  *eventAccumulator
 	emailOf      func(username string) string
 	panics       *panicGuard
@@ -228,7 +229,7 @@ func (s *mtprotoEventStream) Send(ctx context.Context, event mtglib.Event) {
 	case mtglib.EventAuthenticated:
 		s.accumulator.authenticated(e.StreamID(), e.SecretID, s.emailOf(e.SecretID))
 		if stream, ok := ctx.(interface{ Close() }); ok {
-			liveSessionRegistry.Authenticated(e.StreamID(), e.SecretID, stream.Close)
+			liveSessionRegistry.authenticatedOn(s.tag, e.StreamID(), e.SecretID, stream.Close)
 		} else {
 			s.missingClose.Do(s.alarmMissingClose)
 		}

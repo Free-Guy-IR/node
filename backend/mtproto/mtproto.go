@@ -197,7 +197,7 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 			}
 			return entries
 		},
-		Sessions:  liveSessionRegistry,
+		Sessions:  instanceSessions{tag: inst.Tag},
 		OnAuth:    accumulator.authenticated,
 		OnTraffic: accumulator.traffic,
 		OnFinish:  accumulator.finished,
@@ -290,6 +290,7 @@ func New(_ context.Context, mtCfg *Config, users []*common.User, nodeCfg *config
 		}
 
 		eventStream := newMtprotoEventStream(accumulator, b.authenticatedEmail)
+		eventStream.tag = inst.Tag
 		eventStream.panics = newPanicGuard(fmt.Sprintf("the event stream of instance %q", inst.Tag), b.recordLog)
 
 		opts := mtglib.ProxyOpts{
