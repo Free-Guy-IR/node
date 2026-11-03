@@ -713,6 +713,24 @@ sing-box `6766b17`, `bd602b6`, `f260e77`, `d763884`, `890544e`, `ee808c4`, `7067
 (`v1.13.21`); sing-quic `b767090`, `35e2070`, `9bc0c88`, `8cdd427`, `2afc335`, `39c8586` and `d83826c` (`v0.6.5`).
 The same run found the new mtg release `v2.3.0`, which is recorded in its own commit.
 
+### mtg v2.3.0 commits in the pin
+
+The node takes mtg through the `replace` of `github.com/9seconds/mtg/v2` to Free-Guy-IR/mtg main
+`1563871b36dd518970490c8d018bdd2325d75e31`. `950d39a9` moved the pin to `7f8c04762e3b` (upstream release `v2.3.0`
+merged with the fork's fixes); `1563871b36dd` is its one child on Free-Guy-IR/mtg main, which rejects a connection whose
+remote address has no TCP IP instead of panicking. Every upstream
+commit below is on 9seconds/mtg and is an ancestor of that pin (GitHub compare of the commit against the pin: ahead,
+behind 0, checked on 2026-11-03). None needs a node-side port: the node links the pinned packages directly.
+
+| Upstream 9seconds/mtg commit | Change | In the fork pin | How it reaches the node |
+|---|---|---|---|
+| `e660dc1c22ed4d74e643fad93dd2853fed9a80b7` | do not stop accepting connections on transient errors (`mtglib/accept.go`, `mtglib/proxy.go`, plus `internal/utils` and `internal/cli`) | ancestor of `1563871b36dd` (pin ahead 89, behind 0) | `mtglib.Proxy.Serve`, which `backend/mtproto/supervise.go` `serveOnce` calls on every instance's listener; the `internal/` parts are mtg CLI code the node does not link |
+| `7931f81468868a6f5c543e5914d4c7020f8d470f` | retry accept(2) errors of the accepted connection on Linux (`mtglib/accept.go`, `mtglib/accept_errno_linux.go`) | ancestor of `1563871b36dd` (ahead 85, behind 0) | the same `mtglib.Proxy.Serve` accept loop, in the Linux build of the node |
+| `7d0e7d40c2bf6af6c5174a52347c01b04c95607c` | log connections dropped because socket options cannot be set (`internal/cli/run_proxy.go`, `internal/logthrottle`, `internal/utils/net_listener.go`) | ancestor of `1563871b36dd` (ahead 87, behind 0) | not linked: the node builds its listeners with `net.ListenTCP` in `backend/mtproto`, not with mtg's `internal/utils` listener; carried in the pin only |
+| `0df3d4d4227713e78b1538581a7b68f479ec9f4b` | an ordinary stop is not an accept-loop failure (`internal/cli/run_proxy.go`) | ancestor of `1563871b36dd` (ahead 88, behind 0) | not linked: mtg CLI only; the node's own stop and accept-loop supervision is `backend/mtproto/supervise.go` |
+| `27246c2a7e431b7d63ac0749fd1575a84e68c6b0` | preserve the v2 network constructor signature (`network/v2/network.go`) | ancestor of `1563871b36dd` (ahead 71, behind 0) | `network/v2`: `buildNetwork` in `backend/mtproto/mtproto.go` calls `networkv2.NewWithTCPNotSentLowat` with `DefaultTCPNotSentLowat` (`950d39a9`) |
+| `63049fa39c43cac9059343f8840fc75b4f9edd62` | preserve the sign of Telegram DC ids (`mtglib/obfuscation/handshake_frame.go`, `mtglib/proxy.go`) | ancestor of `1563871b36dd` (ahead 89, behind 0) | the `mtglib` handshake on every stream; behaviour change recorded in `950d39a9`: a dd (plain) media request for DC -N reaches Telegram as -N, so one node must pass a real-traffic media check through a dd link before the fleet rollout |
+
 ### govulncheck on the patched Xray build
 
 govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3.27, with every 0.6.21 patch applied
