@@ -30,6 +30,7 @@ const (
 	Trojan      = "trojan"
 	Shadowsocks = "shadowsocks"
 	Hysteria    = "hysteria"
+	Masque      = "masque"
 )
 
 type Config struct {
@@ -235,6 +236,16 @@ func (i *Inbound) syncUsers(users []*common.User) {
 				i.clients[user.GetEmail()] = api.NewHysteriaAccount(user)
 			}
 		}
+
+	case Masque:
+		for _, user := range users {
+			if !slices.Contains(user.Inbounds, i.Tag) {
+				continue
+			}
+			if account := api.NewMasqueAccount(user); account != nil {
+				i.clients[user.GetEmail()] = account
+			}
+		}
 	}
 }
 
@@ -273,6 +284,9 @@ func (i *Inbound) storeLocked(account api.Account) {
 		}
 
 	case *api.HysteriaAccount:
+		i.clients[email] = a
+
+	case *api.MasqueAccount:
 		i.clients[email] = a
 	}
 }
@@ -327,6 +341,13 @@ func (i *Inbound) updateUsers(accounts []api.Account, removeEmails []string) {
 	case Hysteria:
 		for _, account := range accounts {
 			if a, ok := account.(*api.HysteriaAccount); ok {
+				i.clients[account.GetEmail()] = a
+			}
+		}
+
+	case Masque:
+		for _, account := range accounts {
+			if a, ok := account.(*api.MasqueAccount); ok {
 				i.clients[account.GetEmail()] = a
 			}
 		}
@@ -496,6 +517,8 @@ func (i *Inbound) wireClientsLocked() (any, bool) {
 		return typedAccounts[*api.ShadowsocksTcpAccount](accounts), true
 	case Hysteria:
 		return typedAccounts[*api.HysteriaAccount](accounts), true
+	case Masque:
+		return typedAccounts[*api.MasqueAccount](accounts), true
 	}
 	return nil, false
 }
