@@ -42,19 +42,35 @@ func mtprotoCredential(user *common.User) (username string, keyBytes [mtglib.Sec
 	return username, keyBytes, true
 }
 
-func (b *Backend) revokeIdentity(user *common.User) {
+func (b *Backend) revokeIdentity(user *common.User) []string {
+	var revoked []string
 	if username := user.GetProxies().GetMtproto().GetUsername(); username != "" {
+		if _, ok := b.secretsByID[username]; ok {
+			revoked = append(revoked, username)
+		}
 		delete(b.secretsByID, username)
 	}
 	email := user.GetEmail()
 	if email == "" {
-		return
+		return revoked
 	}
 	for username, entry := range b.secretsByID {
 		if entry.email == email {
+			revoked = append(revoked, username)
 			delete(b.secretsByID, username)
 		}
 	}
+	return revoked
+}
+
+func revokedBetween(before, after map[string]secretEntry) []string {
+	var revoked []string
+	for username, entry := range before {
+		if next, ok := after[username]; !ok || next.keyBytes != entry.keyBytes {
+			revoked = append(revoked, username)
+		}
+	}
+	return revoked
 }
 
 func (b *Backend) wantsUser(user *common.User) bool {
@@ -133,8 +149,20 @@ func (b *Backend) pushSecretsToInstances() {
 
 // syncAllUsers fully replaces the authorized-user set across every instance.
 func (b *Backend) syncAllUsers(users []*common.User) {
+	b.userSyncMu.Lock()
+	defer b.userSyncMu.Unlock()
+
+	b.mu.RLock()
+	before := b.secretsByID
+	b.mu.RUnlock()
+
 	b.applyInitialUsers(users)
 	b.pushSecretsToInstances()
+
+	b.mu.RLock()
+	revoked := revokedBetween(before, b.secretsByID)
+	b.mu.RUnlock()
+	liveSessionRegistry.revoke(revoked)
 }
 
 // updateUsers incrementally upserts/removes the given users. A user with no
@@ -145,6 +173,10 @@ func (b *Backend) syncAllUsers(users []*common.User) {
 // per-instance tag scoping since every instance shares one user set, so here
 // presence/absence of a parseable MtprotoUser block is the only signal).
 func (b *Backend) updateUsers(users []*common.User) {
+	b.userSyncMu.Lock()
+	defer b.userSyncMu.Unlock()
+
+	var revoked []string
 	b.mu.Lock()
 	if b.secretsByID == nil {
 		b.secretsByID = make(map[string]secretEntry)
@@ -152,34 +184,48 @@ func (b *Backend) updateUsers(users []*common.User) {
 	for _, user := range users {
 		username, keyBytes, ok := mtprotoCredential(user)
 		if !ok {
-			b.revokeIdentity(user)
+			revoked = append(revoked, b.revokeIdentity(user)...)
 			continue
 		}
+		previous, existed := b.secretsByID[username]
 		if !b.wantsUser(user) {
+			if existed {
+				revoked = append(revoked, username)
+			}
 			delete(b.secretsByID, username)
 			continue
+		}
+		if existed && previous.keyBytes != keyBytes {
+			revoked = append(revoked, username)
 		}
 		b.secretsByID[username] = secretEntry{email: user.GetEmail(), keyBytes: keyBytes}
 	}
 	b.mu.Unlock()
 
 	b.pushSecretsToInstances()
+	liveSessionRegistry.revoke(revoked)
 }
 
 // removeUsers removes the given users' secrets, live.
 func (b *Backend) removeUsers(users []*common.User) {
+	b.userSyncMu.Lock()
+	defer b.userSyncMu.Unlock()
+
+	var revoked []string
 	b.mu.Lock()
 	for _, user := range users {
 		username, _, ok := mtprotoCredential(user)
 		if !ok {
-			b.revokeIdentity(user)
+			revoked = append(revoked, b.revokeIdentity(user)...)
 			continue
 		}
+		revoked = append(revoked, username)
 		delete(b.secretsByID, username)
 	}
 	b.mu.Unlock()
 
 	b.pushSecretsToInstances()
+	liveSessionRegistry.revoke(revoked)
 }
 
 // SyncUser applies a single user's MTProto membership across all instances,

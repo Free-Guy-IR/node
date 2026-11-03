@@ -49,31 +49,16 @@ type proxyInstance struct {
 }
 
 func (pi *proxyInstance) serve(listener net.Listener) {
+	handle := newSupervisedListener(listener)
+	served := net.Listener(handle)
 	if pi.streams != nil {
-		listener = pi.streams.track(listener)
+		served = pi.streams.track(handle)
 	}
 	done := make(chan struct{})
-	pi.listener = listener
+	pi.listener = handle
 	pi.serveDone = done
 
-	go func() {
-		defer close(done)
-		defer pi.absorbServePanic(listener)
-		if pi.mp != nil {
-			_ = pi.mp.Serve(listener)
-			return
-		}
-		_ = pi.proxy.Serve(listener)
-	}()
-}
-
-func (pi *proxyInstance) absorbServePanic(listener net.Listener) {
-	value := recover()
-	if value == nil {
-		return
-	}
-	_ = listener.Close()
-	reportPanic(fmt.Sprintf("the serve loop of instance %q, which closed its listener and stopped accepting", pi.tag), value, pi.record)
+	go pi.supervise(handle, served, done)
 }
 
 func (b *Backend) stopProxy(tag string, proxy *mtglib.Proxy) bool {
@@ -128,6 +113,7 @@ type Backend struct {
 
 	mu          sync.RWMutex
 	secretsByID map[string]secretEntry
+	userSyncMu  sync.Mutex
 
 	lifecycle sync.Mutex
 
@@ -166,8 +152,8 @@ func statsUpdateInterval(cfg *config.Config) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func buildNetwork() (mtglib.Network, error) {
-	return networkv2.New(
+var buildNetwork = func() (mtglib.Network, error) {
+	return networkv2.NewWithTCPNotSentLowat(
 		nil,
 		networkv2.UserAgent,
 		networkv2.DefaultTimeout,
@@ -208,6 +194,7 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 			}
 			return entries
 		},
+		Sessions:  liveSessionRegistry,
 		OnAuth:    accumulator.authenticated,
 		OnTraffic: accumulator.traffic,
 		OnFinish:  accumulator.finished,
@@ -365,7 +352,7 @@ func (b *Backend) Started() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	if len(b.instances) == 0 {
+	if b.cancelFunc == nil || len(b.instances) == 0 {
 		return false
 	}
 	for _, inst := range b.instances {

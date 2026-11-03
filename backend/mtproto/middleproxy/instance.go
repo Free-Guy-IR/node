@@ -37,6 +37,8 @@ type Options struct {
 	// attempt, no restart needed.
 	Secrets func() []SecretEntry
 
+	Sessions SessionTracker
+
 	OnAuth    func(streamID, username, email string)
 	OnTraffic func(streamID string, n uint, isRead bool)
 	OnFinish  func(streamID string)
@@ -48,6 +50,12 @@ type Options struct {
 // Serve(listener) then Shutdown) so backend/mtproto/mtproto.go's New/
 // Restart/Shutdown can drive either kind of instance through the same
 // listener-management code.
+type SessionTracker interface {
+	Begin(streamID string)
+	Authenticated(streamID, username string, closer func())
+	End(streamID string)
+}
+
 type Instance struct {
 	opts Options
 	done chan struct{}
@@ -105,6 +113,12 @@ func (i *Instance) handle(conn net.Conn) {
 		return
 	}
 
+	streamID := newStreamID()
+	if i.opts.Sessions != nil {
+		i.opts.Sessions.Begin(streamID)
+		defer i.opts.Sessions.End(streamID)
+	}
+
 	entries := i.opts.Secrets()
 
 	var (
@@ -132,10 +146,15 @@ func (i *Instance) handle(conn net.Conn) {
 
 	conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 
-	streamID := newStreamID()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if i.opts.Sessions != nil {
+		i.opts.Sessions.Authenticated(streamID, username, func() {
+			cancel()
+			conn.Close() //nolint:errcheck
+		})
+	}
 
 	if err := Relay(ctx, conn, hs, relayOptions{
 		AdTag:     i.opts.AdTag,

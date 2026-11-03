@@ -120,8 +120,14 @@ func TestAServeLoopPanicIsReportedLoudly(t *testing.T) {
 	if err := dialAndDrop(t, listener.Addr().String()); err != nil {
 		t.Fatalf("dial the serving listener: %v", err)
 	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if countLinesContaining(captured.snapshot(), "PANIC") > 0 {
+			break
+		}
+	}
+	pi.listener.Close()
 	if !pi.awaitServeExit() {
-		t.Fatal("a serve loop that panicked must count as exited")
+		t.Fatal("a serve loop that panicked must exit once its listener is closed")
 	}
 	expectLogLine(t, captured.snapshot(), "a recovered serve panic must be logged with its stack", "PANIC", backstopTag, "(*Proxy).Serve")
 }

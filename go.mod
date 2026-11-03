@@ -5,7 +5,7 @@ go 1.26.3
 toolchain go1.26.10
 
 require (
-	github.com/9seconds/mtg/v2 v2.1.8-0.20260609205628-d095108334de
+	github.com/9seconds/mtg/v2 v2.3.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
@@ -69,4 +69,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.1.9-faketls-rewind.0.20260929164514-7d0f004a01dd
+replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103113135-7f8c04762e3b

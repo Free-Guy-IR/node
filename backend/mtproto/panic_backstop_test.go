@@ -248,7 +248,7 @@ func TestAProxyShutdownThatHangsIsAbandonedAfterTheExitTimeout(t *testing.T) {
 	release()
 }
 
-func TestAServeLoopThatPanicsCountsAsExitedAndStopsListening(t *testing.T) {
+func TestAServeLoopThatPanicsIsReportedDeadAndStopsOnClose(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -258,15 +258,27 @@ func TestAServeLoopThatPanicsCountsAsExitedAndStopsListening(t *testing.T) {
 
 	pi := &proxyInstance{tag: backstopTag, proxy: &mtglib.Proxy{}}
 	pi.serve(listener)
+	handle := pi.listener.(*supervisedListener)
 
 	if err := dialAndDrop(t, address); err != nil {
 		t.Fatalf("dial the serving listener: %v", err)
 	}
+	reported := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if state := handle.state(backstopTag); strings.Contains(state.LastError, "panic") {
+			reported = true
+			break
+		}
+	}
+	if !reported {
+		t.Fatal("a serve loop that panicked must be reported with the panic as its reason")
+	}
+	handle.Close()
 	if !pi.awaitServeExit() {
-		t.Fatal("a serve loop that panicked must count as exited")
+		t.Fatal("a supervised serve loop that panicked must still exit once its listener is closed")
 	}
 	if err := dialAndDrop(t, address); err == nil {
-		t.Fatal("a serve loop that panicked must close its listener, not leave clients in a dead backlog")
+		t.Fatal("a closed supervised listener must not leave clients in a dead backlog")
 	}
 }
 
