@@ -36,6 +36,8 @@ type Sample struct {
 type Tracker struct {
 	stats map[string]*Entry
 
+	restartOnAnyDip bool
+
 	mu sync.RWMutex
 }
 
@@ -44,6 +46,12 @@ func New() *Tracker {
 	return &Tracker{
 		stats: make(map[string]*Entry),
 	}
+}
+
+func NewRestartingOnAnyDip() *Tracker {
+	tracker := New()
+	tracker.restartOnAnyDip = true
+	return tracker
 }
 
 // UpdateStatsBatch applies many peer stats updates under a single lock.
