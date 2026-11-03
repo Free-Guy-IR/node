@@ -37,7 +37,16 @@ func newAcctEnv(t *testing.T) *acctEnv {
 	t.Cleanup(func() {
 		sysClassNet, sessionCountedDir, procRoot, pppdRecordDir = prevNet, prevCounted, prevProc, prevRecords
 	})
-	return &acctEnv{t: t, tag: fmt.Sprintf("acct-%d", acctTagSeq.Add(1)), root: root}
+	e := &acctEnv{t: t, tag: fmt.Sprintf("acct-%d", acctTagSeq.Add(1)), root: root}
+	e.write(countedMarkerPath(e.tag), countedStateVersion+"\n")
+	return e
+}
+
+func (e *acctEnv) unmarked() {
+	e.t.Helper()
+	if err := os.Remove(countedMarkerPath(e.tag)); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 func (e *acctEnv) nodeConfig() *config.Config {

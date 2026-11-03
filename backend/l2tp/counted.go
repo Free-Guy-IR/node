@@ -45,6 +45,7 @@ type countedState struct {
 	counted  map[string]bool
 	dirty    bool
 	failing  bool
+	marked   bool
 
 	since      int64
 	sinceMono  monoStamp
@@ -366,22 +367,45 @@ func countedStatePath(tag string) string {
 	return filepath.Join(sessionCountedDir, tag)
 }
 
-func loadCountedState(tag string) (*countedState, error) {
+func loadCountedState(tag string) (*countedState, bool, error) {
 	data, err := os.ReadFile(countedStatePath(tag))
 	if errors.Is(err, fs.ErrNotExist) {
-		return newCountedState(), nil
+		return newCountedState(), false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	return decodeCountedState(data)
+	c, err := decodeCountedState(data)
+	return c, true, err
 }
 
 func (c *countedState) save(tag string) error {
 	if err := os.MkdirAll(sessionCountedDir, 0o700); err != nil {
 		return err
 	}
-	return writeFileAtomic(countedStatePath(tag), c.encode(), 0o600)
+	if err := writeFileAtomic(countedStatePath(tag), c.encode(), 0o600); err != nil {
+		return err
+	}
+	if !c.marked && markCounted(tag) == nil {
+		c.marked = true
+	}
+	return nil
+}
+
+func countedMarkerPath(tag string) string {
+	return filepath.Join(countedMarkerDir, tag)
+}
+
+func countedMarked(tag string) bool {
+	_, err := os.Stat(countedMarkerPath(tag))
+	return err == nil
+}
+
+func markCounted(tag string) error {
+	if err := os.MkdirAll(countedMarkerDir, 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(countedMarkerPath(tag), []byte(countedStateVersion+"\n"), 0o600)
 }
 
 func presentAsCounted(tag string, now int64, mono monoStamp) *countedState {
@@ -476,11 +500,17 @@ func (c *countedState) settleFallback(clean bool) {
 
 func (o *L2TP) loadCountedLocked() {
 	tag := o.config.InboundTag
-	counted, err := loadCountedState(tag)
-	if err != nil {
+	marked := countedMarked(tag)
+	counted, found, err := loadCountedState(tag)
+	switch {
+	case err != nil:
 		o.emitLogf("Error", "l2tp: counted state of %s is unreadable, counting only growth from now on: %v", tag, err)
 		counted = presentAsCounted(tag, wallClock().Unix(), currentMono())
+	case !found && !marked:
+		o.emitLogf("Info", "l2tp: no counted state of %s from an earlier node version, counting only growth of present sessions", tag)
+		counted = presentAsCounted(tag, wallClock().Unix(), currentMono())
 	}
+	counted.marked = marked
 	counted.noteBoot(currentBootID())
 	if counted.awaitsSeen() {
 		counted.noteSeen(scanFinalRecords(tag))

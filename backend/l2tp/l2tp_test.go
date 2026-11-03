@@ -103,11 +103,14 @@ func TestUserStoreKeysAddAndRemoveConsistently(t *testing.T) {
 
 func useTempSessionDirs(t *testing.T) {
 	t.Helper()
-	prevState, prevFinal, prevAlive := sessionStateDir, sessionFinalDir, sessionIsAlive
+	prevState, prevFinal, prevAlive, prevMarker := sessionStateDir, sessionFinalDir, sessionIsAlive, countedMarkerDir
 	sessionStateDir = filepath.Join(t.TempDir(), "sessions")
 	sessionFinalDir = filepath.Join(t.TempDir(), "final")
+	countedMarkerDir = filepath.Join(t.TempDir(), "marker")
 	sessionIsAlive = func(l2tpSession) bool { return true }
-	t.Cleanup(func() { sessionStateDir, sessionFinalDir, sessionIsAlive = prevState, prevFinal, prevAlive })
+	t.Cleanup(func() {
+		sessionStateDir, sessionFinalDir, sessionIsAlive, countedMarkerDir = prevState, prevFinal, prevAlive, prevMarker
+	})
 	if err := os.MkdirAll(sessionStateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

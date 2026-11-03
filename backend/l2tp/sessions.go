@@ -19,6 +19,7 @@ var (
 	sysClassNet       = "/sys/class/net"
 	procRoot          = "/proc"
 	pppdRecordDir     = "/run/pg-l2tp/pppd"
+	countedMarkerDir  = "/var/lib/pg-node/l2tp-counted"
 )
 
 var (
