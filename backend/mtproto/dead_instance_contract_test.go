@@ -17,12 +17,6 @@ const (
 	deadContractChurnSecret   = "3c4d5e6f708192a3b4c5d6e7f8011223"
 )
 
-func instanceByTag(b *Backend, tag string) *proxyInstance {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.instances[tag]
-}
-
 func awaitInstanceDead(b *Backend, tag string, want bool, within time.Duration) bool {
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
