@@ -613,19 +613,28 @@ Waivers removed because the run matched nothing for them (the check's own instru
   `infra/conf/geodata.go` do not exist in `v26.3.27`. That closes the reachability question that NODE-MISC-UPX held
   them for.
 
-Pending waivers that fall due soon (none is extended here):
+Pending waivers that fall due soon (none is extended here; the one later date move, the #58 fold of 2026-11-03, is
+named in its entry):
 
 - 2026-11-06: the three `masque` waivers, removed above, so nothing falls due that day.
 - 2026-11-08: eight node `v0.5.5` items, `47857d4` (the version bump), `24e2b12`, `bb40094`, `8ad52fe`,
   `d309483`, `1549c96`, `bd745b5` and `d359a8f`, owned by NODE-SYNC-055. `946ab6a` (#114) and `71466f2` (#113, ported
   by `c2ed9854`, pushed to main on 2026-11-03 in `26bba5a8`) are ported by commits whose `Upstream:` trailer names
   them, so their waivers are gone.
-- 2026-11-10: node `a3d2d2f` (NODE-WG) and `33ab5fb` (#58, NODE-LEAD: ported by `797adcf0`, `9c99b8a1`,
-  `83932cb0` and `0687f7e3` except its xray WireGuard parts, which rewrite the peer serialisation of the unported #64
-  `e03754d`; `TestSnapshotInboundCopiesEveryExportedField` is ported against the fork's `(*Inbound).snapshotLocked`,
-  which copies the exported `Inbound` fields by hand as upstream's `snapshotInboundForSerialization` does, and fails
-  when one copy is dropped), and Xray `8d0a7cf` (the
-  SS2022 races on branch `ss2022`, a decision owed by NODE-MISC-UPX).
+- 2026-11-10: node `a3d2d2f` (NODE-WG) and Xray `8d0a7cf` (the SS2022 races on branch `ss2022`, a decision owed by
+  NODE-MISC-UPX).
+- 2026-11-20: node `e03754d` (#64, NODE-WG), which also carries the xray WireGuard parts of `33ab5fb` (#58): the
+  Wireguard peers case of the config snapshot, and the wg inbound, `wireguardUser` and peer assertions of
+  `TestToBytesWritesSyncedClientsAndPeers` and `TestToBytesWritesEmptyListsWithoutUsers`. They rewrite the WireGuard
+  peer serialisation that #64 adds and the fork does not have, so they go in with the #64 port. The rest of #58 is
+  ported by `797adcf0` (the config snapshot serialisation), `9c99b8a1` (`TestToBytesConcurrentCalls` and
+  `TestToBytesWhileCloning`), `83932cb0` (`counterDelta` and the xray log scanner buffer pool, RED `f7891b13`) and
+  `0687f7e3` (the other seven tests of upstream `config_tobytes_test.go`).
+  `TestSnapshotInboundCopiesEveryExportedField` is ported against the fork's `(*Inbound).snapshotLocked`, which
+  copies the exported `Inbound` fields by hand as upstream's `snapshotInboundForSerialization` does, and fails when
+  one copy is dropped. On 2026-11-03 the main session folded the separate `33ab5fb` waiver (NODE-LEAD, due
+  2026-11-10) into the `e03754d` one, so these WireGuard parts are now due on 2026-11-20; the commit that removed
+  that waiver carries `33ab5fb`'s `Upstream:` line, and the drift check counts #58 as ported.
 
 ### State on 2026-11-03: the sing-box pin moves to v1.13.21
 
