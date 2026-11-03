@@ -63,16 +63,24 @@ func (s *authStore) replace(users map[string]authEntry) {
 	s.mu.Unlock()
 }
 
-func (s *authStore) upsert(username string, entry authEntry) {
+func (s *authStore) applyForEmail(email, username string, entry *authEntry) {
 	s.mu.Lock()
-	s.users[username] = entry
-	s.mu.Unlock()
-}
-
-func (s *authStore) remove(username string) {
-	s.mu.Lock()
-	delete(s.users, username)
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	if email != "" {
+		for name, current := range s.users {
+			if current.email == email && name != username {
+				delete(s.users, name)
+			}
+		}
+	}
+	if username == "" {
+		return
+	}
+	if entry == nil {
+		delete(s.users, username)
+		return
+	}
+	s.users[username] = *entry
 }
 
 func (s *authStore) contains(username string) bool {
@@ -165,9 +173,13 @@ func (b *Backend) updateUsers(users []*common.User) {
 	touched := make(map[string]struct{}, len(b.instances))
 
 	for _, user := range users {
-		username, password, maxConcurrent, hasCredential := openVPNCredential(user)
+		email := user.GetEmail()
+		username, pw, maxConcurrent, hasCredential := openVPNCredential(user)
 		if !hasCredential {
-			continue
+			if email == "" {
+				continue
+			}
+			username = ""
 		}
 
 		activeTags := make(map[string]struct{}, len(user.GetInbounds()))
@@ -175,13 +187,12 @@ func (b *Backend) updateUsers(users []*common.User) {
 			activeTags[tag] = struct{}{}
 		}
 
-		email := user.GetEmail()
 		for tag, instance := range b.instances {
-			if _, active := activeTags[tag]; active {
-				instance.auth.upsert(username, authEntry{password: password, email: email, maxConcurrent: maxConcurrent})
-			} else {
-				instance.auth.remove(username)
+			var entry *authEntry
+			if _, active := activeTags[tag]; active && hasCredential {
+				entry = &authEntry{password: pw, email: email, maxConcurrent: maxConcurrent}
 			}
+			instance.auth.applyForEmail(email, username, entry)
 			touched[tag] = struct{}{}
 		}
 	}
