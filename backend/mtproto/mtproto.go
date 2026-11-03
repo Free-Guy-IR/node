@@ -151,7 +151,7 @@ func statsUpdateInterval(cfg *config.Config) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func buildNetwork() (mtglib.Network, error) {
+var buildNetwork = func() (mtglib.Network, error) {
 	return networkv2.New(
 		nil,
 		networkv2.UserAgent,
