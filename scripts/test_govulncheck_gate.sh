@@ -19,7 +19,9 @@ patch=xray-pinned-ca-servername.patch
 waiver="$osv $module $version 2026-11-30 patches/$patch the shipped binary carries the pinned CA patch"
 
 config_msg() {
-  printf '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.8.0","db":"https://vuln.go.dev","go_version":"go1.26.10","scan_level":"%s","scan_mode":"source"}}\n' "${1:-symbol}"
+  local db_last_modified=',"db_last_modified":"2026-11-02T22:01:43Z"'
+  [ "${2:-}" = db-unreachable ] && db_last_modified=
+  printf '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.8.0","db":"https://vuln.go.dev"%s,"go_version":"go1.26.10","scan_level":"%s","scan_mode":"source"}}\n' "$db_last_modified" "${1:-symbol}"
 }
 
 osv_msg() {
@@ -38,27 +40,43 @@ required() {
   printf '{"finding":{"osv":"%s","fixed_version":"v9.9.9","trace":[{"module":"%s","version":"%s"}]}}\n' "$1" "$2" "$3"
 }
 
-fixture() {
-  r=$tmp/$1
-  mkdir -p "$r/patches"
+sbom_msg() {
+  printf '{"SBOM":{"go_version":"go1.26.10","modules":[{"path":"github.com/pasarguard/node"},{"path":"stdlib","version":"v1.26.10"}],"roots":["github.com/pasarguard/node"]}}\n'
+}
+
+progress_msg() {
+  printf '{"progress":{"message":"%s"}}\n' "$1"
+}
+
+write_dockerfile() {
   cat >"$r/Dockerfile" <<EOF
 FROM golang:1.26.10-alpine AS xray-builder
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/$patch /patches/$patch
 RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git fetch -q --depth 1 origin d2758a023cd7f4174a5a5fa4ff66e487d4342ba0 \\
+ && git checkout -q FETCH_HEAD \\
  && git apply --verbose /patches/xray-http-100-continue.patch \\
- && git apply --verbose /patches/$patch \\
+$1
  && grep -qF 'Pinning CA needs a valid ServerName' transport/internet/tls/config.go
 EOF
+}
+
+fixture() {
+  r=$tmp/$1
+  mkdir -p "$r/patches"
+  write_dockerfile " && git apply --verbose /patches/$patch \\"
   printf 'diff --git a/x.go b/x.go\n' >"$r/patches/$patch"
   printf 'diff --git a/y.go b/y.go\n' >"$r/patches/xray-http-100-continue.patch"
   printf '%s\n' "$waiver" >"$r/waivers.txt"
   {
     config_msg
-    printf '{\n  "progress": {\n    "message": "Scanning your code and 2 packages across 1 dependent module for known vulnerabilities..."\n  }\n}\n'
     printf '{\n  "SBOM": {\n    "go_version": "go1.26.10",\n    "modules": [\n      {\n        "path": "github.com/pasarguard/node"\n      }\n    ]\n  }\n}\n'
+    printf '{\n  "progress": {\n    "message": "Fetching vulnerabilities from the database..."\n  }\n}\n'
     osv_msg "$osv"
     osv_msg GO-2026-6860
+    progress_msg "Checking the code against the vulnerabilities..."
     required "$osv" "$module" "$version"
     imported "$osv" "$module" "$version"
     called "$osv" "$module" "$version"
@@ -174,6 +192,86 @@ fixture dockerfile-missing
 rm "$tmp/dockerfile-missing/Dockerfile"
 check dockerfile-missing 1 "cannot read the Dockerfile"
 
+not_applied="no 'git apply' line in the Dockerfile applies $patch"
+
+fixture n1-apply-check-only
+write_dockerfile " && git apply --check /patches/$patch \\"
+check n1-apply-check-only 1 "$not_applied"
+
+fixture n1-apply-verbose-then-check
+write_dockerfile " && git apply --verbose --check /patches/$patch \\"
+check n1-apply-verbose-then-check 1 "$not_applied"
+
+fixture n1-apply-reverse-short
+write_dockerfile " && git apply -R --verbose /patches/$patch \\"
+check n1-apply-reverse-short 1 "$not_applied"
+
+fixture n1-apply-reverse-long
+write_dockerfile " && git apply --reverse /patches/$patch \\"
+check n1-apply-reverse-long 1 "$not_applied"
+
+fixture n1-apply-cached-only
+write_dockerfile " && git apply --cached /patches/$patch \\"
+check n1-apply-cached-only 1 "$not_applied"
+
+fixture n1-apply-stat-only
+write_dockerfile " && git apply --stat /patches/$patch \\"
+check n1-apply-stat-only 1 "$not_applied"
+
+fixture n1-apply-include-nothing
+write_dockerfile " && git apply --include=no/such/path --verbose /patches/$patch \\"
+check n1-apply-include-nothing 1 "$not_applied"
+
+fixture n1-apply-echoed
+write_dockerfile " && echo git apply --verbose /patches/$patch \\"
+check n1-apply-echoed 1 "$not_applied"
+
+fixture n1-apply-failure-ignored
+write_dockerfile " && git apply --verbose /patches/$patch || true \\"
+check n1-apply-failure-ignored 1 "$not_applied"
+
+fixture n1-apply-first-command-of-run
+cat >"$tmp/n1-apply-first-command-of-run/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git fetch -q --depth 1 origin d2758a023cd7f4174a5a5fa4ff66e487d4342ba0 \\
+ && git checkout -q FETCH_HEAD
+RUN git apply --verbose /patches/$patch
+EOF
+check n1-apply-first-command-of-run 0 "WAIVED $osv"
+
+fixture n2-patch-for-other-module
+printf 'GO-2026-7001 golang.org/x/net v0.60.0 2026-11-30 patches/%s an Xray-core patch named for a node-process module\n' "$patch" >>"$tmp/n2-patch-for-other-module/waivers.txt"
+called GO-2026-7001 golang.org/x/net v0.60.0 >>"$tmp/n2-patch-for-other-module/stream.json"
+check n2-patch-for-other-module 1 "FAIL GO-2026-7001 golang.org/x/net@v0.60.0 is called (1 call paths), its waiver on line 2 is not active"
+
+fixture n2-patch-applied-in-other-stage
+cat >"$tmp/n2-patch-applied-in-other-stage/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS singbox-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/SagerNet/sing-box.git \\
+ && git apply --verbose /patches/$patch
+
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/xray-http-100-continue.patch
+EOF
+check n2-patch-applied-in-other-stage 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture n2-stage-fetches-no-module-source
+cat >"$tmp/n2-stage-fetches-no-module-source/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git apply --verbose /patches/$patch
+EOF
+check n2-stage-fetches-no-module-source 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
 fixture stale-waiver
 grep -v '"function"' "$tmp/stale-waiver/stream.json" >"$tmp/stale-waiver/stream.json.new"
 mv "$tmp/stale-waiver/stream.json.new" "$tmp/stale-waiver/stream.json"
@@ -186,13 +284,32 @@ check stale-waiver-no-finding-at-all 1 "a stale waiver must be removed"
 
 fixture uncalled-only-without-waiver
 : >"$tmp/uncalled-only-without-waiver/waivers.txt"
-{ config_msg; imported GO-2026-7003 golang.org/x/crypto v0.57.0; required GO-2026-6860 golang.org/x/net v0.60.0; } >"$tmp/uncalled-only-without-waiver/stream.json"
+{ config_msg; sbom_msg; progress_msg "Checking the code against the vulnerabilities..."; imported GO-2026-7003 golang.org/x/crypto v0.57.0; required GO-2026-6860 golang.org/x/net v0.60.0; } >"$tmp/uncalled-only-without-waiver/stream.json"
 check uncalled-only-without-waiver 0 "INFO GO-2026-7003 golang.org/x/crypto@v0.57.0 is package-level only, not called"
 
 fixture clean-scan-empty-waivers
 : >"$tmp/clean-scan-empty-waivers/waivers.txt"
-config_msg >"$tmp/clean-scan-empty-waivers/stream.json"
+{ config_msg; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; osv_msg GO-2026-6860; progress_msg "Checking the code against the vulnerabilities..."; } >"$tmp/clean-scan-empty-waivers/stream.json"
 check clean-scan-empty-waivers 0 "govulncheck-gate: pass: 0 called vulnerabilities"
+
+fixture n3-config-only-empty-waivers
+: >"$tmp/n3-config-only-empty-waivers/waivers.txt"
+config_msg >"$tmp/n3-config-only-empty-waivers/stream.json"
+check n3-config-only-empty-waivers 1 "govulncheck-gate: FAIL"
+
+fixture n3-no-sbom-empty-waivers
+: >"$tmp/n3-no-sbom-empty-waivers/waivers.txt"
+{ config_msg; progress_msg "Fetching vulnerabilities from the database..."; progress_msg "Checking the code against the vulnerabilities..."; } >"$tmp/n3-no-sbom-empty-waivers/stream.json"
+check n3-no-sbom-empty-waivers 1 "govulncheck-gate: FAIL"
+
+fixture n3-db-fetch-failed-empty-waivers
+: >"$tmp/n3-db-fetch-failed-empty-waivers/waivers.txt"
+{ config_msg symbol db-unreachable; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; } >"$tmp/n3-db-fetch-failed-empty-waivers/stream.json"
+check n3-db-fetch-failed-empty-waivers 1 "govulncheck-gate: FAIL"
+
+fixture n3-config-only-with-waiver
+config_msg >"$tmp/n3-config-only-with-waiver/stream.json"
+check n3-config-only-with-waiver 1 "govulncheck-gate: FAIL"
 
 fixture called-without-waiver-file-entry
 : >"$tmp/called-without-waiver-file-entry/waivers.txt"
@@ -238,11 +355,11 @@ printf '{"finding":{"osv":"GO-2026-7004","trace":[]}}\n' >>"$tmp/finding-without
 check finding-without-trace 1 "has no usable trace"
 
 fixture module-scan-level
-{ config_msg module; required "$osv" "$module" "$version"; } >"$tmp/module-scan-level/stream.json"
+{ config_msg module; sbom_msg; required "$osv" "$module" "$version"; } >"$tmp/module-scan-level/stream.json"
 check module-scan-level 1 "scan_level is 'module', want 'symbol'"
 
 fixture package-scan-level
-{ config_msg package; imported GO-2026-7003 golang.org/x/crypto v0.57.0; } >"$tmp/package-scan-level/stream.json"
+{ config_msg package; sbom_msg; imported GO-2026-7003 golang.org/x/crypto v0.57.0; } >"$tmp/package-scan-level/stream.json"
 check package-scan-level 1 "scan_level is 'package', want 'symbol'"
 
 fixture stream-missing
