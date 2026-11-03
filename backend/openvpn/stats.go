@@ -21,6 +21,10 @@ func statsKey(tag, email string) string {
 	return tag + "|" + email
 }
 
+func newUserStatsTracker() *stats.Tracker {
+	return stats.New()
+}
+
 func splitStatsKey(key string) (tag string) {
 	tag, _, _ = strings.Cut(key, "|")
 	return tag

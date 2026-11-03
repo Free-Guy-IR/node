@@ -90,7 +90,7 @@ func New(ctx context.Context, ovConfig *Config, users []*common.User, cfg *confi
 		version:      detectVersion(executableAbsolutePath),
 		startTime:    time.Now(),
 		logsChan:     make(chan string, logBufferSizeOrDefault(cfg)),
-		statsTracker: stats.New(),
+		statsTracker: newUserStatsTracker(),
 		cancelFunc:   bCancel,
 		retired:      make(map[string]*tagAccounting),
 		carriedIPs:   make(map[string]map[string]map[string]int64),

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/pasarguard/node/common"
-	"github.com/pasarguard/node/pkg/stats"
 )
 
 func newTrackersBackend(t *testing.T) (*Backend, *ManagementClient) {
@@ -20,7 +19,7 @@ func newTrackersBackend(t *testing.T) (*Backend, *ManagementClient) {
 
 	return &Backend{
 		instances:    map[string]*instanceProcess{"ovpn": instance},
-		statsTracker: stats.New(),
+		statsTracker: newUserStatsTracker(),
 	}, mgmt
 }
 
