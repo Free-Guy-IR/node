@@ -48,6 +48,7 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `a074e52`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
 | `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `bb210c9`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
 | `946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd` | fix(xray): keep Shadowsocks 2022 inbounds multi-user when they start empty (#114) | released in v0.5.5; ported on 2026-11-02 by `3d18e70` (the fix) and `fb11076` (the tests, committed first and failing on main), which both carry its `Upstream:` line. The tests are upstream's with the user key literal renamed to `example-user-one-key`, because the pre-push secret guard refuses a `Password:` literal without an example marker. The placeholder code is upstream's; it sits in the empty-client branch of `ToBytes` because the fork has not yet taken #58's snapshot serialiser, so merging #58 must move it into `wireClientsLocked`. chacha20 is left alone, as upstream does |
+| `71466f2a82c6c5e92d9a3c9e41944491c38abb76` | fix(xray): close restart races that drop removals or leave a stray core (#113) | released in v0.5.5; ported on 2026-11-03 by the fork's health-restart and sync-hold series pushed in `26bba5a8`; `c2ed9854` carries its `Upstream:` line, NODE-VERIFY-R3 passed the unit (verdicts/node-58-113.md) |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
 | `03f66e9b4817a961d3085134b3e1d532fd57862d` | deps: grpc 1.84.0 to 1.85.0 (#122) | on upstream `dev` only, in no tag (2026-11-02). Held under the release-only rule and waived as `pending` until 2026-11-30; the waiver says `dev-only`, so the check turns it `UNPORTED` the day an upstream tag contains it. See [State on 2026-11-02](#state-on-2026-11-02) |
@@ -615,10 +616,12 @@ Waivers removed because the run matched nothing for them (the check's own instru
 Pending waivers that fall due soon (none is extended here):
 
 - 2026-11-06: the three `masque` waivers, removed above, so nothing falls due that day.
-- 2026-11-08: nine node `v0.5.5` items, `47857d4` (the version bump), `24e2b12`, `bb40094`, `8ad52fe`, `71466f2`,
-  `d309483`, `1549c96`, `bd745b5` and `d359a8f`, owned by NODE-SYNC-055 and NODE-XRAY-RACE. `946ab6a` (#114) is ported
-  by the commit whose `Upstream:` trailer names it, so its waiver is gone.
-- 2026-11-10: node `a3d2d2f` (NODE-WG) and `33ab5fb` (NODE-SYNC-055 and NODE-XRAY-RACE), and Xray `8d0a7cf` (the
+- 2026-11-08: eight node `v0.5.5` items, `47857d4` (the version bump), `24e2b12`, `bb40094`, `8ad52fe`,
+  `d309483`, `1549c96`, `bd745b5` and `d359a8f`, owned by NODE-SYNC-055. `946ab6a` (#114) and `71466f2` (#113, ported
+  by `c2ed9854`, pushed to main on 2026-11-03 in `26bba5a8`) are ported by commits whose `Upstream:` trailer names
+  them, so their waivers are gone.
+- 2026-11-10: node `a3d2d2f` (NODE-WG) and `33ab5fb` (#58, NODE-LEAD: partly ported on main by `797adcf0`,
+  `9c99b8a1` and `83932cb0`; seven upstream ToBytes tests remain), and Xray `8d0a7cf` (the
   SS2022 races on branch `ss2022`, a decision owed by NODE-MISC-UPX).
 
 ### govulncheck on the patched Xray build
