@@ -267,12 +267,40 @@ func pushAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound
 		return nil
 	}
 
-	email := account.GetEmail()
 	var revokeErr error
 	if step == coreReplace {
-		revokeErr = revokeInboundUser(ctx, handler, inbound.Tag, email)
-		noteCoreProgress(ctx)
+		revokeErr = releaseAccount(ctx, handler, inbound, account)
 	}
+	return addAccount(ctx, handler, inbound, account, revokeErr)
+}
+
+func releaseAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, account api.Account) error {
+	err := revokeInboundUser(ctx, handler, inbound.Tag, account.GetEmail())
+	noteCoreProgress(ctx)
+	return err
+}
+
+func pushAccounts(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, accounts []api.Account, steps []coreStep) []error {
+	revokeErrs := make([]error, len(accounts))
+	for index, account := range accounts {
+		if steps[index] == coreReplace {
+			revokeErrs[index] = releaseAccount(ctx, handler, inbound, account)
+		}
+	}
+	var failures []error
+	for index, account := range accounts {
+		if steps[index] == coreUnchanged {
+			continue
+		}
+		if err := addAccount(ctx, handler, inbound, account, revokeErrs[index]); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return failures
+}
+
+func addAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, account api.Account, revokeErr error) error {
+	email := account.GetEmail()
 	err := handler.AddInboundUser(ctx, inbound.Tag, accountForAPI(inbound, account))
 	noteCoreProgress(ctx)
 	if err != nil {
@@ -450,11 +478,9 @@ func (x *Xray) updateUsersLocked(ctx context.Context, users []*common.User) erro
 			}
 		}
 
-		for index, account := range update.accounts {
-			if err := pushAccount(ctx, handler, inbound, account, steps[index]); err != nil {
-				log.Println(err)
-				errMessage.WriteString("\n" + err.Error())
-			}
+		for _, err := range pushAccounts(ctx, handler, inbound, update.accounts, steps) {
+			log.Println(err)
+			errMessage.WriteString("\n" + err.Error())
 		}
 	}
 

@@ -98,6 +98,16 @@ func (i *Inbound) admit(accounts []api.Account, leaving []string, rejections *ba
 		delete(i.waiting, email)
 	}
 	holders := i.credentialHoldersLocked(gone)
+	next := make(map[string]string, len(accounts))
+	for _, account := range accounts {
+		claim, _ := credentialClaim(i.Tag, account)
+		next[account.GetEmail()] = claim
+	}
+	for claim, holder := range holders {
+		if moved, inBatch := next[holder]; inBatch && moved != claim {
+			delete(holders, claim)
+		}
+	}
 
 	refused := make(map[string]struct{})
 	for _, account := range slices.SortedStableFunc(slices.Values(accounts), func(a, b api.Account) int {
