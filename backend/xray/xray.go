@@ -34,6 +34,10 @@ type Xray struct {
 	shutDown    bool
 	restartCore func(*Config) error
 	readyPoll   time.Duration
+
+	fullSyncReady time.Duration
+	restoreReady  time.Duration
+	restartReady  time.Duration
 }
 
 var errShutDown = errors.New("xray has been shut down")
@@ -42,8 +46,30 @@ const (
 	defaultStuckGrace   = 60 * time.Second
 	stuckSyncPoll       = 250 * time.Millisecond
 	restartReadyTimeout = 30 * time.Second
+	restoreReadyTimeout = 30 * time.Second
 	healthProbeTimeout  = 3 * time.Second
 )
+
+func (x *Xray) fullSyncReadyLimit() time.Duration {
+	if x.fullSyncReady > 0 {
+		return x.fullSyncReady
+	}
+	return fullSyncReadyTimeout
+}
+
+func (x *Xray) restoreReadyLimit() time.Duration {
+	if x.restoreReady > 0 {
+		return x.restoreReady
+	}
+	return restoreReadyTimeout
+}
+
+func (x *Xray) restartReadyLimit() time.Duration {
+	if x.restartReady > 0 {
+		return x.restartReady
+	}
+	return restartReadyTimeout
+}
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
 	executableAbsolutePath, err := filepath.Abs(cfg.XrayExecutablePath)
@@ -183,10 +209,11 @@ func (x *Xray) restartLocked(ctx context.Context) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, restartReadyTimeout)
+	limit := x.restartReadyLimit()
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	if err := x.checkXrayStatus(ctx); err != nil {
-		return fmt.Errorf("xray API not ready within %s after restart: %w", restartReadyTimeout, err)
+		return fmt.Errorf("xray API not ready within %s after restart: %w", limit, err)
 	}
 	return nil
 }

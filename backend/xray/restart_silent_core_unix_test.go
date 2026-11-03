@@ -37,6 +37,9 @@ func TestAHealthRestartRestartsTheSilentCoreAFailedFullSyncLeftBehind(t *testing
 	started := time.Now()
 	stats := &fakeStatsService{}
 	x := newFakeCoreXray(t, stats)
+	x.fullSyncReady = time.Second
+	x.restoreReady = time.Second
+	x.restartReady = time.Second
 	var inCoreRestarts atomic.Int64
 	x.restartCore = func(config *Config) error {
 		began := time.Now()

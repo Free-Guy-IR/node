@@ -422,7 +422,7 @@ func (x *Xray) applyConfigWithRestart(ctx context.Context, candidate *Config) er
 	}
 	noteCoreProgress(ctx)
 
-	readyCtx, cancel := backend.DetachFromCaller(ctx, fullSyncReadyTimeout)
+	readyCtx, cancel := backend.DetachFromCaller(ctx, x.fullSyncReadyLimit())
 	defer cancel()
 	if err := x.checkXrayStatus(readyCtx); err != nil {
 		if restoreErr := x.restorePreviousConfig(previous); restoreErr != nil {
@@ -445,7 +445,7 @@ func (x *Xray) restorePreviousConfig(previous *Config) error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), x.restoreReadyLimit())
 	defer cancel()
 	if err := x.checkXrayStatus(ctx); err != nil {
 		return err

@@ -17,6 +17,8 @@ func TestAHealthRestartPreemptsASilentFullSyncWhoseCallerAlreadyGaveUp(t *testin
 	stats := &fakeStatsService{}
 	x := newFakeCoreXray(t, stats)
 	x.stuckGrace = 500 * time.Millisecond
+	x.restoreReady = time.Second
+	x.restartReady = time.Second
 	if err := x.restartCoreWithConfig(x.config); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +43,7 @@ func TestAHealthRestartPreemptsASilentFullSyncWhoseCallerAlreadyGaveUp(t *testin
 		restartDone <- healthRestartResult{restarted, err}
 	}()
 
-	limit := 50 * time.Second
+	limit := 20 * time.Second
 	select {
 	case result := <-restartDone:
 		if !result.restarted {
