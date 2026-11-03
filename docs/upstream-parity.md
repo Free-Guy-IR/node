@@ -253,7 +253,7 @@ The script reads every pin from the checked commit, never from a hardcoded value
 | component | upstream | pin read from | pin on 2026-11-03 | line branch |
 |---|---|---|---|---|
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
-| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `5a7c1f1a31cd` | `oldstable` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `dbd00be874a0` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
 | `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `7d0f004a01dd`) | `master` |
 
