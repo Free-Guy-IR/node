@@ -206,13 +206,18 @@ func (a *eventAccumulator) snapshotLocked(tag string) []stats.Sample {
 // own eventAccumulator (each instance's Proxy has one, since a given
 // streamID only ever belongs to one instance's listener).
 type mtprotoEventStream struct {
-	accumulator *eventAccumulator
-	emailOf     func(username string) string
-	panics      *panicGuard
+	accumulator  *eventAccumulator
+	emailOf      func(username string) string
+	panics       *panicGuard
+	missingClose sync.Once
 }
 
 func newMtprotoEventStream(accumulator *eventAccumulator, emailOf func(string) string) *mtprotoEventStream {
 	return &mtprotoEventStream{accumulator: accumulator, emailOf: emailOf, panics: strayPanics}
+}
+
+func (s *mtprotoEventStream) alarmMissingClose() {
+	alarm(fmt.Sprintf("mtproto: %s: stream context has no Close, revoked sessions cannot be cut", s.panics.site), s.panics.record)
 }
 
 func (s *mtprotoEventStream) Send(ctx context.Context, event mtglib.Event) {
@@ -224,6 +229,8 @@ func (s *mtprotoEventStream) Send(ctx context.Context, event mtglib.Event) {
 		s.accumulator.authenticated(e.StreamID(), e.SecretID, s.emailOf(e.SecretID))
 		if stream, ok := ctx.(interface{ Close() }); ok {
 			liveSessionRegistry.Authenticated(e.StreamID(), e.SecretID, stream.Close)
+		} else {
+			s.missingClose.Do(s.alarmMissingClose)
 		}
 	case mtglib.EventTraffic:
 		s.accumulator.traffic(e.StreamID(), e.Traffic, e.IsRead)
