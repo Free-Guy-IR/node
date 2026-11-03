@@ -32,6 +32,7 @@ type Xray struct {
 	syncHolder  *userSync
 	stuckGrace  time.Duration
 	shutDown    bool
+	restartCore func(*Config) error
 }
 
 var errShutDown = errors.New("xray has been shut down")
@@ -184,6 +185,9 @@ func (x *Xray) restartCoreWithConfig(config *Config) error {
 	defer x.mu.Unlock()
 	if x.shutDown {
 		return errShutDown
+	}
+	if x.restartCore != nil {
+		return x.restartCore(config)
 	}
 	if err := x.core.Restart(config, x.cfg.Debug); err != nil {
 		return err
