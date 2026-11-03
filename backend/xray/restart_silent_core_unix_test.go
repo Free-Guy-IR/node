@@ -4,6 +4,7 @@ package xray
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -32,8 +33,19 @@ func TestAHealthRestartRestartsACoreASyncReplacedThatDoesNotAnswer(t *testing.T)
 }
 
 func TestAHealthRestartRestartsTheSilentCoreAFailedFullSyncLeftBehind(t *testing.T) {
+	const budget = 15 * time.Second
+	started := time.Now()
 	stats := &fakeStatsService{}
 	x := newFakeCoreXray(t, stats)
+	var inCoreRestarts atomic.Int64
+	x.restartCore = func(config *Config) error {
+		began := time.Now()
+		defer func() { inCoreRestarts.Add(int64(time.Since(began))) }()
+		return x.core.Restart(config, x.cfg.Debug)
+	}
+	overBudget := func() time.Duration {
+		return time.Since(started) - time.Duration(inCoreRestarts.Load()) - budget
+	}
 	if err := x.restartCoreWithConfig(x.config); err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +53,18 @@ func TestAHealthRestartRestartsTheSilentCoreAFailedFullSyncLeftBehind(t *testing
 
 	syncCtx, cancelSync := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelSync()
-	if err := x.SyncUsers(syncCtx, nil); err == nil {
-		t.Fatal("a full sync against a core that never answers succeeded")
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- x.SyncUsers(syncCtx, nil) }()
+	select {
+	case err := <-syncDone:
+		if err == nil {
+			t.Fatal("a full sync against a core that never answers succeeded")
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("the failed full sync still holds the node a minute later")
+	}
+	if over := overBudget(); over > 0 {
+		t.Fatalf("the failed full sync waited %s past the test's %s budget outside core restarts", over, budget)
 	}
 	if !x.core.Started() {
 		t.Fatal("the failed full sync left no core running")
@@ -61,4 +83,8 @@ func TestAHealthRestartRestartsTheSilentCoreAFailedFullSyncLeftBehind(t *testing
 	if got := corePID(x); got == silentPID {
 		t.Fatalf("a health restart that reported a restart left the silent core running (pid %d)", got)
 	}
+	if over := overBudget(); over > 0 {
+		t.Fatalf("the silent core recovery waited %s past the test's %s budget outside core restarts", over, budget)
+	}
+	t.Logf("took %s, %s of it in core restarts", time.Since(started).Round(time.Millisecond), time.Duration(inCoreRestarts.Load()).Round(time.Millisecond))
 }
