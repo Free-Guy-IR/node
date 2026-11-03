@@ -1,0 +1,110 @@
+diff --git a/app/proxyman/inbound/udp_conn_cancel_race_test.go b/app/proxyman/inbound/udp_conn_cancel_race_test.go
+new file mode 100644
+index 0000000..24aa775
+--- /dev/null
++++ b/app/proxyman/inbound/udp_conn_cancel_race_test.go
+@@ -0,0 +1,78 @@
++package inbound
++
++import (
++	"context"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/features/routing"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++)
++
++type unusedDispatcher struct{}
++
++func (unusedDispatcher) Type() interface{} { return routing.DispatcherType() }
++func (unusedDispatcher) Start() error      { return nil }
++func (unusedDispatcher) Close() error      { return nil }
++
++func (unusedDispatcher) Dispatch(context.Context, net.Destination) (*transport.Link, error) {
++	return &transport.Link{}, nil
++}
++
++func (unusedDispatcher) DispatchLink(context.Context, net.Destination, *transport.Link) error {
++	return nil
++}
++
++type cancelAwaitingProxy struct {
++	returned chan struct{}
++}
++
++func (p *cancelAwaitingProxy) Network() []net.Network { return []net.Network{net.Network_UDP} }
++
++func (p *cancelAwaitingProxy) Process(ctx context.Context, _ net.Network, _ stat.Connection, _ routing.Dispatcher) error {
++	<-ctx.Done()
++	p.returned <- struct{}{}
++	return nil
++}
++
++func TestUDPConnCancelIsPublishedUnderTheWorkerLockBeforeCleanClosesIt(t *testing.T) {
++	source := net.UDPDestination(net.LocalHostIP, net.Port(40000))
++	for iteration := 0; iteration < 50; iteration++ {
++		workerCtx, stopWorker := context.WithCancel(context.WithValue(context.Background(), "cone", true))
++		flow := &cancelAwaitingProxy{returned: make(chan struct{}, 1)}
++		w := &udpWorker{
++			proxy:      flow,
++			address:    net.LocalHostIP,
++			tag:        "udp-cancel-race",
++			stream:     &internet.MemoryStreamConfig{},
++			dispatcher: unusedDispatcher{},
++			ctx:        workerCtx,
++		}
++		common.Must(w.Start())
++
++		packet := buf.New()
++		common.Must2(packet.WriteString("probe"))
++		w.callback(packet, source, net.Destination{})
++
++		w.Lock()
++		conn := w.activeConn[connID{src: source}]
++		atomic.StoreInt64(&conn.lastActivityTime, 0)
++		w.Unlock()
++
++		w.clean()
++
++		stopWorker()
++		select {
++		case <-flow.returned:
++		case <-time.After(2 * time.Second):
++			t.Fatalf("iteration %d: udp flow did not end after its worker context was cancelled", iteration)
++		}
++		w.Close()
++	}
++}
+diff --git a/app/proxyman/inbound/worker.go b/app/proxyman/inbound/worker.go
+index 02404cf..8278da7 100644
+--- a/app/proxyman/inbound/worker.go
++++ b/app/proxyman/inbound/worker.go
+@@ -333,7 +333,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
+ 
+ 		go func() {
+ 			ctx, cancel := context.WithCancel(w.ctx)
+-			conn.cancel = cancel
++			w.publishCancel(conn, cancel)
+ 			sid := session.NewID()
+ 			ctx = c.ContextWithID(ctx, sid)
+ 
+@@ -372,6 +372,12 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
+ 	}
+ }
+ 
++func (w *udpWorker) publishCancel(conn *udpConn, cancel context.CancelFunc) {
++	w.Lock()
++	defer w.Unlock()
++	conn.cancel = cancel
++}
++
+ func (w *udpWorker) removeConn(id connID, conn *udpConn) {
+ 	w.Lock()
+ 	defer w.Unlock()

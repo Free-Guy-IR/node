@@ -1,8 +1,8 @@
 diff --git a/common/protocol/http/headers.go b/common/protocol/http/headers.go
-index 448bd1a..cedacb0 100644
+index 61a0700..f67160b 100644
 --- a/common/protocol/http/headers.go
 +++ b/common/protocol/http/headers.go
-@@ -1,12 +1,10 @@
+@@ -1,41 +1,16 @@
  package http
  
  import (
@@ -14,8 +14,6 @@ index 448bd1a..cedacb0 100644
 -	"github.com/xtls/xray-core/common/errors"
  	"github.com/xtls/xray-core/common/net"
  )
- 
-@@ -26,30 +24,7 @@ func ParseXForwardedFor(header http.Header) []net.Address {
  
  // ApplyTrustedXForwardedFor returns remoteAddr overridden by X-Forwarded-For only when a configured trusted header is present.
  func ApplyTrustedXForwardedFor(header http.Header, trusted []string, remoteAddr net.Addr) net.Addr {
@@ -47,6 +45,157 @@ index 448bd1a..cedacb0 100644
  }
  
  // RemoveHopByHopHeaders removes hop by hop headers in http header list.
+diff --git a/common/protocol/http/headers_fork_test.go b/common/protocol/http/headers_fork_test.go
+new file mode 100644
+index 0000000..4c0228d
+--- /dev/null
++++ b/common/protocol/http/headers_fork_test.go
+@@ -0,0 +1,141 @@
++package http_test
++
++import (
++	"bufio"
++	gonet "net"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/net"
++	. "github.com/xtls/xray-core/common/protocol/http"
++)
++
++func TestApplyTrustedXForwardedFor(t *testing.T) {
++	remoteAddr := &gonet.TCPAddr{IP: gonet.ParseIP("127.0.0.1"), Port: 12345}
++
++	t.Run("ignore X-Forwarded-For without trusted header", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "192.0.2.10, 198.51.100.20")
++
++		if addr := ApplyTrustedXForwardedFor(header, nil, remoteAddr); addr != remoteAddr {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++
++	t.Run("ignore a present trusted header without XRAY_TRUSTED_FORWARDER_CIDRS", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "fd00::1, fd00::2")
++		header.Add("X-Trusted-CDN", "fd00::3")
++
++		if addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr); addr != remoteAddr {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++
++	t.Run("ignore a trusted header that is not an IP", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "fd00::1")
++		header.Add("X-Trusted-CDN", "example.com")
++
++		if addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr); addr != remoteAddr {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++}
++
++func TestHopByHopHeadersRemoving(t *testing.T) {
++	rawRequest := `GET /pkg/net/http/ HTTP/1.1
++Host: golang.org
++Connection: keep-alive,Foo, Bar
++Foo: foo
++Bar: bar
++Proxy-Connection: keep-alive
++Proxy-Authenticate: abc
++Accept-Encoding: gzip
++Accept-Charset: ISO-8859-1,UTF-8;q=0.7,*;q=0.7
++Cache-Control: no-cache
++Accept-Language: de,en;q=0.7,en-us;q=0.3
++
++`
++	b := bufio.NewReader(strings.NewReader(rawRequest))
++	req, err := http.ReadRequest(b)
++	common.Must(err)
++	headers := []struct {
++		Key   string
++		Value string
++	}{
++		{
++			Key:   "Foo",
++			Value: "foo",
++		},
++		{
++			Key:   "Bar",
++			Value: "bar",
++		},
++		{
++			Key:   "Connection",
++			Value: "keep-alive,Foo, Bar",
++		},
++		{
++			Key:   "Proxy-Connection",
++			Value: "keep-alive",
++		},
++		{
++			Key:   "Proxy-Authenticate",
++			Value: "abc",
++		},
++	}
++	for _, header := range headers {
++		if v := req.Header.Get(header.Key); v != header.Value {
++			t.Error("header ", header.Key, " = ", v, " want ", header.Value)
++		}
++	}
++
++	RemoveHopByHopHeaders(req.Header)
++
++	for _, header := range []string{"Connection", "Foo", "Bar", "Proxy-Connection", "Proxy-Authenticate"} {
++		if v := req.Header.Get(header); v != "" {
++			t.Error("header ", header, " = ", v)
++		}
++	}
++}
++
++func TestParseHost(t *testing.T) {
++	testCases := []struct {
++		RawHost     string
++		DefaultPort net.Port
++		Destination net.Destination
++		Error       bool
++	}{
++		{
++			RawHost:     "example.com:80",
++			DefaultPort: 443,
++			Destination: net.TCPDestination(net.DomainAddress("example.com"), 80),
++		},
++		{
++			RawHost:     "tls.example.com",
++			DefaultPort: 443,
++			Destination: net.TCPDestination(net.DomainAddress("tls.example.com"), 443),
++		},
++		{
++			RawHost:     "[2401:1bc0:51f0:ec08::1]:80",
++			DefaultPort: 443,
++			Destination: net.TCPDestination(net.ParseAddress("[2401:1bc0:51f0:ec08::1]"), 80),
++		},
++	}
++
++	for _, testCase := range testCases {
++		dest, err := ParseHost(testCase.RawHost, testCase.DefaultPort)
++		if testCase.Error {
++			if err == nil {
++				t.Error("for test case: ", testCase.RawHost, " expected error, but actually nil")
++			}
++		} else {
++			if dest != testCase.Destination {
++				t.Error("for test case: ", testCase.RawHost, " expected host: ", testCase.Destination.String(), " but got ", dest.String())
++			}
++		}
++	}
++}
+diff --git a/common/protocol/http/headers_test.go b/common/protocol/http/headers_test.go.upstream
+similarity index 100%
+rename from common/protocol/http/headers_test.go
+rename to common/protocol/http/headers_test.go.upstream
 diff --git a/common/protocol/http/trusted_forwarder.go b/common/protocol/http/trusted_forwarder.go
 new file mode 100644
 index 0000000..7545ba2
@@ -350,38 +499,6 @@ index 0000000..232f085
 +		})
 +	}
 +}
-diff --git a/common/protocol/http/trusted_xff_test.go b/common/protocol/http/trusted_xff_test.go
-index 4f2c821..0b87b67 100644
---- a/common/protocol/http/trusted_xff_test.go
-+++ b/common/protocol/http/trusted_xff_test.go
-@@ -20,21 +20,20 @@ func TestApplyTrustedXForwardedFor(t *testing.T) {
- 		}
- 	})
- 
--	t.Run("trust X-Forwarded-For", func(t *testing.T) {
-+	t.Run("ignore a present trusted header without XRAY_TRUSTED_FORWARDER_CIDRS", func(t *testing.T) {
- 		header := http.Header{}
- 		header.Add("X-Forwarded-For", "fd00::1, fd00::2")
--		header.Add("X-Trusted-CDN", "")
-+		header.Add("X-Trusted-CDN", "fd00::3")
- 
--		addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr)
--		if addr.String() != "[fd00::1]:0" {
-+		if addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr); addr != remoteAddr {
- 			t.Fatalf("unexpected remote address: %v", addr)
- 		}
- 	})
- 
--	t.Run("ignore non-IP X-Forwarded-For", func(t *testing.T) {
-+	t.Run("ignore a trusted header that is not an IP", func(t *testing.T) {
- 		header := http.Header{}
--		header.Add("X-Forwarded-For", "example.com")
--		header.Add("X-Trusted-CDN", "")
-+		header.Add("X-Forwarded-For", "fd00::1")
-+		header.Add("X-Trusted-CDN", "example.com")
- 
- 		if addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr); addr != remoteAddr {
- 			t.Fatalf("unexpected remote address: %v", addr)
 diff --git a/testing/trustedheader/trustedheader.go b/testing/trustedheader/trustedheader.go
 new file mode 100644
 index 0000000..c5be527
@@ -580,7 +697,7 @@ index 0000000..c5be527
 +	}
 +}
 diff --git a/transport/internet/grpc/encoding/remoteaddr.go b/transport/internet/grpc/encoding/remoteaddr.go
-index a28d919..b8a71c6 100644
+index 5c71f75..e573bed 100644
 --- a/transport/internet/grpc/encoding/remoteaddr.go
 +++ b/transport/internet/grpc/encoding/remoteaddr.go
 @@ -2,10 +2,9 @@ package encoding
@@ -595,7 +712,7 @@ index a28d919..b8a71c6 100644
  	"google.golang.org/grpc/metadata"
  	"google.golang.org/grpc/peer"
  )
-@@ -26,33 +25,5 @@ func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
+@@ -26,35 +25,7 @@ func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
  		return remoteAddr
  	}
  
@@ -630,32 +747,71 @@ index a28d919..b8a71c6 100644
 -	return nil
 +	return http_proto.TrustedClientAddress(md.Get, trusted, remoteAddr)
  }
-diff --git a/transport/internet/grpc/encoding/remoteaddr_test.go b/transport/internet/grpc/encoding/remoteaddr_test.go
-index a016c6f..e4ade78 100644
---- a/transport/internet/grpc/encoding/remoteaddr_test.go
-+++ b/transport/internet/grpc/encoding/remoteaddr_test.go
-@@ -17,16 +17,16 @@ func TestRemoteAddrFromContext(t *testing.T) {
- 		expectedRemoteAddress string
- 	}{
- 		{
--			name:                  "trust X-Forwarded-For when configured",
+ 
+ func localAddrFromContext(ctx context.Context) net.Addr {
+diff --git a/transport/internet/grpc/encoding/remoteaddr_fork_test.go b/transport/internet/grpc/encoding/remoteaddr_fork_test.go
+new file mode 100644
+index 0000000..b471c7d
+--- /dev/null
++++ b/transport/internet/grpc/encoding/remoteaddr_fork_test.go
+@@ -0,0 +1,53 @@
++package encoding
++
++import (
++	"context"
++	"net"
++	"testing"
++
++	"google.golang.org/grpc/metadata"
++	"google.golang.org/grpc/peer"
++)
++
++func TestRemoteAddrFromContext(t *testing.T) {
++	tests := []struct {
++		name                  string
++		metadata              metadata.MD
++		trustedXForwardedFor  []string
++		expectedRemoteAddress string
++	}{
++		{
 +			name:                  "X-Forwarded-For as trusted header without XRAY_TRUSTED_FORWARDER_CIDRS",
- 			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::2, fd00::3"),
- 			trustedXForwardedFor:  []string{"X-Forwarded-For"},
--			expectedRemoteAddress: "[fd00::2]:0",
++			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::2, fd00::3"),
++			trustedXForwardedFor:  []string{"X-Forwarded-For"},
 +			expectedRemoteAddress: "127.0.0.1:12345",
- 		},
- 		{
--			name:                  "trust X-Forwarded-For with trusted marker",
--			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::4", "X-Trusted-CDN", "1"),
++		},
++		{
 +			name:                  "trusted marker without XRAY_TRUSTED_FORWARDER_CIDRS",
 +			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::4", "X-Trusted-CDN", "fd00::6"),
- 			trustedXForwardedFor:  []string{"X-Trusted-CDN"},
--			expectedRemoteAddress: "[fd00::4]:0",
++			trustedXForwardedFor:  []string{"X-Trusted-CDN"},
 +			expectedRemoteAddress: "127.0.0.1:12345",
- 		},
- 		{
- 			name:                  "ignore X-Forwarded-For without trusted marker",
++		},
++		{
++			name:                  "ignore X-Forwarded-For without trusted marker",
++			metadata:              metadata.Pairs("X-Forwarded-For", "203.0.113.5"),
++			trustedXForwardedFor:  []string{"X-Trusted-CDN"},
++			expectedRemoteAddress: "127.0.0.1:12345",
++		},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			ctx := peer.NewContext(metadata.NewIncomingContext(context.Background(), test.metadata), &peer.Peer{
++				Addr: &net.TCPAddr{
++					IP:   net.ParseIP("127.0.0.1"),
++					Port: 12345,
++				},
++			})
++			remoteAddr := remoteAddrFromContext(ctx, test.trustedXForwardedFor)
++			if remoteAddr.String() != test.expectedRemoteAddress {
++				t.Fatalf("unexpected remote address: %s", remoteAddr.String())
++			}
++		})
++	}
++}
+diff --git a/transport/internet/grpc/encoding/remoteaddr_test.go b/transport/internet/grpc/encoding/remoteaddr_test.go.upstream
+similarity index 100%
+rename from transport/internet/grpc/encoding/remoteaddr_test.go
+rename to transport/internet/grpc/encoding/remoteaddr_test.go.upstream
 diff --git a/transport/internet/grpc/encoding/trusted_header_test.go b/transport/internet/grpc/encoding/trusted_header_test.go
 new file mode 100644
 index 0000000..0c481dc
@@ -788,7 +944,7 @@ index 0000000..cf45a9e
 +	trustedheader.Run(t, "TestTrustedHeaderScenarios", sourceBehindHeaders)
 +}
 diff --git a/transport/internet/splithttp/splithttp_test.go b/transport/internet/splithttp/splithttp_test.go
-index 62ca858..c395760 100644
+index 434108f..7007abf 100644
 --- a/transport/internet/splithttp/splithttp_test.go
 +++ b/transport/internet/splithttp/splithttp_test.go
 @@ -119,7 +119,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
