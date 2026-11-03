@@ -253,7 +253,7 @@ The script reads every pin from the checked commit, never from a hardcoded value
 | component | upstream | pin read from | pin on 2026-11-03 | line branch |
 |---|---|---|---|---|
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
-| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `899005e1b8bf` | `oldstable` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `5a7c1f1a31cd` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
 | `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `7d0f004a01dd`) | `master` |
 
@@ -748,6 +748,39 @@ so sing-quic stays `v0.6.5`.
 - The node commit that moves the pin carries `Upstream: a0c58542bd9d99b00ea0c3cfacce6f03cf8a4017`. The drift check
   does not watch sing-vmess, so that line and this entry are its record.
 - F-VSB-1 is not fixed by this move: the fork's `go.mod` at `899005e1b8bf` still takes sing `v0.8.14`, sing-mux
+  `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`. It stays open, owned by NODE-LEAD, due
+  2026-11-20.
+
+### State on 2026-11-03: the sing-box pin moves to `5a7c1f1a31cd`
+
+`SINGBOX_COMMIT` moves from `899005e1b8bf093c6bc9dd83dd8e147f6b02609b` to
+`5a7c1f1a31cd11998ad249f00216f3a7add47d2b`, the head of Free-Guy-IR/sing-box `main` on 2026-11-03: 11 commits ahead of
+the old pin and 0 behind it (GitHub compare). `SINGBOX_VERSION` stays `v1.13.21`. The only `go.mod` change is the
+`require` label of sing-vmess, from `v0.2.8-0.20250909125414-3aed155119a1` to `v0.2.9-0.20261019223527-a0c58542bd9d`;
+the `replace` to `./third_party/sing-vmess` is unchanged, so the build still uses the vendored copy, and sing-quic stays
+`v0.6.5`.
+
+- The 11 commits touch only `third_party/sing-vmess` and `go.mod`; no Hysteria2 or sing-quic file changes. Three are
+  verbatim ports of upstream SagerNet/sing-vmess, line for line identical to the upstream patches:
+  - `16c45bead5fd` is `40a1d62fd3a9377f7aeb9e819f7ee316b36e88c8` ("Fix reshaping buffer maybe too long in vision",
+    `vless/constant.go`, +10 -4): `reshapeBuffer` now splits a padded vision write into pieces under the 8171 byte
+    limit in a loop, instead of one split that could leave a piece too long for the 16-bit padding length.
+  - `b6e03b6ee27b` is `2a5002728353ef1a75f3695516ecf6eb45a63ffc` ("Skip empty chunk write", `chunk_length_aead.go`
+    and `chunk_length_stream.go`, +7 each): an empty `Write` or `WriteBuffer` on a VMess chunk writer is a no-op
+    instead of a zero-length chunk, which the peer reads as end of stream.
+  - `6335d5d0f70e` is `31ec11e8790c48a4bf11711806a61e929ee6b89d` ("Add reader overhead", `protocol.go`, `client.go`,
+    `service.go`, `packetaddr/conn.go`): VMess client and server conns and packetaddr conns report `ReaderOverhead`,
+    which sing `v0.8.14` adds to the read buffer size in `ReadWaitOptions` when the MTU is above 0.
+- `b7153ab31d77` changes the sing-vmess `require` label above. With these three and the earlier ports of `9b95ab8` and
+  `a0c58542bd9d`, the vendored copy holds all 5 upstream commits after `3aed155119a1` up to `a0c58542bd9d` (GitHub
+  compare).
+- The other 7 add fork tests: `vless/vision_reshape_test.go`, `chunk_length_empty_test.go`,
+  `reader_overhead_test.go` and `packetaddr/conn_test.go`.
+- CI on the fork for `5a7c1f1a31cd`: Fork Verify run `41653553453` and Fork Vulncheck run `41653553556`, both
+  `completed`/`success`.
+- The node commit that moves the pin carries an `Upstream:` line for each of the three ports. The drift check does not
+  watch sing-vmess, so those lines and this entry are their record.
+- F-VSB-1 is not fixed by this move: the fork's `go.mod` at `5a7c1f1a31cd` still takes sing `v0.8.14`, sing-mux
   `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`. It stays open, owned by NODE-LEAD, due
   2026-11-20.
 
