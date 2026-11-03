@@ -235,9 +235,15 @@ func assertReportsDeadThenRecovers(t *testing.T, b *Backend, tag string, port in
 	faulty.fatal.Store(true)
 	servedOnce(port, 200*time.Millisecond)
 
-	blockerMu.Lock()
-	held := blocker
-	blockerMu.Unlock()
+	var held net.Listener
+	for deadline := time.Now().Add(3 * time.Second); held == nil && time.Now().Before(deadline); {
+		blockerMu.Lock()
+		held = blocker
+		blockerMu.Unlock()
+		if held == nil {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	if held == nil {
 		t.Fatal("the test could not occupy the port after the fatal error")
 	}
