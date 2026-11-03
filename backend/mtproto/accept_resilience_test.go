@@ -259,6 +259,7 @@ func assertReportsDeadThenRecovers(t *testing.T, b *Backend, tag string, port in
 func TestMTProtoKeepsServingAfterATransientAcceptError(t *testing.T) {
 	b, port := plainInstanceBackend(t)
 	assertServesAfterTransientError(t, b, "mtproto-tg-plain", port)
+	failOnPanicLines(t, b)
 	if outcome := plainHandshakeOutcome(t, b, port, initialSecretA); outcome != handshakeAccepted {
 		t.Fatalf("an authorised client must still pass the handshake after the transient error, got %s", outcome)
 	}
@@ -274,6 +275,7 @@ func TestMTProtoIsNoZombieAfterAFatalListenerError(t *testing.T) {
 func TestMTProtoReportsDeadWhileItCannotRelistenAndRecovers(t *testing.T) {
 	b, port := plainInstanceBackend(t)
 	assertReportsDeadThenRecovers(t, b, "mtproto-tg-plain", port)
+	failOnPanicLines(t, b)
 	if outcome := plainHandshakeOutcome(t, b, port, initialSecretA); outcome != handshakeAccepted {
 		t.Fatalf("an authorised client must pass the handshake after the recovery, got %s", outcome)
 	}

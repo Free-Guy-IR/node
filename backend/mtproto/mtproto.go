@@ -49,22 +49,16 @@ type proxyInstance struct {
 }
 
 func (pi *proxyInstance) serve(listener net.Listener) {
+	handle := newSupervisedListener(listener)
+	served := net.Listener(handle)
 	if pi.streams != nil {
-		listener = pi.streams.track(listener)
+		served = pi.streams.track(handle)
 	}
 	done := make(chan struct{})
-	pi.listener = listener
+	pi.listener = handle
 	pi.serveDone = done
 
-	go func() {
-		defer close(done)
-		defer pi.absorbServePanic(listener)
-		if pi.mp != nil {
-			_ = pi.mp.Serve(listener)
-			return
-		}
-		_ = pi.proxy.Serve(listener)
-	}()
+	go pi.supervise(handle, served, done)
 }
 
 func (pi *proxyInstance) absorbServePanic(listener net.Listener) {
@@ -369,7 +363,7 @@ func (b *Backend) Started() bool {
 		return false
 	}
 	for _, inst := range b.instances {
-		if inst.listener == nil {
+		if inst.listener == nil || inst.listenerDead() {
 			return false
 		}
 	}
