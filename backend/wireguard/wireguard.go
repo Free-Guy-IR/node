@@ -137,7 +137,7 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	wg := &WireGuard{
 		cancelFunc:     wgCancel,
 		cfg:            cfg,
-		statsTracker:   stats.New(),
+		statsTracker:   stats.NewRestartingOnAnyDip(),
 		interfaceStats: stats.NewInterfaceCountersTracker(),
 		peerStore:      NewPeerStore(),
 		logChan:        make(chan string, cfg.LogBufferSize),

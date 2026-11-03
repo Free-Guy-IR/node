@@ -85,6 +85,10 @@ func (st *Tracker) applySampleLocked(sample Sample, activeAt time.Time) {
 		entry.IsDeleted = false
 	}
 
+	if st.restartOnAnyDip && (sample.Rx < entry.CurrentRx || sample.Tx < entry.CurrentTx) {
+		restartEntryCounters(entry)
+	}
+
 	// Skip update if values haven't changed
 	if entry.CurrentRx == sample.Rx && entry.CurrentTx == sample.Tx {
 		if !sample.Quiet {
@@ -153,7 +157,7 @@ func (st *Tracker) Detach() *Tracker {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	detached := &Tracker{stats: st.stats}
+	detached := &Tracker{stats: st.stats, restartOnAnyDip: st.restartOnAnyDip}
 	st.stats = make(map[string]*Entry)
 	return detached
 }
