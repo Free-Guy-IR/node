@@ -18,9 +18,15 @@ STRICT_LIST_OPERATORS = ("&&", "|", "(", ")", "<", ">", ">>", ">&", "<&")
 APPLY_FLAGS = ("-v", "--verbose", "-q", "--quiet", "--index", "-3", "--3way", "--recount", "--ignore-whitespace", "--ignore-space-change")
 APPLY_FLAG_RE = re.compile(r"^(?:-p\d+|-C\d+|--whitespace=[a-z-]+)$")
 MAJOR_SUFFIX_RE = re.compile(r"/v\d+$")
+DIRECTIVE_RE = re.compile(r"^\s*#\s*(?:escape|syntax)\s*=", re.IGNORECASE)
+WORD_SPLIT_RE = re.compile(r"[\s;&|()<>`]+")
 
 
 class GateError(Exception):
+    pass
+
+
+class DockerfileError(Exception):
     pass
 
 
@@ -185,10 +191,14 @@ def read_waivers(path):
 def dockerfile_instructions(dockerfile):
     instructions = []
     current = None
-    for raw in dockerfile.splitlines():
+    for number, raw in enumerate(dockerfile.splitlines(), 1):
+        if DIRECTIVE_RE.match(raw):
+            raise DockerfileError(f"the Dockerfile sets a parser directive on line {number}; the gate reads only the default Dockerfile grammar and frontend, so it cannot tell which lines are instructions")
         stripped = raw.strip()
         if stripped.startswith("#") or not stripped:
             continue
+        if "<<" in raw:
+            raise DockerfileError(f"the Dockerfile has '<<' on line {number}; the gate does not read heredocs, so it cannot tell a heredoc body from an instruction")
         line = raw.rstrip()
         continued = line.endswith("\\")
         if continued:
@@ -265,8 +275,10 @@ def strict_commands(command):
             lists.append([])
         else:
             lists[-1].append(token)
+    while len(lists) > 1 and not lists[-1]:
+        lists.pop()
     commands = []
-    for tokens in lists:
+    for tokens in lists[-1:]:
         operators = [text for kind, text in tokens if kind == "operator"]
         if any(operator not in STRICT_LIST_OPERATORS for operator in operators):
             continue
@@ -318,31 +330,135 @@ def source_repository(url):
     return text
 
 
-def module_built_from(module, repositories):
+def module_paths(module):
     path = module.lower()
-    return path in repositories or MAJOR_SUFFIX_RE.sub("", path) in repositories
+    return {path, MAJOR_SUFFIX_RE.sub("", path)}
 
 
-def applied_patch_names(dockerfile):
-    applied = {}
-    fetched = None
+def module_built_from(module, repositories):
+    return bool(module_paths(module) & set(repositories))
+
+
+def module_reference(word):
+    text = word.strip("'\"").lower().split("#", 1)[0]
+    text = re.sub(r"^(?:https?|git|ssh)://", "", text)
+    text = re.sub(r"^[^@/]+@", "", text)
+    text = re.sub(r"^([^/:]+):(?!\d)", r"\1/", text)
+    text = text.rstrip("/")
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text
+
+
+def instruction_flags(words):
+    flags = []
+    for word in words[1:]:
+        if not word.startswith("--"):
+            break
+        flags.append(word[2:])
+    return flags
+
+
+def flag_values(flags, name):
+    values = []
+    for flag in flags:
+        key, _, value = flag.partition("=")
+        if key.lower() == name:
+            values.append(value)
+    return values
+
+
+def mount_sources(flags):
+    sources = []
+    for value in flag_values(flags, "mount"):
+        if "'" in value or '"' in value:
+            raise DockerfileError(f"the RUN mount {value!r} is quoted; the gate cannot tell which stage it reads")
+        for field in value.split(","):
+            key, _, source = field.partition("=")
+            if key.strip().lower() == "from":
+                sources.append(source.strip())
+    return sources
+
+
+def resolve_stage(reference, names, current, numeric):
+    text = reference.lower()
+    if "$" in text or "'" in text or '"' in text:
+        raise DockerfileError(f"stage {current} refers to {reference!r}, which is not a literal name; the gate cannot tell which stage it builds")
+    if numeric and text.isdigit():
+        index = int(text)
+    elif text in names:
+        index = names[text]
+    else:
+        return None
+    if index >= current:
+        raise DockerfileError(f"stage {current} refers to {reference!r}, which is not an earlier stage")
+    return index
+
+
+def dockerfile_stages(dockerfile):
+    stages = []
+    names = {}
     for instruction in dockerfile_instructions(dockerfile):
-        keyword = instruction.split(None, 1)[0].upper()
+        words = instruction.split()
+        keyword = words[0].upper()
+        flags = instruction_flags(words)
         if keyword == "FROM":
-            fetched = set()
-            continue
-        if keyword != "RUN" or fetched is None:
-            continue
-        for words in strict_commands(run_command(instruction)):
-            if len(words) == 5 and words[:3] == ["git", "remote", "add"] and not words[3].startswith("-"):
-                fetched.add(source_repository(words[4]))
-            elif words[:2] == ["git", "apply"]:
-                for name in applied_patch_files(words):
-                    applied.setdefault(name, set()).update(fetched)
-    return applied
+            rest = words[1 + len(flags):]
+            if len(rest) == 3 and rest[1].lower() == "as":
+                name = rest[2].lower()
+                if name in names:
+                    raise DockerfileError(f"the Dockerfile names two stages {name!r}")
+                names[name] = len(stages)
+            elif len(rest) != 1:
+                raise DockerfileError(f"cannot read the instruction {instruction!r}")
+            stages.append({"base": rest[0], "references": [], "instructions": []})
+        elif stages:
+            stages[-1]["instructions"].append((keyword, instruction, flags))
+            if keyword == "COPY":
+                stages[-1]["references"].extend(flag_values(flags, "from"))
+            elif keyword == "RUN":
+                stages[-1]["references"].extend(mount_sources(flags))
+    for index, stage in enumerate(stages):
+        parents = set()
+        base = resolve_stage(stage["base"], names, index, False)
+        if base is not None:
+            parents.add(base)
+        for reference in stage["references"]:
+            parent = resolve_stage(reference, names, index, True)
+            if parent is not None:
+                parents.add(parent)
+        stage["parents"] = parents
+        stage["fetched"] = set()
+        stage["applied"] = {}
+        stage["sources"] = set()
+        for keyword, instruction, flags in stage["instructions"]:
+            stage["sources"].update(module_reference(word) for word in WORD_SPLIT_RE.split(instruction) if word)
+            if keyword != "RUN":
+                continue
+            for words in strict_commands(run_command(instruction)):
+                if len(words) == 5 and words[:3] == ["git", "remote", "add"] and not words[3].startswith("-"):
+                    stage["fetched"].add(source_repository(words[4]))
+                elif words[:2] == ["git", "apply"]:
+                    for name in applied_patch_files(words):
+                        stage["applied"].setdefault(name, set()).update(stage["fetched"])
+    return stages
 
 
-def check_waiver(waiver, today, root, applied, dockerfile_problem):
+def reachable_stages(stages):
+    if not stages:
+        return set()
+    seen = set()
+    pending = [len(stages) - 1]
+    while pending:
+        index = pending.pop()
+        if index in seen:
+            continue
+        seen.add(index)
+        pending.extend(stages[index]["parents"])
+    return seen
+
+
+def check_waiver(waiver, today, root, stages, dockerfile_problem):
     if today > waiver.expires:
         waiver.problems.append(f"expired on {waiver.expires.isoformat()}; fix the vulnerability or renew the waiver with a fresh review")
     elif (waiver.expires - today).days > MAX_WAIVER_DAYS:
@@ -357,10 +473,17 @@ def check_waiver(waiver, today, root, applied, dockerfile_problem):
         waiver.problems.append(f"{patch} does not exist")
     if dockerfile_problem:
         waiver.problems.append(dockerfile_problem)
-    elif os.path.basename(patch) not in applied:
-        waiver.problems.append(f"no 'git apply' line in the Dockerfile applies {os.path.basename(patch)}")
-    elif not module_built_from(waiver.module, applied[os.path.basename(patch)]):
-        waiver.problems.append(f"{os.path.basename(patch)} is applied only in Dockerfile stages that did not first 'git remote add' the {waiver.module} source, so it cannot patch {waiver.module}")
+        return
+    name = os.path.basename(patch)
+    built = [stages[index] for index in sorted(reachable_stages(stages))]
+    if not any(name in stage["applied"] for stage in stages):
+        waiver.problems.append(f"no 'git apply' line in the Dockerfile applies {name}")
+    elif not any(name in stage["applied"] for stage in built):
+        waiver.problems.append(f"{name} is applied only in Dockerfile stages that the final stage never builds")
+    elif not any(module_built_from(waiver.module, stage["applied"].get(name, ())) for stage in built):
+        waiver.problems.append(f"{name} is applied only in Dockerfile stages that did not first 'git remote add' the {waiver.module} source, so it cannot patch {waiver.module}")
+    elif any(stage["sources"] & module_paths(waiver.module) and not module_built_from(waiver.module, stage["applied"].get(name, ())) for stage in built):
+        waiver.problems.append(f"a Dockerfile stage that the final stage builds takes the {waiver.module} source without applying {name}")
 
 
 def run(waiver_path, stream_path, root):
@@ -371,14 +494,16 @@ def run(waiver_path, stream_path, root):
     waivers, problems = read_waivers(waiver_path)
 
     dockerfile_problem = ""
-    applied = {}
+    stages = []
     try:
         with open(os.path.join(root, "Dockerfile"), encoding="utf-8") as handle:
-            applied = applied_patch_names(handle.read())
+            stages = dockerfile_stages(handle.read())
     except (OSError, UnicodeDecodeError) as exc:
         dockerfile_problem = f"cannot read the Dockerfile in {root}: {exc}"
+    except DockerfileError as exc:
+        dockerfile_problem = str(exc)
     for waiver in waivers:
-        check_waiver(waiver, today, root, applied, dockerfile_problem)
+        check_waiver(waiver, today, root, stages, dockerfile_problem)
 
     by_key = {waiver.key(): waiver for waiver in waivers}
     used = set()
