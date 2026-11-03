@@ -204,3 +204,26 @@ func TestPanelMainMtprotoRemovalsRacingReaddsAndFullSyncsLeaveNoStaleUserAndLose
 		t.Fatalf("bob must still connect after the races, got %s", outcome)
 	}
 }
+
+func TestAPayloadWithOnlyAnMtprotoUsernameAndAnUnusableSecretRevokesThatUsername(t *testing.T) {
+	b := scopedBackend(removalTag)
+	for _, apply := range []func(*common.User) error{
+		func(user *common.User) error { return b.UpdateUsers(context.Background(), []*common.User{user}) },
+		func(user *common.User) error { return b.SyncUser(context.Background(), user) },
+	} {
+		b.applyInitialUsers([]*common.User{
+			{Email: "e1", Inbounds: []string{removalTag}, Proxies: &common.Proxy{Mtproto: &common.MtprotoUser{Username: "u", Secret: initialSecretA}}},
+			credentialedUser(removalBob, removalSecret, removalTag),
+		})
+		if err := apply(&common.User{Inbounds: []string{removalTag}, Proxies: &common.Proxy{Mtproto: &common.MtprotoUser{Username: "u", Secret: "zz"}}}); err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		entries := authorisedEntries(b)
+		if _, kept := entries["u"]; kept {
+			t.Errorf("a payload naming username u with an unusable secret left u authorised")
+		}
+		if _, kept := entries[removalBob]; !kept {
+			t.Errorf("the payload for u dropped bob")
+		}
+	}
+}
