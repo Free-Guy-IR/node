@@ -186,7 +186,7 @@ check dockerfile-applies-lookalike 1 "no 'git apply' line in the Dockerfile appl
 
 fixture dockerfile-apply-then-semicolon
 edit Dockerfile "s@git apply --verbose /patches/$patch \\\\\$@git apply --verbose /patches/$patch; true \\\\@"
-check dockerfile-apply-then-semicolon 0 "WAIVED $osv"
+check dockerfile-apply-then-semicolon 1 "no 'git apply' line in the Dockerfile applies $patch"
 
 fixture dockerfile-missing
 rm "$tmp/dockerfile-missing/Dockerfile"
@@ -349,6 +349,105 @@ FROM alpine:3.24.2
 COPY --from=xray-builder /xray /usr/local/bin/xray
 EOF
 check f-vgv-3-guard-final-stage-copies-patched-builder 0 "WAIVED $osv"
+
+fixture r6-apply-swallowed-by-trailing-semicolon-list
+write_dockerfile " && git apply --verbose /patches/$patch; echo done \\"
+check r6-apply-swallowed-by-trailing-semicolon-list 1 "no 'git apply' line in the Dockerfile applies $patch"
+
+fixture r6-apply-under-set-e-then-semicolon
+cat >"$tmp/r6-apply-under-set-e-then-semicolon/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN set -e; git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch && true; true
+EOF
+check r6-apply-under-set-e-then-semicolon 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-escape-directive-uppercase
+cat >"$tmp/r6-escape-directive-uppercase/Dockerfile" <<EOF
+#  ESCAPE = \`
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . && git remote add origin https://github.com/XTLS/Xray-core.git && echo \`
+RUN git apply --verbose /patches/$patch
+EOF
+check r6-escape-directive-uppercase 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-syntax-directive-custom-frontend
+cat >"$tmp/r6-syntax-directive-custom-frontend/Dockerfile" <<EOF
+# syntax=registry.example.invalid/any-frontend:1
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch
+EOF
+check r6-syntax-directive-custom-frontend 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-heredoc-dash-form
+{
+  printf 'FROM golang:1.26.10-alpine AS xray-builder\n'
+  printf 'COPY patches/%s /patches/%s\n' "$patch" "$patch"
+  printf 'RUN git init -q . && git remote add origin https://github.com/XTLS/Xray-core.git\n'
+  printf "RUN cat <<-'NOTES' >/dev/null\n"
+  printf 'RUN git apply --verbose /patches/%s\n' "$patch"
+  printf '\tNOTES\n'
+} >"$tmp/r6-heredoc-dash-form/Dockerfile"
+check r6-heredoc-dash-form 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-reachable-unpatched-module-stage
+cat >"$tmp/r6-reachable-unpatched-module-stage/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS decoy
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch
+
+FROM golang:1.26.10-alpine AS xray-builder
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && go build -o /xray ./main
+
+FROM alpine:3.24.2
+COPY --from=decoy /patches /patches
+COPY --from=xray-builder /xray /usr/local/bin/xray
+EOF
+check r6-reachable-unpatched-module-stage 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-unbuilt-stage-named-like-image
+cat >"$tmp/r6-unbuilt-stage-named-like-image/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch \\
+ && go build -o /xray ./main
+
+FROM alpine:3.24.2
+COPY --from=xray-builder-2 /xray /usr/local/bin/xray
+EOF
+check r6-unbuilt-stage-named-like-image 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture r6-guard-reached-through-from-and-mount
+cat >"$tmp/r6-guard-reached-through-from-and-mount/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS Xray-Builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch \\
+ && go build -o /xray ./main
+
+FROM xray-builder AS packed
+RUN cp /xray /xray-packed
+
+FROM alpine:3.24.2 AS staging
+RUN --mount=type=bind,from=packed,source=/xray-packed,target=/in cp /in /xray
+
+FROM alpine:3.24.2
+COPY --from=staging /xray /usr/local/bin/xray
+EOF
+check r6-guard-reached-through-from-and-mount 0 "WAIVED $osv"
 
 fixture stale-waiver
 grep -v '"function"' "$tmp/stale-waiver/stream.json" >"$tmp/stale-waiver/stream.json.new"
