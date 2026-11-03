@@ -43,6 +43,12 @@ var allowedConditions = []condition{
 
 var allowedShells = map[string]bool{"bash": true, "sh": true}
 
+const (
+	imageBuildAction = "docker/build-push-action@"
+	revisionLabelKey = "org.opencontainers.image.revision="
+	revisionLabel    = revisionLabelKey + "${{ github.sha }}"
+)
+
 var swallowed = []*regexp.Regexp{
 	regexp.MustCompile(`\|\|\s*(true|:)(\s|$|;|\)|&)`),
 	regexp.MustCompile(`\|\|\s*exit\s+0\b`),
@@ -219,6 +225,9 @@ func (c *checker) checkJob(w *workflow, name string, job map[string]any, names m
 			case strings.HasPrefix(strings.ToLower(uses), selfRepo+"/") || strings.HasPrefix(strings.ToLower(uses), selfRepo+"@"):
 				c.fail("%s: uses %s; actions from this repository are not allowed, because the policy cannot vouch for their steps", stepWhere, uses)
 			}
+			if isString && strings.HasPrefix(strings.ToLower(uses), imageBuildAction) {
+				c.checkRevisionLabel(stepWhere, step)
+			}
 		}
 		if script, ok := step["run"].(string); ok {
 			for _, re := range swallowed {
@@ -227,6 +236,24 @@ func (c *checker) checkJob(w *workflow, name string, job map[string]any, names m
 				}
 			}
 		}
+	}
+}
+
+func (c *checker) checkRevisionLabel(where string, step map[string]any) {
+	with, _ := asMap(step["with"])
+	labels, _ := with["labels"].(string)
+	var exact, other int
+	for _, line := range strings.Split(labels, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == revisionLabel:
+			exact++
+		case strings.HasPrefix(line, revisionLabelKey):
+			other++
+		}
+	}
+	if exact != 1 || other != 0 {
+		c.fail("%s: an image build must set with.labels to exactly one line %s, so every published image names the commit it was built from", where, revisionLabel)
 	}
 }
 

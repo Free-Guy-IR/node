@@ -282,3 +282,41 @@ func TestStepsExport(t *testing.T) {
 		}
 	}
 }
+
+const imageBuild = `name: Image
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          provenance: mode=max
+LABELS
+`
+
+func TestImageBuildCarriesTheRevisionLabel(t *testing.T) {
+	for name, labels := range map[string]string{
+		"no labels":       "",
+		"other label":     "          labels: |\n            org.opencontainers.image.source=https://example.invalid/x\n",
+		"wrong value":     "          labels: |\n            org.opencontainers.image.revision=${{ github.ref }}\n",
+		"second revision": "          labels: |\n            org.opencontainers.image.revision=${{ github.sha }}\n            org.opencontainers.image.revision=main\n",
+	} {
+		body := strings.Replace(imageBuild, "LABELS\n", labels, 1)
+		findings := findingsOf(t, map[string]string{"image.yml": body})
+		if len(findings) == 0 {
+			t.Fatalf("%s: an image build without the revision label was accepted", name)
+		}
+		expectFinding(t, findings, "org.opencontainers.image.revision=${{ github.sha }}")
+	}
+	body := strings.Replace(imageBuild, "LABELS\n", "          labels: |\n            org.opencontainers.image.revision=${{ github.sha }}\n", 1)
+	if findings := findingsOf(t, map[string]string{"image.yml": body}); len(findings) != 0 {
+		t.Fatalf("an image build with the revision label was refused: %q", findings)
+	}
+}
