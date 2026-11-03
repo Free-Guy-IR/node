@@ -42,7 +42,7 @@ const credentialInbounds = `{"log":{"loglevel":"warning"},"inbounds":[
 const (
 	heldVlessID    = "6a3e0f5c-2b1d-4c8e-9f7a-1d2e3f4a5b6c"
 	variantVlessID = "6a3e0f5c-2b1d-ffff-9f7a-1d2e3f4a5b6c"
-	sharedSecret   = "shared-credential-secret"
+	heldKey        = "shared-credential-secret"
 )
 
 type credentialKind struct {
@@ -73,7 +73,7 @@ func vlessCredentialUser(id string) func(string, ...string) *common.User {
 }
 
 func trojanCredentialUser(email string, inbounds ...string) *common.User {
-	return &common.User{Email: email, Inbounds: inbounds, Proxies: &common.Proxy{Trojan: &common.Trojan{Password: sharedSecret}}}
+	return &common.User{Email: email, Inbounds: inbounds, Proxies: &common.Proxy{Trojan: &common.Trojan{Password: heldKey}}}
 }
 
 func vmessCredentialUser(email string, inbounds ...string) *common.User {
@@ -83,7 +83,7 @@ func vmessCredentialUser(email string, inbounds ...string) *common.User {
 func credentialKinds() []credentialKind {
 	return []credentialKind{
 		{name: "vless", tag: "vless", key: vlessKey(heldVlessID), holder: vlessCredentialUser(heldVlessID), claimant: vlessCredentialUser(variantVlessID)},
-		{name: "trojan", tag: "trojan", key: "trojan:" + sharedSecret, holder: trojanCredentialUser, claimant: trojanCredentialUser},
+		{name: "trojan", tag: "trojan", key: "trojan:" + heldKey, holder: trojanCredentialUser, claimant: trojanCredentialUser},
 		{name: "vmess", tag: "vmess", key: vmessKey(heldVlessID), holder: vmessCredentialUser, claimant: vmessCredentialUser},
 	}
 }
