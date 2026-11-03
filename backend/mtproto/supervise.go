@@ -215,3 +215,15 @@ func (pi *proxyInstance) listenerDead() bool {
 	handle, ok := pi.listener.(*supervisedListener)
 	return ok && handle.dead.Load()
 }
+
+type InstanceState struct {
+	Tag              string
+	Dead             bool
+	LastError        string
+	DeadSince        time.Time
+	RelistenAttempts int
+}
+
+func (b *Backend) InstanceStates() []InstanceState {
+	return nil
+}
