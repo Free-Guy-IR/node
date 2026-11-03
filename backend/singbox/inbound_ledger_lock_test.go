@@ -109,14 +109,26 @@ func TestLedgerDrainsDoNotWaitBehindTheLedgerLock(t *testing.T) {
 
 func mustLedgerReadAfterRelease(t *testing.T, sb *SingBox, statType common.StatType, core *blockingLedgerCore) map[string]int64 {
 	t.Helper()
-	done := make(chan map[string]int64, 1)
-	go func() { done <- mustLedgerRead(t, sb, statType, "", true) }()
+	done := make(chan ledgerReadResult, 1)
+	go func() {
+		stats, err := ledgerRead(sb, statType, "", true)
+		done <- ledgerReadResult{stats, err}
+	}()
 	select {
 	case <-core.arrived:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("follow-up %s read never reached the core", statType)
 	}
-	return <-done
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("follow-up GetStats(%s, reset=true): %v", statType, got.err)
+	}
+	return got.stats
+}
+
+type ledgerReadResult struct {
+	stats map[string]int64
+	err   error
 }
 
 func sumLedger(stats map[string]int64) int64 {
