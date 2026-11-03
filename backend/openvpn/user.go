@@ -46,41 +46,113 @@ type authEntry struct {
 // single source of truth ManagementClient.authFn consults for every
 // CLIENT:CONNECT/REAUTH decision.
 type authStore struct {
-	mu    sync.RWMutex
-	users map[string]authEntry
+	mu      sync.RWMutex
+	users   map[string]authEntry
+	byEmail map[string][]string
 }
 
 func newAuthStore() *authStore {
-	return &authStore{users: make(map[string]authEntry)}
+	return &authStore{users: make(map[string]authEntry), byEmail: make(map[string][]string)}
+}
+
+func usernamesByEmail(users map[string]authEntry) map[string][]string {
+	index := make(map[string][]string, len(users))
+	for name, entry := range users {
+		if entry.email != "" {
+			index[entry.email] = append(index[entry.email], name)
+		}
+	}
+	return index
 }
 
 func (s *authStore) replace(users map[string]authEntry) {
 	if users == nil {
 		users = make(map[string]authEntry)
 	}
+	index := usernamesByEmail(users)
 	s.mu.Lock()
 	s.users = users
+	s.byEmail = index
 	s.mu.Unlock()
+}
+
+func (s *authStore) indexLocked(email, username string) {
+	if email != "" {
+		s.byEmail[email] = append(s.byEmail[email], username)
+	}
+}
+
+func (s *authStore) unindexLocked(email, username string) {
+	names := s.byEmail[email]
+	for i, name := range names {
+		if name != username {
+			continue
+		}
+		last := len(names) - 1
+		names[i] = names[last]
+		names[last] = ""
+		if last == 0 {
+			delete(s.byEmail, email)
+		} else {
+			s.byEmail[email] = names[:last]
+		}
+		return
+	}
+}
+
+func (s *authStore) putLocked(username string, entry authEntry) {
+	previous, existed := s.users[username]
+	s.users[username] = entry
+	if existed && previous.email == entry.email {
+		return
+	}
+	if existed {
+		s.unindexLocked(previous.email, username)
+	}
+	s.indexLocked(entry.email, username)
+}
+
+func (s *authStore) deleteLocked(username string) {
+	previous, existed := s.users[username]
+	if !existed {
+		return
+	}
+	delete(s.users, username)
+	s.unindexLocked(previous.email, username)
+}
+
+func (s *authStore) sweepEmailLocked(email, keep string) {
+	names := s.byEmail[email]
+	kept := false
+	for _, name := range names {
+		if name == keep {
+			kept = true
+			continue
+		}
+		delete(s.users, name)
+	}
+	if !kept {
+		delete(s.byEmail, email)
+		return
+	}
+	clear(names)
+	s.byEmail[email] = append(names[:0], keep)
 }
 
 func (s *authStore) applyForEmail(email, username string, entry *authEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if email != "" {
-		for name, current := range s.users {
-			if current.email == email && name != username {
-				delete(s.users, name)
-			}
-		}
+		s.sweepEmailLocked(email, username)
 	}
 	if username == "" {
 		return
 	}
 	if entry == nil {
-		delete(s.users, username)
+		s.deleteLocked(username)
 		return
 	}
-	s.users[username] = *entry
+	s.putLocked(username, *entry)
 }
 
 func (s *authStore) contains(username string) bool {
