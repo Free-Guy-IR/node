@@ -154,7 +154,7 @@ func (x *Xray) coreServesSince(ctx context.Context, observed *coreState) bool {
 	if !startedFromState(current) {
 		return false
 	}
-	return current != observed || x.probe(ctx) == nil
+	return x.probe(ctx) == nil
 }
 
 func (x *Xray) probe(ctx context.Context) error {
