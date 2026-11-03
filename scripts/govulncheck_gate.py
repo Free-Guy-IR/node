@@ -12,7 +12,12 @@ OSV_RE = re.compile(r"^GO-\d{4}-\d{4,}$")
 MODULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/-]*$")
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-SHELL_SEPARATORS = ("&&", "||", ";", "|", "\\", "&")
+CHECKING_MESSAGE = "Checking the code against the vulnerabilities..."
+SHELL_OPERATOR_CHARS = "&|;()<>"
+STRICT_LIST_OPERATORS = ("&&", "|", "(", ")", "<", ">", ">>", ">&", "<&")
+APPLY_FLAGS = ("-v", "--verbose", "-q", "--quiet", "--index", "-3", "--3way", "--recount", "--ignore-whitespace", "--ignore-space-change")
+APPLY_FLAG_RE = re.compile(r"^(?:-p\d+|-C\d+|--whitespace=[a-z-]+)$")
+MAJOR_SUFFIX_RE = re.compile(r"/v\d+$")
 
 
 class GateError(Exception):
@@ -90,6 +95,14 @@ def check_config(messages, path):
         raise GateError(f"{path}: scanner_name is {config.get('scanner_name')!r}, want 'govulncheck'")
     if config.get("scan_level") != "symbol":
         raise GateError(f"{path}: scan_level is {config.get('scan_level')!r}, want 'symbol'; a module or package scan cannot tell a called vulnerability from an imported one")
+    sboms = sum(1 for kind, _ in messages if kind == "SBOM")
+    if sboms != 1:
+        raise GateError(f"{path} has {sboms} SBOM messages, want exactly 1; govulncheck did not load the packages, so it did not finish a scan")
+    last_modified = config.get("db_last_modified")
+    if not isinstance(last_modified, str) or not last_modified:
+        raise GateError(f"{path}: the config has no db_last_modified; govulncheck could not reach the vulnerability database {config.get('db')!r}, so it did not finish a scan")
+    if not any(kind == "progress" and isinstance(body, dict) and body.get("message") == CHECKING_MESSAGE for kind, body in messages):
+        raise GateError(f"{path} has no {CHECKING_MESSAGE!r} progress message; govulncheck did not fetch the vulnerabilities, so it did not finish a scan")
     return config
 
 
@@ -169,26 +182,164 @@ def read_waivers(path):
     return waivers, problems
 
 
-def applied_patch_names(dockerfile):
-    names = set()
+def dockerfile_instructions(dockerfile):
+    instructions = []
+    current = None
     for raw in dockerfile.splitlines():
         stripped = raw.strip()
-        if stripped.startswith("#"):
+        if stripped.startswith("#") or not stripped:
             continue
-        tokens = stripped.split()
-        for index in range(len(tokens) - 1):
-            if tokens[index] != "git" or tokens[index + 1] != "apply":
+        line = raw.rstrip()
+        continued = line.endswith("\\")
+        if continued:
+            line = line[:-1]
+        current = line if current is None else current + line
+        if not continued:
+            instructions.append(current.strip())
+            current = None
+    if current is not None:
+        instructions.append(current.strip())
+    return instructions
+
+
+def shell_tokens(command):
+    tokens = []
+    word = ""
+    in_word = False
+    quote = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word += char
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif char == "\\" and index + 1 < len(command) and command[index + 1] in '"\\$`':
+                index += 1
+                word += command[index]
+            else:
+                word += char
+        elif char in "'\"":
+            quote = char
+            in_word = True
+        elif char == "\\":
+            if index + 1 < len(command):
+                index += 1
+                word += command[index]
+            in_word = True
+        elif char.isspace() or char in SHELL_OPERATOR_CHARS or (char == "#" and not in_word):
+            if in_word:
+                tokens.append(("word", word))
+                word = ""
+                in_word = False
+            if char == "#":
+                break
+            if char in SHELL_OPERATOR_CHARS:
+                operator = char
+                while index + 1 < len(command) and command[index + 1] in SHELL_OPERATOR_CHARS:
+                    index += 1
+                    operator += command[index]
+                tokens.append(("operator", operator))
+        else:
+            word += char
+            in_word = True
+        index += 1
+    if quote is not None:
+        return None
+    if in_word:
+        tokens.append(("word", word))
+    return tokens
+
+
+def strict_commands(command):
+    tokens = shell_tokens(command)
+    if tokens is None:
+        return []
+    lists = [[]]
+    for token in tokens:
+        if token == ("operator", ";"):
+            lists.append([])
+        else:
+            lists[-1].append(token)
+    commands = []
+    for tokens in lists:
+        operators = [text for kind, text in tokens if kind == "operator"]
+        if any(operator not in STRICT_LIST_OPERATORS for operator in operators):
+            continue
+        before = None
+        words = []
+        for kind, text in tokens + [("operator", None)]:
+            if kind == "word":
+                words.append(text)
                 continue
-            for token in tokens[index + 2:]:
-                if token in SHELL_SEPARATORS:
-                    break
-                ends_command = token.endswith(";")
-                token = token.rstrip(";").strip("'\"")
-                if token and not token.startswith("-"):
-                    names.add(os.path.basename(token))
-                if ends_command:
-                    break
-    return names
+            if words and before in (None, "&&") and text in (None, "&&"):
+                commands.append(words)
+            words = []
+            before = text
+    return commands
+
+
+def run_command(instruction):
+    parts = instruction.split(None, 1)
+    rest = parts[1] if len(parts) == 2 else ""
+    while rest.startswith("--"):
+        flag_and_rest = rest.split(None, 1)
+        rest = flag_and_rest[1] if len(flag_and_rest) == 2 else ""
+    if rest.startswith("["):
+        return ""
+    return rest
+
+
+def applied_patch_files(words):
+    files = []
+    options_done = False
+    for word in words[2:]:
+        if not options_done and word == "--":
+            options_done = True
+        elif not options_done and word.startswith("-"):
+            if word not in APPLY_FLAGS and not APPLY_FLAG_RE.match(word):
+                return []
+        else:
+            files.append(os.path.basename(word))
+    return files
+
+
+def source_repository(url):
+    text = url.strip().lower()
+    text = re.sub(r"^(?:https?|git|ssh)://", "", text)
+    text = re.sub(r"^[^@/]+@", "", text)
+    text = text.rstrip("/")
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text
+
+
+def module_built_from(module, repositories):
+    path = module.lower()
+    return path in repositories or MAJOR_SUFFIX_RE.sub("", path) in repositories
+
+
+def applied_patch_names(dockerfile):
+    applied = {}
+    fetched = None
+    for instruction in dockerfile_instructions(dockerfile):
+        keyword = instruction.split(None, 1)[0].upper()
+        if keyword == "FROM":
+            fetched = set()
+            continue
+        if keyword != "RUN" or fetched is None:
+            continue
+        for words in strict_commands(run_command(instruction)):
+            if len(words) == 5 and words[:3] == ["git", "remote", "add"] and not words[3].startswith("-"):
+                fetched.add(source_repository(words[4]))
+            elif words[:2] == ["git", "apply"]:
+                for name in applied_patch_files(words):
+                    applied.setdefault(name, set()).update(fetched)
+    return applied
 
 
 def check_waiver(waiver, today, root, applied, dockerfile_problem):
@@ -208,6 +359,8 @@ def check_waiver(waiver, today, root, applied, dockerfile_problem):
         waiver.problems.append(dockerfile_problem)
     elif os.path.basename(patch) not in applied:
         waiver.problems.append(f"no 'git apply' line in the Dockerfile applies {os.path.basename(patch)}")
+    elif not module_built_from(waiver.module, applied[os.path.basename(patch)]):
+        waiver.problems.append(f"{os.path.basename(patch)} is applied only in Dockerfile stages that did not first 'git remote add' the {waiver.module} source, so it cannot patch {waiver.module}")
 
 
 def run(waiver_path, stream_path, root):
@@ -218,7 +371,7 @@ def run(waiver_path, stream_path, root):
     waivers, problems = read_waivers(waiver_path)
 
     dockerfile_problem = ""
-    applied = set()
+    applied = {}
     try:
         with open(os.path.join(root, "Dockerfile"), encoding="utf-8") as handle:
             applied = applied_patch_names(handle.read())
