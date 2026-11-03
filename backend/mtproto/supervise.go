@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
+
+var errServeReturned = errors.New("its server stopped on its own")
 
 var (
 	serveRetryFloor   = 5 * time.Millisecond
@@ -55,12 +57,15 @@ func nextServeRetry(previous time.Duration) time.Duration {
 }
 
 type supervisedListener struct {
-	mu      sync.Mutex
-	current net.Listener
-	addr    net.Addr
-	closed  bool
-	stopped chan struct{}
-	dead    atomic.Bool
+	mu        sync.Mutex
+	current   net.Listener
+	addr      net.Addr
+	closed    bool
+	stopped   chan struct{}
+	dead      bool
+	lastError string
+	deadSince time.Time
+	attempts  int
 }
 
 func newSupervisedListener(listener net.Listener) *supervisedListener {
@@ -92,6 +97,48 @@ func (s *supervisedListener) Close() error {
 	current := s.current
 	s.mu.Unlock()
 	return current.Close()
+}
+
+func (s *supervisedListener) markDead(reason error) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastError = reason.Error()
+	if s.dead {
+		return false
+	}
+	s.dead = true
+	s.deadSince = time.Now()
+	s.attempts = 0
+	return true
+}
+
+func (s *supervisedListener) markRecovered() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dead {
+		return false
+	}
+	s.dead = false
+	s.deadSince = time.Time{}
+	return true
+}
+
+func (s *supervisedListener) countRelistenAttempt() {
+	s.mu.Lock()
+	s.attempts++
+	s.mu.Unlock()
+}
+
+func (s *supervisedListener) isDead() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dead
+}
+
+func (s *supervisedListener) state(tag string) InstanceState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return InstanceState{Tag: tag, Dead: s.dead, LastError: s.lastError, DeadSince: s.deadSince, RelistenAttempts: s.attempts}
 }
 
 func (s *supervisedListener) stopping() bool {
@@ -150,16 +197,27 @@ func (pi *proxyInstance) note(line string) {
 	}
 }
 
-func (pi *proxyInstance) serveOnce(listener net.Listener) error {
+func (pi *proxyInstance) serveOnce(listener net.Listener) (err error) {
+	defer func() {
+		if value := recover(); value != nil {
+			reportPanic(fmt.Sprintf("the serve loop of instance %q, which is listening and serving again", pi.tag), value, pi.record)
+			err = fmt.Errorf("serve panicked: %v", value)
+		}
+	}()
 	if pi.mp != nil {
 		return pi.mp.Serve(listener) //nolint: wrapcheck
 	}
 	return pi.proxy.Serve(listener) //nolint: wrapcheck
 }
 
+func (pi *proxyInstance) reportDead(handle *supervisedListener, reason error) {
+	if handle.markDead(reason) {
+		pi.note(fmt.Sprintf("mtproto instance %q listener dead: %v", pi.tag, reason))
+	}
+}
+
 func (pi *proxyInstance) supervise(handle *supervisedListener, served net.Listener, done chan struct{}) {
 	defer close(done)
-	defer pi.absorbServePanic(handle)
 
 	var delay time.Duration
 	for {
@@ -169,7 +227,7 @@ func (pi *proxyInstance) supervise(handle *supervisedListener, served net.Listen
 			return
 		}
 		if err == nil {
-			handle.dead.Store(true)
+			pi.reportDead(handle, errServeReturned)
 			_ = handle.Close()
 			pi.note(fmt.Sprintf("mtproto instance %q: its server stopped on its own, the instance is down until a restart", pi.tag))
 			return
@@ -183,7 +241,7 @@ func (pi *proxyInstance) supervise(handle *supervisedListener, served net.Listen
 
 		replace := !acceptErrorIsTransient(err)
 		if replace {
-			handle.dead.Store(true)
+			pi.reportDead(handle, err)
 		}
 		reported := false
 		for {
@@ -194,10 +252,12 @@ func (pi *proxyInstance) supervise(handle *supervisedListener, served net.Listen
 			if !replace {
 				break
 			}
+			handle.countRelistenAttempt()
 			relistenErr := handle.relisten()
 			if relistenErr == nil {
-				handle.dead.Store(false)
-				pi.note(fmt.Sprintf("mtproto instance %q: listening again after its listener failed", pi.tag))
+				if handle.markRecovered() {
+					pi.note(fmt.Sprintf("mtproto instance %q listener recovered", pi.tag))
+				}
 				break
 			}
 			if errors.Is(relistenErr, net.ErrClosed) {
@@ -213,7 +273,7 @@ func (pi *proxyInstance) supervise(handle *supervisedListener, served net.Listen
 
 func (pi *proxyInstance) listenerDead() bool {
 	handle, ok := pi.listener.(*supervisedListener)
-	return ok && handle.dead.Load()
+	return ok && handle.isDead()
 }
 
 type InstanceState struct {
@@ -225,5 +285,17 @@ type InstanceState struct {
 }
 
 func (b *Backend) InstanceStates() []InstanceState {
-	return nil
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	states := make([]InstanceState, 0, len(b.instances))
+	for tag, inst := range b.instances {
+		if handle, ok := inst.listener.(*supervisedListener); ok {
+			states = append(states, handle.state(tag))
+			continue
+		}
+		states = append(states, InstanceState{Tag: tag, Dead: inst.listener == nil})
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].Tag < states[j].Tag })
+	return states
 }

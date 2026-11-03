@@ -61,18 +61,6 @@ func (pi *proxyInstance) serve(listener net.Listener) {
 	go pi.supervise(handle, served, done)
 }
 
-func (pi *proxyInstance) absorbServePanic(listener net.Listener) {
-	value := recover()
-	if value == nil {
-		return
-	}
-	if handle, ok := listener.(*supervisedListener); ok {
-		handle.dead.Store(true)
-	}
-	_ = listener.Close()
-	reportPanic(fmt.Sprintf("the serve loop of instance %q, which closed its listener and stopped accepting", pi.tag), value, pi.record)
-}
-
 func (b *Backend) stopProxy(tag string, proxy *mtglib.Proxy) bool {
 	outcome := make(chan bool, 1)
 	go func() {
@@ -362,11 +350,11 @@ func (b *Backend) Started() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	if len(b.instances) == 0 {
+	if b.cancelFunc == nil || len(b.instances) == 0 {
 		return false
 	}
 	for _, inst := range b.instances {
-		if inst.listener == nil || inst.listenerDead() {
+		if inst.listener == nil {
 			return false
 		}
 	}

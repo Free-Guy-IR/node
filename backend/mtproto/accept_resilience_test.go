@@ -248,17 +248,21 @@ func assertReportsDeadThenRecovers(t *testing.T, b *Backend, tag string, port in
 		t.Fatal("the test could not occupy the port after the fatal error")
 	}
 
-	if !awaitStarted(b, false, 3*time.Second) {
+	if state, ok := awaitInstanceState(b, tag, 3*time.Second, func(s InstanceState) bool { return s.Dead && s.LastError != "" }); !ok {
 		held.Close()
-		t.Fatalf("instance %q lost its listener and cannot re-listen (port taken) but Started() still reports it running", tag)
+		t.Fatalf("instance %q lost its listener and cannot re-listen (port taken) but InstanceStates still reports it healthy: %+v", tag, state)
+	}
+	if !b.Started() {
+		held.Close()
+		t.Fatalf("instance %q is dead and the whole backend reports Started()=false", tag)
 	}
 	held.Close()
 
-	if !awaitStarted(b, true, 5*time.Second) {
-		t.Fatalf("instance %q did not recover once its port was free again", tag)
+	if state, ok := awaitInstanceState(b, tag, 5*time.Second, func(s InstanceState) bool { return !s.Dead }); !ok {
+		t.Fatalf("instance %q did not recover once its port was free again: %+v", tag, state)
 	}
 	if !awaitServed(port, 5*time.Second) {
-		t.Fatalf("instance %q reports started again but does not serve", tag)
+		t.Fatalf("instance %q reports recovered but does not serve", tag)
 	}
 }
 
