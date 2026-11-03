@@ -68,4 +68,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103140308-1563871b36dd
+replace github.com/9seconds/mtg/v2 => github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103153328-1ca247ba6e85

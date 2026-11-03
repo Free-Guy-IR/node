@@ -1,7 +1,7 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103140308-1563871b36dd h1:hrJbQgF2i9FGEbOoteVK8uFcfPZ3yvblftX4N2F232w=
-github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103140308-1563871b36dd/go.mod h1:PYeSk/DJg81g79uI8QaIQUjvGN2zF9vy03uyqdBmTjc=
+github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103153328-1ca247ba6e85 h1:WkJzaTau4t2WTTGqlTt3kY0s4pqs7axceMdim2Ji9T0=
+github.com/Free-Guy-IR/mtg/v2 v2.2.9-0.20261103153328-1ca247ba6e85/go.mod h1:PYeSk/DJg81g79uI8QaIQUjvGN2zF9vy03uyqdBmTjc=
 github.com/OneOfOne/xxhash v1.2.8 h1:31czK/TI9sNkxIKfaUfGlU47BAxQ0ztGgd9vPyqimf8=
 github.com/OneOfOne/xxhash v1.2.8/go.mod h1:eZbhyaAYD41SGSSsnmcpxVoRiQ/MPUTjUdIIOT9Um7Q=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b h1:mimo19zliBX/vSQ6PWWSL9lK8qwHozUj03+zLoEB8O0=
