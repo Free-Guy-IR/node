@@ -22,7 +22,7 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.6.21"
+const NodeVersion = "0.6.22"
 
 const keepAliveGrace = 5 * time.Second
 
