@@ -272,6 +272,84 @@ RUN git init -q . \\
 EOF
 check n2-stage-fetches-no-module-source 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
 
+fixture f-vgv-1-apply-failure-swallowed-by-semicolon
+cat >"$tmp/f-vgv-1-apply-failure-swallowed-by-semicolon/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git fetch -q --depth 1 origin d2758a023cd7f4174a5a5fa4ff66e487d4342ba0 \\
+ && git checkout -q FETCH_HEAD \\
+ && git apply --verbose /patches/$patch; true
+EOF
+check f-vgv-1-apply-failure-swallowed-by-semicolon 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture f-vgv-2-heredoc-body
+cat >"$tmp/f-vgv-2-heredoc-body/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git fetch -q --depth 1 origin d2758a023cd7f4174a5a5fa4ff66e487d4342ba0 \\
+ && git checkout -q FETCH_HEAD
+COPY <<NOTES /notes.txt
+RUN git apply --verbose /patches/$patch
+NOTES
+EOF
+check f-vgv-2-heredoc-body 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture f-vgv-2-heredoc-body-of-run
+cat >"$tmp/f-vgv-2-heredoc-body-of-run/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN cat <<NOTES >/dev/null
+RUN git remote add origin https://github.com/XTLS/Xray-core.git && git apply --verbose /patches/$patch
+NOTES
+EOF
+check f-vgv-2-heredoc-body-of-run 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture f-vgv-2-escape-directive
+cat >"$tmp/f-vgv-2-escape-directive/Dockerfile" <<EOF
+# escape=\`
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . && git remote add origin https://github.com/XTLS/Xray-core.git && echo \`
+RUN git apply --verbose /patches/$patch
+EOF
+check f-vgv-2-escape-directive 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture f-vgv-3-unbuilt-stage
+cat >"$tmp/f-vgv-3-unbuilt-stage/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS decoy
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch
+
+FROM golang:1.26.10-alpine AS xray-builder
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && go build -o /xray ./main
+
+FROM alpine:3.24.2
+COPY --from=xray-builder /xray /usr/local/bin/xray
+EOF
+check f-vgv-3-unbuilt-stage 1 "FAIL $osv $module@$version is called (2 call paths), its waiver on line 1 is not active"
+
+fixture f-vgv-3-guard-final-stage-copies-patched-builder
+cat >"$tmp/f-vgv-3-guard-final-stage-copies-patched-builder/Dockerfile" <<EOF
+FROM golang:1.26.10-alpine AS xray-builder
+COPY patches/$patch /patches/$patch
+RUN git init -q . \\
+ && git remote add origin https://github.com/XTLS/Xray-core.git \\
+ && git apply --verbose /patches/$patch \\
+ && go build -o /xray ./main
+
+FROM alpine:3.24.2
+COPY --from=xray-builder /xray /usr/local/bin/xray
+EOF
+check f-vgv-3-guard-final-stage-copies-patched-builder 0 "WAIVED $osv"
+
 fixture stale-waiver
 grep -v '"function"' "$tmp/stale-waiver/stream.json" >"$tmp/stale-waiver/stream.json.new"
 mv "$tmp/stale-waiver/stream.json.new" "$tmp/stale-waiver/stream.json"
