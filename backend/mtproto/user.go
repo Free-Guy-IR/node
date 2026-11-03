@@ -42,6 +42,21 @@ func mtprotoCredential(user *common.User) (username string, keyBytes [mtglib.Sec
 	return username, keyBytes, true
 }
 
+func (b *Backend) revokeIdentity(user *common.User) {
+	if username := user.GetProxies().GetMtproto().GetUsername(); username != "" {
+		delete(b.secretsByID, username)
+	}
+	email := user.GetEmail()
+	if email == "" {
+		return
+	}
+	for username, entry := range b.secretsByID {
+		if entry.email == email {
+			delete(b.secretsByID, username)
+		}
+	}
+}
+
 func (b *Backend) wantsUser(user *common.User) bool {
 	for _, tag := range user.GetInbounds() {
 		if _, ok := b.instances[tag]; ok {
@@ -137,6 +152,7 @@ func (b *Backend) updateUsers(users []*common.User) {
 	for _, user := range users {
 		username, keyBytes, ok := mtprotoCredential(user)
 		if !ok {
+			b.revokeIdentity(user)
 			continue
 		}
 		if !b.wantsUser(user) {
@@ -156,6 +172,7 @@ func (b *Backend) removeUsers(users []*common.User) {
 	for _, user := range users {
 		username, _, ok := mtprotoCredential(user)
 		if !ok {
+			b.revokeIdentity(user)
 			continue
 		}
 		delete(b.secretsByID, username)
