@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/xtls/xray-core/app/proxyman/command"
 	"github.com/xtls/xray-core/common/serial"
 	"google.golang.org/grpc"
@@ -282,13 +283,15 @@ func newModelXray(t *testing.T, core *modelCore, inbounds string) *Xray {
 }
 
 func syncTestUser(email string, inbounds ...string) *common.User {
+	vmessID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("sync-vmess/"+email)).String()
+	vlessID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("sync-vless/"+email)).String()
 	return &common.User{
 		Email:    email,
 		Inbounds: inbounds,
 		Proxies: &common.Proxy{
-			Vmess:       &common.Vmess{Id: "6f1c6c5e-3f59-4a0e-9d8a-2b4f1c9d7e10"},
-			Vless:       &common.Vless{Id: "0b6f2a4e-6a54-4a51-9a3a-6f1e2b1f7c11", Flow: "xtls-rprx-vision"},
-			Trojan:      &common.Trojan{Password: "example-trojan-key"},
+			Vmess:       &common.Vmess{Id: vmessID},
+			Vless:       &common.Vless{Id: vlessID, Flow: "xtls-rprx-vision"},
+			Trojan:      &common.Trojan{Password: "example-trojan-key/" + email},
 			Shadowsocks: &common.Shadowsocks{Password: "example-shadowsocks-key", Method: "aes-128-gcm"},
 			Hysteria:    &common.Hysteria{Auth: "hysteria secret"},
 		},
