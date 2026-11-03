@@ -113,6 +113,7 @@ type Backend struct {
 
 	mu          sync.RWMutex
 	secretsByID map[string]secretEntry
+	userSyncMu  sync.Mutex
 
 	lifecycle sync.Mutex
 
@@ -193,6 +194,7 @@ func (b *Backend) newMiddleProxyInstance(inst *InstanceConfig, accumulator *even
 			}
 			return entries
 		},
+		Sessions:  liveSessionRegistry,
 		OnAuth:    accumulator.authenticated,
 		OnTraffic: accumulator.traffic,
 		OnFinish:  accumulator.finished,

@@ -215,14 +215,20 @@ func newMtprotoEventStream(accumulator *eventAccumulator, emailOf func(string) s
 	return &mtprotoEventStream{accumulator: accumulator, emailOf: emailOf, panics: strayPanics}
 }
 
-func (s *mtprotoEventStream) Send(_ context.Context, event mtglib.Event) {
+func (s *mtprotoEventStream) Send(ctx context.Context, event mtglib.Event) {
 	defer s.panics.absorb()
 	switch e := event.(type) {
+	case mtglib.EventStart:
+		liveSessionRegistry.Begin(e.StreamID())
 	case mtglib.EventAuthenticated:
 		s.accumulator.authenticated(e.StreamID(), e.SecretID, s.emailOf(e.SecretID))
+		if stream, ok := ctx.(interface{ Close() }); ok {
+			liveSessionRegistry.Authenticated(e.StreamID(), e.SecretID, stream.Close)
+		}
 	case mtglib.EventTraffic:
 		s.accumulator.traffic(e.StreamID(), e.Traffic, e.IsRead)
 	case mtglib.EventFinish:
+		liveSessionRegistry.End(e.StreamID())
 		s.accumulator.finished(e.StreamID())
 	}
 }
