@@ -66,6 +66,9 @@ func (pi *proxyInstance) absorbServePanic(listener net.Listener) {
 	if value == nil {
 		return
 	}
+	if handle, ok := listener.(*supervisedListener); ok {
+		handle.dead.Store(true)
+	}
 	_ = listener.Close()
 	reportPanic(fmt.Sprintf("the serve loop of instance %q, which closed its listener and stopped accepting", pi.tag), value, pi.record)
 }
