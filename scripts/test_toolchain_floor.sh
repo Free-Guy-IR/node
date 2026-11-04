@@ -287,7 +287,8 @@ check make-glob-ignores-other-files 0
 fixture xray-no-xnet-patch
 printf 'Other\n\ndiff --git a/app/y.go b/app/y.go\n--- a/app/y.go\n+++ b/app/y.go\n@@ -1 +1 @@\n-a\n+b\n' >"$tmp/xray-no-xnet-patch/patches/xray-grpc-1.83.2.patch"
 cp "$tmp/xray-no-xnet-patch/patches/xray-grpc-1.83.2.patch" "$tmp/xray-no-xnet-patch/patches/xray-x-net-0.60.0.patch"
-check xray-no-xnet-patch 1 "no patch applied by the Dockerfile xray-builder stage sets golang.org/x/net"
+edit Dockerfile '/grep -q "golang.org\/x\/net /d'
+check xray-no-xnet-patch 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
 
 fixture xray-gosum-only-is-not-gomod
 printf 'Sum only\n\ndiff --git a/go.sum b/go.sum\n--- a/go.sum\n+++ b/go.sum\n@@ -1 +1 @@\n-golang.org/x/net v0.60.0 h1:a=\n+\tgolang.org/x/net v0.58.0 h1:b=\n' >"$tmp/xray-gosum-only-is-not-gomod/patches/xray-zz-sum-only.patch"
@@ -321,12 +322,158 @@ edit Dockerfile 's@^RUN make build$@RUN git apply --verbose /patches/other-xnet.
 gomod_patch v0.58.0 v0.60.0 >"$tmp/apply-in-other-stage-not-counted/patches/other-xnet.patch"
 printf 'Other\n\ndiff --git a/app/y.go b/app/y.go\n--- a/app/y.go\n+++ b/app/y.go\n@@ -1 +1 @@\n-a\n+b\n' >"$tmp/apply-in-other-stage-not-counted/patches/xray-grpc-1.83.2.patch"
 cp "$tmp/apply-in-other-stage-not-counted/patches/xray-grpc-1.83.2.patch" "$tmp/apply-in-other-stage-not-counted/patches/xray-x-net-0.60.0.patch"
-check apply-in-other-stage-not-counted 1 "no patch applied by the Dockerfile xray-builder stage sets golang.org/x/net"
+edit Dockerfile '/grep -q "golang.org\/x\/net /d'
+check apply-in-other-stage-not-counted 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
 
 fixture apply-after-stage-ignored
 printf 'FROM alpine:3.24.2@%s AS later\nRUN git apply --verbose /patches/other-lower.patch\n' "$alpine" >>"$tmp/apply-after-stage-ignored/Dockerfile"
 gomod_patch v0.60.0 v0.58.0 >"$tmp/apply-after-stage-ignored/patches/other-lower.patch"
 check apply-after-stage-ignored 0 "11 pins checked"
+
+upstream_fixture() {
+  fixture "$1"
+  rm "$r/patches/xray-grpc-1.83.2.patch" "$r/patches/xray-x-net-0.60.0.patch"
+  cat >"$r/Dockerfile" <<EOF
+ARG XRAY_VERSION=v26.10.31
+
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS builder
+RUN make build
+
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS singbox-builder
+RUN go build ./cmd/sing-box
+
+FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS xray-builder
+ARG XRAY_COMMIT=556767e40baa142641838158d6cba743c879e5c3
+COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
+RUN git init -q . \\
+ && git fetch -q --depth 1 origin \${XRAY_COMMIT} \\
+ && test "\$(git rev-parse HEAD)" = "\${XRAY_COMMIT}" \\
+ && grep -q "golang.org/x/net v0.62.0$" go.mod \\
+ && git apply --verbose /patches/xray-session-revoke.patch \\
+ && grep -qF "if a && b; then" app/x.go \\
+ && grep -q "golang.org/x/net v0.62.0$" go.mod
+RUN go build -o /out/xray ./main
+
+FROM alpine:3.24.2@$alpine
+COPY --from=builder /src/main /usr/local/bin/main
+EOF
+  printf "XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)\n" >"$r/Makefile"
+}
+
+upstream_fixture upstream-gomod-meets-floor
+check upstream-gomod-meets-floor 0 "11 pins checked, all at or above Go 1.26.10 and golang.org/x/net v0.60.0"
+
+upstream_fixture upstream-gomod-meets-floor-indirect
+edit Dockerfile 's/golang.org\/x\/net v0.62.0\$" go.mod/golang.org\/x\/net v0.62.0 \/\/ indirect$" go.mod/g'
+check upstream-gomod-meets-floor-indirect 0 "11 pins checked"
+
+upstream_fixture upstream-gomod-below-floor
+edit Dockerfile 's/golang.org\/x\/net v0.62.0/golang.org\/x\/net v0.59.0/g'
+check upstream-gomod-below-floor 1 "the Xray binary (Dockerfile xray-builder go.mod check) uses golang.org/x/net v0.59.0, below the security floor v0.60.0"
+
+upstream_fixture upstream-gomod-below-floor-make
+edit Dockerfile 's/golang.org\/x\/net v0.62.0/golang.org\/x\/net v0.59.0/g'
+check upstream-gomod-below-floor-make 1 "the Xray binary (make build_xray, upstream go.mod at the Dockerfile XRAY_COMMIT) uses golang.org/x/net v0.59.0"
+
+upstream_fixture upstream-gomod-pseudo-version
+edit Dockerfile 's/golang.org\/x\/net v0.62.0/golang.org\/x\/net v0.62.1-0.20261001000000-0123456789ab/g'
+check upstream-gomod-pseudo-version 1 "which is not a tagged release"
+
+upstream_fixture upstream-neither-patch-nor-gomod
+edit Dockerfile '/grep -q "golang.org\/x\/net /d'
+check upstream-neither-patch-nor-gomod 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-neither-make
+edit Dockerfile '/grep -q "golang.org\/x\/net /d'
+check upstream-neither-make 1 "no patches/xray-*.patch sets golang.org/x/net and make build_xray has no upstream go.mod value"
+
+upstream_fixture upstream-check-unanchored
+edit Dockerfile 's/golang.org\/x\/net v0.62.0\$" go.mod/golang.org\/x\/net v0.62.0" go.mod/g'
+check upstream-check-unanchored 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-negated
+edit Dockerfile 's/&& grep -q "golang.org\/x\/net/\&\& ! grep -q "golang.org\/x\/net/g'
+check upstream-check-negated 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-on-go-sum
+edit Dockerfile 's/(golang.org\/x\/net v0.62.0\$") go.mod/\1 go.sum/g'
+check upstream-check-on-go-sum 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-fixed-string
+edit Dockerfile 's/grep -q "golang.org\/x\/net/grep -qF "golang.org\/x\/net/g'
+check upstream-check-fixed-string 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-swallowed-by-or
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod || true/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod || true \\/'
+check upstream-check-swallowed-by-or 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-swallowed-by-semicolon
+edit Dockerfile 's/^ && grep -qF "if a && b; then" app\/x.go \\$/ \&\& grep -qF "if a \&\& b; then" app\/x.go; true \\/'
+check upstream-check-swallowed-by-semicolon 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-in-other-stage
+edit Dockerfile '/grep -q "golang.org\/x\/net /d'
+edit Dockerfile 's@^RUN make build$@RUN grep -q "golang.org/x/net v0.62.0$" go.mod \&\& make build@'
+check upstream-check-in-other-stage 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-exec-form
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN ["sh", "-c", "grep -q \\"golang.org/x/net v0.62.0$\\" go.mod"]@'
+edit Dockerfile '/^ && grep -q "golang.org\/x\/net /d'
+edit Dockerfile 's/^ && grep -qF "if a && b; then" app\/x.go \\$/ \&\& grep -qF "if a \&\& b; then" app\/x.go/'
+check upstream-check-exec-form 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-later-patch-lowers
+gomod_patch v0.62.0 v0.58.0 >"$tmp/upstream-later-patch-lowers/patches/xray-zz-lower.patch"
+edit Dockerfile 's@^ && git apply --verbose /patches/xray-session-revoke.patch \\$@ \&\& git apply --verbose /patches/xray-session-revoke.patch \&\& git apply --verbose /patches/xray-zz-lower.patch \\@'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& grep -q "golang.org\/x\/net v0.58.0$" go.mod/'
+check upstream-later-patch-lowers 1 "the Xray binary (Dockerfile patch order) uses golang.org/x/net v0.58.0"
+
+upstream_fixture upstream-later-patch-lowers-make
+gomod_patch v0.62.0 v0.58.0 >"$tmp/upstream-later-patch-lowers-make/patches/xray-zz-lower.patch"
+check upstream-later-patch-lowers-make 1 "the Xray binary (make build_xray patch order) uses golang.org/x/net v0.58.0"
+
+upstream_fixture upstream-later-patch-raises
+gomod_patch v0.59.0 v0.61.0 >"$tmp/upstream-later-patch-raises/patches/xray-zz-raise.patch"
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& grep -q "golang.org\/x\/net v0.59.0$" go.mod \\/'
+edit Dockerfile 's@^ && git apply --verbose /patches/xray-session-revoke.patch \\$@ \&\& git apply --verbose /patches/xray-session-revoke.patch \&\& git apply --verbose /patches/xray-zz-raise.patch \\@'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& grep -q "golang.org\/x\/net v0.61.0$" go.mod/'
+check upstream-later-patch-raises 0 "11 pins checked"
+
+upstream_fixture upstream-check-contradicts-patch-order
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& grep -q "golang.org\/x\/net v0.63.0$" go.mod/'
+check upstream-check-contradicts-patch-order 1 "the Dockerfile xray-builder stage checks go.mod for golang.org/x/net v0.63.0, but its go.mod check leaves v0.62.0 there"
+
+upstream_fixture upstream-make-commit-not-tied
+printf 'XRAY_COMMIT ?= 0123456789abcdef0123456789abcdef01234567\n' >"$tmp/upstream-make-commit-not-tied/Makefile"
+check upstream-make-commit-not-tied 1 "no patches/xray-*.patch sets golang.org/x/net and make build_xray has no upstream go.mod value"
+
+upstream_fixture upstream-make-commit-overridden
+printf 'XRAY_COMMIT := 0123456789abcdef0123456789abcdef01234567\n' >>"$tmp/upstream-make-commit-overridden/Makefile"
+check upstream-make-commit-overridden 1 "make build_xray has no upstream go.mod value"
+
+upstream_fixture upstream-two-commit-args
+printf 'ARG XRAY_COMMIT=0123456789abcdef0123456789abcdef01234567\n' >>"$tmp/upstream-two-commit-args/Dockerfile"
+check upstream-two-commit-args 1 "make build_xray has no upstream go.mod value"
+
+upstream_fixture upstream-no-makefile
+rm "$tmp/upstream-no-makefile/Makefile"
+check upstream-no-makefile 1 "make build_xray has no upstream go.mod value"
+
+if [ -f "$repo_root/Dockerfile" ] && [ -f "$repo_root/Makefile" ]; then
+  set +e
+  bash "$guard" "$repo_root" >"$tmp/repo-tree.out" 2>&1
+  got=$?
+  set -e
+  if [ "$got" = 0 ]; then
+    printf 'ok       %-40s exit %s\n' repo-tree "$got"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL     %-40s exit %s, want 0\n' repo-tree "$got"
+    sed 's/^/         | /' "$tmp/repo-tree.out" | tail -8
+    failed=$((failed + 1))
+  fi
+fi
 
 fixture base-tree-shape
 edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
@@ -335,7 +482,7 @@ edit .github/workflows/publish-release.yml 's/1.26.10/1.26.6/'
 edit Dockerfile 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
 edit Dockerfile.wireguard 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
 gomod_patch v0.58.0 v0.59.0 >"$tmp/base-tree-shape/patches/xray-x-net-0.60.0.patch"
-check base-tree-shape 1 "11 problems in 11 pins"
+check base-tree-shape 1 "12 problems in 12 pins"
 
 printf 'test-toolchain-floor: %d passed, %d failed\n' "$pass" "$failed"
 [ "$failed" = 0 ]
