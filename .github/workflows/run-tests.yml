@@ -333,5 +333,8 @@ jobs:
       - name: Refuse a Go toolchain or golang.org/x/net below the security floor
         run: bash scripts/toolchain_floor.sh
 
+      - name: Refuse an Xray pin label that does not match the Dockerfile pin
+        run: bash scripts/xray_pin_label.sh
+
       - name: Test the upstream drift checker
         run: make test-drift

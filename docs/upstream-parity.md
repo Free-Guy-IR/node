@@ -602,7 +602,7 @@ New items and their decisions:
 | Xray `6cdd323ad82fe21bb9c1d06e6a5c5f909de2ffaf` (#7288) | `not-applicable` | the same TUN option, merged into `main` and released in `v26.10.31`, so it has no branch scope |
 | Xray `967ade1e03f4c9458240a44e6247045da171869b` (#7315) | `not-applicable` | the same TUN option again, more values and always-allowed loopback, DHCP and neighbor discovery; on `main` at 2026-11-02T21:40Z, after main `f2712fdd`'s green drift run, and in no release yet. It touches only `proxy/tun` and one error string in `infra/conf/tun.go` |
 | Xray `f2f292c90ce100093cfad5849bafadd49e873d26` and `266df8c6448ba01709be0dae7bb2ede6d258f756` | `superseded`, `branch:windows-tun-wfp-ports` | the two commits of branch `windows-tun-wfp-ports`, squash-merged as `6cdd323`. The tip `266df8c` equals `6cdd323` in every file the branch touches; the one `proxy/tun` difference, `config.pb.go`, comes from `main`'s regeneration `d1140de` and differs the same way between their parents `0afec66` and `316e07a` |
-| Xray release `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) | `pending` until 2026-11-20, in the same form as `v26.10.21` | 29 non-merge commits after `v26.10.21`; the only security-looking one is `6cdd323`. Its HTTP inbound change `bc7c895` (#7298) edits `proxy/http/server.go`, which `xray-http-100-continue.patch` also changes, and is to be checked against that patch at the pin move |
+| Xray release `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) | `pending` until 2026-11-20, in the same form as `v26.10.21` | 29 non-merge commits after `v26.10.21`; the only security-looking one is `6cdd323`. Its HTTP inbound change `bc7c895` (#7298) edits `proxy/http/server.go`, which `xray-http-100-continue.patch` also changes, and is to be checked against that patch at the pin move. On 2026-11-04 the image pin moved past it to `556767e40baa`, `v26.10.31` plus 4 `main` commits (see "State on 2026-11-04"); the waiver row keeps its own status in `.github/upstream-waivers.txt` |
 
 Waivers removed because the run matched nothing for them (the check's own instruction):
 
@@ -787,6 +787,30 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
 - F-VSB-1 is not fixed by this move: the fork's `go.mod` at `5a7c1f1a31cd` still takes sing `v0.8.14`, sing-mux
   `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`. It stays open, owned by NODE-LEAD, due
   2026-11-20.
+
+### State on 2026-11-04: the Xray pin moves to `556767e4`, which is not the `v26.10.31` tag commit
+
+- Xray pin: `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) plus 4 `main` commits (`556767e40baa142641838158d6cba743c879e5c3`)
+- The image builds Xray from `ARG XRAY_COMMIT` `556767e40baa`. GitHub compare `a4a3dff5b20c...556767e40baa` on
+  2026-11-04: `ahead` 4, `behind` 0:
+  - `8ab161a2b0ed` (#7312) moves `golang.org/x/net` from `v0.61.0` to `v0.62.0`;
+  - `7c8dbcb4bbec` (#7311) moves `google.golang.org/grpc` from `v1.84.0` to `v1.85.0`;
+  - `967ade1e03f4` (#7315) changes the Windows-only TUN `autoSystemWfpBlockLeak` values (waived as `not-applicable`);
+  - `556767e40baa` (#7316) retries the XDRIVE `local` Get on Windows sharing violations (Windows-only files).
+- The pin stays past the tag because of `8ab161a2b0ed`. `golang.org/x/net` `v0.62.0` fixes GO-2026-6860 and
+  GO-2026-6866 (`golang.org/x/net/html`, fixed in `v0.62.0`, OSV query for `v0.61.0` on 2026-11-04) and the `ipv4`
+  and `ipv6` bounds checks (`afcf8cd5ba`, `4b10404ac8`, `dad306f6ea`, `05c76ee9ad`). Xray imports `ipv4`, `ipv6` and
+  `icmp`, but not `html`. Pinning the tag commit would move the Xray binary back to `v0.61.0`, or would bring back an
+  `x/net` patch like the `xray-x-net-0.60.0.patch` that this move dropped.
+- Xray's own version string at `556767e4` is still `26.10.31`, because upstream did not change the version constants
+  after the tag. `xray version` in the image therefore prints `26.10.31` for a build that has the 4 commits as well.
+- `make install_xray` downloads the `v26.10.31` release binary, which is the tag commit `a4a3dff5`, not the image's
+  `556767e4` build. It installs a local development binary and is not what the image ships.
+- The geo-assets stage takes `geoip.dat` and `geosite.dat` from the `v26.10.31` release zip. The `bb40094` waiver
+  (`install_geofiles`, `pending` until 2026-11-20) covers the lite files that zip ships.
+- `scripts/xray_pin_label.sh` fails CI when this `Xray pin` line does not name the Dockerfile `ARG XRAY_VERSION` and
+  the full `ARG XRAY_COMMIT`, either as the tag commit itself or as the tag plus N `main` commits; it also checks the
+  tag commit sha against `git ls-remote` of XTLS/Xray-core.
 
 ### govulncheck on the patched Xray build
 
