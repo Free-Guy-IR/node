@@ -690,8 +690,89 @@ later_run later-allowed-shapes 'RUN test "$(grep -cF '"'"'a|b'"'"' go.mod)" = "1
  && git apply --verbose /patches/xray-session-revoke.patch
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
-    -o /out/xray2 ./main'
+    -o /out/xray ./main'
 check later-allowed-shapes 0 "pins checked"
+
+while IFS='|' read -r name line; do
+  later_run "$name" "$line"
+  check "$name" 1 "$not_allowed"
+done <<'EOF'
+later-build-toolexec-equals|RUN go build -toolexec=/tmp/t -o /out/xray ./main
+later-build-toolexec-space|RUN go build -toolexec /tmp/t -o /out/xray ./main
+later-build-toolexec-quoted|RUN go build "-toolexec=/tmp/t" -o /out/xray ./main
+later-build-pkgdir|RUN go build -pkgdir=/tmp/pkg -o /out/xray ./main
+later-build-linkmode-external|RUN go build -ldflags=-linkmode=external -o /out/xray ./main
+later-build-gcflags|RUN go build -gcflags=all=-N -o /out/xray ./main
+later-build-ldflags-x|RUN go build -ldflags "-X main.v=1" -o /out/xray ./main
+later-build-tags|RUN go build -tags x -o /out/xray ./main
+later-build-other-output|RUN go build -o /tmp/xray ./main
+later-build-other-package|RUN go build -o /out/xray ./other
+later-build-quote-glued|RUN go build -o"verlay=/tmp/o.json" -o /out/xray ./main
+later-build-cgo-cc|RUN CGO_ENABLED=1 CC=/tmp/cc go build -o /out/xray ./main
+later-build-goexperiment|RUN GOEXPERIMENT=x go build -o /out/xray ./main
+EOF
+
+fixture_before() {
+  fixture "$1"
+  printf '%s\n' "$3" >"$tmp/$1.inject"
+  awk -v f="$tmp/$1.inject" -v at="$2" '$0 == at { while ((getline l < f) > 0) print l } { print }' "$r/Dockerfile" >"$r/Dockerfile.new"
+  mv "$r/Dockerfile.new" "$r/Dockerfile"
+}
+
+final_run_refused="which is not apk update, apk add of package names, command -v or test, so it can write /usr/local/bin/xray after the COPY from xray-builder"
+while IFS='|' read -r name line; do
+  fixture "$name"
+  printf '%s\n' "$line" >>"$tmp/$name/Dockerfile"
+  check "$name" 1 "$final_run_refused"
+done <<'EOF'
+final-run-copy|RUN cp /usr/local/bin/main /usr/local/bin/xray
+final-run-link|RUN ln -sf /usr/local/bin/main /usr/local/bin/xray
+final-run-cd-copy|RUN cd /usr/local/bin && cp main xray
+final-run-quoted-path|RUN cp /usr/local/bin/main "/usr/lo"cal/bin/xray
+final-run-exec-form|RUN ["cp","/usr/local/bin/main","/usr/local/bin/xray"]
+final-run-local-apk|RUN apk add --allow-untrusted /tmp/x.apk
+final-run-redirect|RUN echo x > /usr/local/bin/xray
+EOF
+
+fixture final-run-heredoc
+printf 'RUN <<SH\ncp /usr/local/bin/main /usr/local/bin/xray\nSH\n' >>"$tmp/final-run-heredoc/Dockerfile"
+check final-run-heredoc 1 "$final_run_refused"
+
+fixture_before final-run-before-xray-copy 'COPY --from=xray-builder /out/xray /usr/local/bin/xray' 'RUN mkdir -p /usr/local/bin/xray'
+check final-run-before-xray-copy 1 "$final_run_refused"
+
+fixture final-run-allowed-shapes
+printf '%s\n' 'RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps iptables openvpn strongswan xl2tpd ppp' \
+  'RUN command -v swanctl >/dev/null && command -v xl2tpd >/dev/null && command -v pppd >/dev/null && command -v nft >/dev/null \' \
+  '    && { test -x /usr/lib/strongswan/charon || test -x /usr/lib/ipsec/charon || test -x /usr/libexec/ipsec/charon; } \' \
+  '    && test -f /etc/swanctl/swanctl.conf' >>"$tmp/final-run-allowed-shapes/Dockerfile"
+check final-run-allowed-shapes 0 "pins checked"
+
+fixture xray-path-env-final
+printf 'ENV XRAY_EXECUTABLE_PATH=/opt/xray\n' >>"$tmp/xray-path-env-final/Dockerfile"
+check xray-path-env-final 1 "which sets XRAY_EXECUTABLE_PATH"
+
+fixture xray-path-env-space-final
+printf 'ENV XRAY_EXECUTABLE_PATH /opt/xray\n' >>"$tmp/xray-path-env-space-final/Dockerfile"
+check xray-path-env-space-final 1 "which sets XRAY_EXECUTABLE_PATH"
+
+fixture_before xray-path-arg-builder 'RUN make build' 'ARG XRAY_EXECUTABLE_PATH=/opt/xray'
+check xray-path-arg-builder 1 "which sets XRAY_EXECUTABLE_PATH"
+
+fixture_before xray-path-env-xray-builder 'RUN go build -o /out/xray ./main' 'ENV XRAY_EXECUTABLE_PATH=/opt/xray'
+check xray-path-env-xray-builder 1 "which sets XRAY_EXECUTABLE_PATH"
+
+fixture_before goflags-env-builder 'RUN make build' 'ENV GOFLAGS=-mod=mod'
+check goflags-env-builder 1 "which sets GOFLAGS"
+
+fixture_before goflags-arg-singbox-builder 'RUN go build ./cmd/sing-box' 'ARG GOFLAGS=-mod=mod'
+check goflags-arg-singbox-builder 1 "which sets GOFLAGS"
+
+fixture_before goflags-run-export-builder 'RUN make build' 'RUN export GOFLAGS=-mod=mod && make build'
+check goflags-run-export-builder 1 "which sets GOFLAGS"
+
+fixture_before goflags-run-assignment-singbox-builder 'RUN go build ./cmd/sing-box' 'RUN GOFLAGS=-mod=mod go build ./cmd/sing-box'
+check goflags-run-assignment-singbox-builder 1 "which sets GOFLAGS"
 
 fixture xray-copied-json-form
 printf 'COPY --from=builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-form/Dockerfile"
