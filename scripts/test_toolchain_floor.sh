@@ -80,6 +80,8 @@ RUN go build -o /out/xray ./main
 
 FROM alpine:3.24.2@$alpine
 COPY --from=builder /src/main /usr/local/bin/main
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
+COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 EOF
   printf "FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@%s AS builder\nRUN go build ./...\n\nFROM alpine:3.24.2@%s\n" "$digest" "$alpine" >"$r/Dockerfile.wireguard"
   gomod_patch v0.52.0 v0.58.0 >"$r/patches/xray-grpc-1.83.2.patch"
@@ -356,6 +358,8 @@ RUN go build -o /out/xray ./main
 
 FROM alpine:3.24.2@$alpine
 COPY --from=builder /src/main /usr/local/bin/main
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
+COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 EOF
   printf "XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)\n" >"$r/Makefile"
 }
@@ -692,6 +696,68 @@ check xray-copied-dot-segment 1 "the Dockerfile copies /usr/local/bin/xray from 
 fixture xray-copied-json-from-xray-builder
 printf 'COPY --from=xray-builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-from-xray-builder/Dockerfile"
 check xray-copied-json-from-xray-builder 0 "11 pins checked"
+
+toolchain_env="which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
+
+fixture builder-gotoolchain-pinned
+edit Dockerfile 's@^RUN make build$@ENV GOTOOLCHAIN=go1.27.0\nRUN make build@'
+check builder-gotoolchain-pinned 1 "the Dockerfile builder stage runs 'ENV GOTOOLCHAIN=go1.27.0', $toolchain_env"
+
+fixture builder-goenv
+edit Dockerfile 's@^RUN make build$@ENV GOENV=/tmp/x\nRUN make build@'
+check builder-goenv 1 "the Dockerfile builder stage runs 'ENV GOENV=/tmp/x', $toolchain_env"
+
+fixture singbox-gotoolchain-auto
+edit Dockerfile 's@^RUN go build ./cmd/sing-box$@ENV GOTOOLCHAIN=auto\nRUN go build ./cmd/sing-box@'
+check singbox-gotoolchain-auto 1 "the Dockerfile singbox-builder stage runs 'ENV GOTOOLCHAIN=auto', $toolchain_env"
+
+fixture singbox-go-env-write-toolchain
+edit Dockerfile 's@^RUN go build ./cmd/sing-box$@RUN go env -w GOTOOLCHAIN=go1.27.0\nRUN go build ./cmd/sing-box@'
+check singbox-go-env-write-toolchain 1 "the Dockerfile singbox-builder stage runs 'go env -w GOTOOLCHAIN=go1.27.0', $toolchain_env"
+
+fixture builder-gotoolchain-local-accepted
+edit Dockerfile 's@^RUN make build$@ENV GOTOOLCHAIN=local\nRUN make build@'
+check builder-gotoolchain-local-accepted 0 "11 pins checked"
+
+into_bin="so it can create /usr/local/bin/xray without the xray-builder stage"
+
+fixture xray-copied-into-bin-dir
+printf 'COPY --from=builder /out/xray /usr/local/bin/\n' >>"$tmp/xray-copied-into-bin-dir/Dockerfile"
+check xray-copied-into-bin-dir 1 "the Dockerfile copies from 'builder' into the directory /usr/local/bin/, $into_bin"
+
+fixture xray-copied-into-bin-dir-json
+printf 'COPY --from=builder ["/out/xray", "/usr/local/bin/"]\n' >>"$tmp/xray-copied-into-bin-dir-json/Dockerfile"
+check xray-copied-into-bin-dir-json 1 "the Dockerfile copies from 'builder' into the directory /usr/local/bin/, $into_bin"
+
+fixture xray-copied-into-bin-dir-context
+printf 'COPY xray /usr/local/bin/\n' >>"$tmp/xray-copied-into-bin-dir-context/Dockerfile"
+check xray-copied-into-bin-dir-context 1 "the Dockerfile copies from 'the build context' into the directory /usr/local/bin/, $into_bin"
+
+fixture xray-copied-dir-into-bin-dir
+printf 'COPY --from=builder /out/ /usr/local/bin/\n' >>"$tmp/xray-copied-dir-into-bin-dir/Dockerfile"
+check xray-copied-dir-into-bin-dir 1 "the Dockerfile copies from 'builder' into the directory /usr/local/bin/, $into_bin"
+
+fixture xray-copied-dir-into-bin-no-slash
+printf 'COPY --from=builder /out /usr/local/bin\n' >>"$tmp/xray-copied-dir-into-bin-no-slash/Dockerfile"
+check xray-copied-dir-into-bin-no-slash 1 "the Dockerfile copies from 'builder' into the directory /usr/local/bin, $into_bin"
+
+fixture xray-added-from-context
+printf 'ADD xray /usr/local/bin/xray\n' >>"$tmp/xray-added-from-context/Dockerfile"
+check xray-added-from-context 1 "the Dockerfile ADDs /usr/local/bin/xray from 'the build context'; only COPY --from=xray-builder may write it"
+
+fixture xray-added-into-bin-dir
+printf 'ADD xray.tar.gz /usr/local/bin/\n' >>"$tmp/xray-added-into-bin-dir/Dockerfile"
+check xray-added-into-bin-dir 1 "the Dockerfile copies from 'the build context' into the directory /usr/local/bin/, $into_bin"
+
+no_xray_copy="the Dockerfile has no COPY --from=xray-builder of /usr/local/bin/xray, so the image's Xray binary is not the one the xray-builder stage checks"
+
+fixture xray-copy-deleted
+edit Dockerfile '/^COPY --from=xray-builder /d'
+check xray-copy-deleted 1 "$no_xray_copy"
+
+fixture xray-copy-replaced-by-apk
+edit Dockerfile 's@^COPY --from=xray-builder /out/xray /usr/local/bin/xray$@RUN apk add xray@'
+check xray-copy-replaced-by-apk 1 "$no_xray_copy"
 
 if [ -f "$repo_root/Dockerfile" ] && [ -f "$repo_root/Makefile" ]; then
   set +e
