@@ -809,8 +809,9 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
 - The geo-assets stage takes `geoip.dat` and `geosite.dat` from the `v26.10.31` release zip. The `bb40094` waiver
   (`install_geofiles`, `pending` until 2026-11-20) covers the lite files that zip ships.
 - `scripts/xray_pin_label.sh` fails CI when this `Xray pin` line does not name the Dockerfile `ARG XRAY_VERSION` and
-  the full `ARG XRAY_COMMIT`, either as the tag commit itself or as the tag plus N `main` commits; it also checks the
-  tag commit sha against `git ls-remote` of XTLS/Xray-core.
+  the full `ARG XRAY_COMMIT`, either as the tag commit itself or as the tag plus N `main` commits. It fetches both
+  commits from XTLS/Xray-core and checks the tag sha, that the build commit descends from the tag, and that N is
+  `git rev-list --count` between them. It also refuses a second `ARG XRAY_VERSION` or `ARG XRAY_COMMIT` line.
 
 ### govulncheck on the patched Xray build
 
