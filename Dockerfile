@@ -116,7 +116,7 @@ RUN git init -q . \
  && grep -qF "r.balancers.Store(&newBalancers)" app/router/router.go \
  && grep -qF "closeWebhooks(removed)" app/router/router.go \
  && test "$(grep -cF '(*r.balancers.Load())[tag]' app/router/balancing.go)" = "3" \
- && ! (grep -hE "(^|[^[:alnum:]_])r[.](rules|balancers)" app/router/router.go app/router/balancing.go app/router/balancing_override.go | grep -qvE "r[.](rules|balancers)[.](Load|Store)[(]") \
+ && ! grep -hE "(^|[^[:alnum:]_])r[.](rules|balancers)" app/router/router.go app/router/balancing.go app/router/balancing_override.go | grep -qvE "r[.](rules|balancers)[.](Load|Store)[(]" \
  && test -f app/router/router_writers_race_test.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "3" \

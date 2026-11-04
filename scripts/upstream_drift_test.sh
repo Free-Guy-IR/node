@@ -657,6 +657,20 @@ if grep -q 'is not one the check can follow' "$tmp/xray-patch-real-build-shape/o
   failed=$((failed + 1))
 fi
 
+xray_repo_chain=$(sed -n '/ AS xray-builder$/,/^RUN CGO_ENABLED/p' "$repo_root/Dockerfile" | sed -n '/^RUN git init -q \. \\$/,$p' | sed '$d')
+xray_fixture xray-patch-repo-guard-chain "ARG TARGETOS
+ARG TARGETARCH
+RUN apk update && apk add --no-cache git
+WORKDIR /xray-src
+COPY patches/xray-fix.patch /patches/xray-fix.patch
+$xray_repo_chain \\
+ && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1 "$xray_real_tail"
+check xray-patch-repo-guard-chain 0 DRIFT_COMPONENTS="node xray"
+if [ "$(printf '%s\n' "$xray_repo_chain" | wc -l)" -lt 100 ] || grep -q 'is not one the check can follow' "$tmp/xray-patch-repo-guard-chain/out"; then
+  printf 'FAIL     %-28s the xray-builder guard chain of the repository Dockerfile was refused\n' xray-patch-repo-guard-chain
+  failed=$((failed + 1))
+fi
+
 xray_fixture xray-patch-odd-go-generate "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch && go generate ./..." "$xray_makefile" X1
 check xray-patch-odd-go-generate 1 DRIFT_COMPONENTS="node xray"
