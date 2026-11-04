@@ -250,7 +250,7 @@ xray_chain() {
       line = $0
       if (line ~ /\\[[:space:]]*$/) {
         sub(/\\[[:space:]]*$/, "", line)
-        buffer = buffer line " "
+        buffer = buffer line
         next
       }
       logical(buffer line)
@@ -271,6 +271,78 @@ chdir_re='(^|[^[:alnum:]_./-])(cd|pushd|popd|chdir)([[:space:]]|$)|(^|[[:space:]
 gomod_write_re='(^|[^[:alnum:]_.-])(sed|perl|ruby|python3?|ed|ex|vi|vim|awk|gawk|cp|mv|tee|install|ln|dd|truncate|rsync|touch|rm|unlink)[[:space:]][^&|;]*go\.(mod|work)'
 redirect_re='>[>|]?[[:space:]]*["'\'']?[^[:space:]&|;]*go\.(mod|work)'
 git_move_re='(^|[^[:alnum:]_.-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(checkout|reset|switch|restore|pull|merge|rebase|cherry-pick|am|fetch|stash|clone|read-tree|update-index|worktree|submodule)([[:space:]]|$)'
+go_build_unsafe_re='[$`]|(^|[[:space:]])--?(overlay|mod|C|toolchain)'
+git_apply_args_re='^(--?[a-z][a-z-]*[[:space:]]+)*/patches/[A-Za-z0-9._-]+\.patch$'
+export_names_re='^(export|readonly|declare|typeset|local|env|set)$'
+
+command_words() {
+  awk '
+    function close_sub(s, i,   n, c, d, q, kind) {
+      n = length(s); d = 1; q[1] = 0; kind[1] = "("
+      for (; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q[d] == 2) { if (c == "\047") q[d] = 0; continue }
+        if (c == "\\") { i++; continue }
+        if (c == "$" && substr(s, i + 1, 1) == "(") { i++; kind[++d] = "("; q[d] = 0; continue }
+        if (c == "`") return 0
+        if (q[d] == 1) { if (c == "\"") q[d] = 0; continue }
+        if (c == "\"") { q[d] = 1; continue }
+        if (c == "\047") { q[d] = 2; continue }
+        if (c == "(") { kind[++d] = "("; q[d] = 0; continue }
+        if (c == ")") { d--; if (d == 0) return i }
+      }
+      return 0
+    }
+    function word_end() { if (inword) { words[++nw] = w; w = ""; inword = 0 } }
+    function command_end(   i, j, rest) {
+      word_end()
+      i = 1
+      while (i <= nw && (words[i] == "!" || words[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++
+      if (i <= nw) {
+        rest = ""
+        for (j = i + 2; j <= nw; j++) rest = rest (rest == "" ? "" : " ") words[j]
+        printf "%s\t%s\t%s\n", words[i], (i < nw ? words[i + 1] : ""), rest
+      }
+      nw = 0
+    }
+    function scan(s,   n, i, c, q, j) {
+      n = length(s); q = 0; nw = 0; w = ""; inword = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q == 2) { w = w c; if (c == "\047") q = 0; continue }
+        if (c == "\\") { w = w c substr(s, i + 1, 1); i++; inword = 1; continue }
+        if (c == "`") { printf "`\t\t\n"; w = w c; inword = 1; continue }
+        if (c == "$" && substr(s, i + 1, 1) == "(") {
+          j = close_sub(s, i + 2)
+          if (j == 0) { printf "$(\t\t\n"; return }
+          queue[++qn] = substr(s, i + 2, j - i - 2)
+          w = w substr(s, i, j - i + 1); inword = 1; i = j
+          continue
+        }
+        if (q == 1) { w = w c; if (c == "\"") q = 0; continue }
+        if (c == "$" && (substr(s, i + 1, 1) == "\047" || substr(s, i + 1, 1) == "\"")) { printf "$%s\t\t\n", substr(s, i + 1, 1); w = w c; inword = 1; continue }
+        if (c == "\"" || c == "\047") { q = (c == "\"" ? 1 : 2); w = w c; inword = 1; continue }
+        if (c == " " || c == "\t") { word_end(); continue }
+        if (c == "|" || c == "&" || c == ";" || c == "(" || c == ")") { command_end(); continue }
+        if (c == ">" || c == "<") { command_end(); printf "%s\t\t\n", c; continue }
+        w = w c; inword = 1
+      }
+      if (q != 0) printf "%s\t\t\n", "$unbalanced"
+      command_end()
+    }
+    { qn = 1; queue[1] = $0; for (qi = 1; qi <= qn; qi++) scan(queue[qi]) }
+  '
+}
+
+allowed_after_check() {
+  local name=$1 sub=$2 rest=$3
+  case "$name" in
+    grep | test) return 0 ;;
+    go) [ "$sub" = build ] && ! [[ $rest =~ $go_build_unsafe_re ]] ;;
+    git) [ "$sub" = apply ] && [[ $rest =~ $git_apply_args_re ]] ;;
+    *) return 1 ;;
+  esac
+}
 
 toolchain_kept_local() {
   local rest
@@ -343,6 +415,30 @@ else
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage runs '$shown' after its golang.org/x/net go.mod check, which can replace the checked go.mod"
     fi
+    if [ "$safety" != inst ]; then
+      if [ "$safety" = exec ]; then
+        if [[ $element == *\\* ]]; then
+          commands=$'\\\t\t'
+        else
+          commands=$(printf '%s\n' "$scan" | awk '{ rest = ""; for (i = 3; i <= NF; i++) rest = rest (rest == "" ? "" : " ") $i; printf "%s\t%s\t%s\n", $1, $2, rest }')
+        fi
+      else
+        commands=$(printf '%s\n' "$element" | command_words)
+      fi
+      while IFS=$'\t' read -r name sub rest; do
+        [ -n "$name" ] || continue
+        if [[ $name == *[\$\`]* ]] || { { [[ $name =~ $export_names_re ]] || { [ "$name" = go ] && [ "$sub" = env ]; }; } && [[ "$sub $rest" == *[\$\`]* ]]; }; then
+          checked=$((checked + 1))
+          refuse "the Dockerfile xray-builder stage runs '$shown', which has a \$ or a backquote in a command name or in what it exports, so the command it runs cannot be read"
+        fi
+        if [ "$check_seen" = 1 ] && ! allowed_after_check "$name" "$sub" "$rest"; then
+          checked=$((checked + 1))
+          refuse "the Dockerfile xray-builder stage runs '$shown', whose command '${name:0:40}' is not grep, test, git apply of a /patches/ patch or go build, after its golang.org/x/net go.mod check"
+        fi
+      done <<EOF
+$commands
+EOF
+    fi
     case "$safety" in inst | exec) continue ;; esac
     applied=$(printf '%s\n' "$element" | grep -oE "$apply_re" | sed -E 's@.*/patches/@@' || true)
     if [ -n "$applied" ]; then
@@ -390,7 +486,22 @@ while IFS= read -r source; do
     refuse "the Dockerfile copies /usr/local/bin/xray from '$source', not from the xray-builder stage"
   fi
 done <<EOF
-$([ ! -f Dockerfile ] || awk 'toupper($1) == "COPY" && $NF == "/usr/local/bin/xray" { from = "the build context"; for (i = 2; i < NF; i++) if (tolower($i) ~ /^--from=/) from = tolower(substr($i, 8)); print from }' Dockerfile)
+$([ ! -f Dockerfile ] || awk '
+  toupper($1) == "COPY" || toupper($1) == "ADD" {
+    line = $0
+    gsub(/[][",]/, " ", line)
+    n = split(line, part, /[[:space:]]+/)
+    while (n > 0 && part[n] == "") n--
+    dest = part[n]
+    gsub(/\/+/, "/", dest)
+    while (sub(/\/\.\//, "/", dest)) {}
+    sub(/\/\.$/, "", dest)
+    if (dest != "/usr/local/bin/xray") next
+    from = "the build context"
+    for (i = 2; i < n; i++) if (tolower(part[i]) ~ /^--from=/) from = tolower(substr(part[i], 8))
+    print from
+  }
+' Dockerfile)
 EOF
 
 make_commit_line="XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
