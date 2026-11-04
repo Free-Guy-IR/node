@@ -338,7 +338,7 @@ allowed_after_check() {
   local name=$1 sub=$2 rest=$3
   case "$name" in
     grep | test) return 0 ;;
-    go) [ "$sub" = build ] && ! [[ $rest =~ $go_build_unsafe_re ]] ;;
+    go) [ "$sub" = build ] && ! [[ $rest =~ $go_build_unsafe_re ]] && ! [[ ${rest//[\"\'\\]/} =~ $go_build_unsafe_re ]] ;;
     git) [ "$sub" = apply ] && [[ $rest =~ $git_apply_args_re ]] ;;
     *) return 1 ;;
   esac
@@ -559,7 +559,7 @@ if [ -n "$upstream_xnet" ] && [ -f Makefile ] \
   && [ "$(grep -cE '^[[:space:]]*(export[[:space:]]+|override[[:space:]]+)*XRAY_COMMIT[[:space:]]*(\?|:|::|:::|\+|!)?=' Makefile || true)" = 1 ] \
   && grep -qxF "$make_commit_line" Makefile \
   && [ "$(grep -c '^ARG XRAY_COMMIT=' Dockerfile || true)" = 1 ] \
-  && printf '%s\n' "$xray_stage" | grep -q '^ARG XRAY_COMMIT='; then
+  && grep -q '^ARG XRAY_COMMIT=' <<<"$xray_stage"; then
   make_builds_docker_commit=1
 fi
 
