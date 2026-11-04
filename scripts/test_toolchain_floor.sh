@@ -620,7 +620,8 @@ check xray-copied-from-xray-builder 0 "11 pins checked"
 inject_before() {
   upstream_fixture "$1"
   printf '%s\n' "$3" >"$tmp/$1.inject"
-  awk -v f="$tmp/$1.inject" -v at="$2" '$0 == at { while ((getline l < f) > 0) print l } { print }' "$r/Dockerfile" >"$r/Dockerfile.new"
+  INJECT="$tmp/$1.inject" AT="$2" awk '$0 == ENVIRON["AT"] { hit = 1; while ((getline l < ENVIRON["INJECT"]) > 0) print l } { print } END { exit !hit }' "$r/Dockerfile" >"$r/Dockerfile.new" ||
+    { printf 'test-toolchain-floor: %s has no line %s to inject before\n' "$1" "$2" >&2; exit 2; }
   mv "$r/Dockerfile.new" "$r/Dockerfile"
 }
 
@@ -715,7 +716,8 @@ EOF
 fixture_before() {
   fixture "$1"
   printf '%s\n' "$3" >"$tmp/$1.inject"
-  awk -v f="$tmp/$1.inject" -v at="$2" '$0 == at { while ((getline l < f) > 0) print l } { print }' "$r/Dockerfile" >"$r/Dockerfile.new"
+  INJECT="$tmp/$1.inject" AT="$2" awk '$0 == ENVIRON["AT"] { hit = 1; while ((getline l < ENVIRON["INJECT"]) > 0) print l } { print } END { exit !hit }' "$r/Dockerfile" >"$r/Dockerfile.new" ||
+    { printf 'test-toolchain-floor: %s has no line %s to inject before\n' "$1" "$2" >&2; exit 2; }
   mv "$r/Dockerfile.new" "$r/Dockerfile"
 }
 
