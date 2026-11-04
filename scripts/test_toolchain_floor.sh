@@ -831,6 +831,11 @@ edit Dockerfile 's|^(FROM alpine:3\.24\.2@sha256:[0-9a-f]+)$|\1 as Rt|'
 printf 'RUN cp /usr/local/bin/main /usr/local/bin/xray\nFROM --platform=linux/amd64 RT\n' >>"$tmp/final-from-earlier-stage-upper/Dockerfile"
 check final-from-earlier-stage-upper 1 "$earlier_stage 'rt'"
 
+fixture final-from-arg-built-stage
+edit Dockerfile 's|^(FROM alpine:3\.24\.2@sha256:[0-9a-f]+)$|\1 AS rt|'
+printf 'RUN cp /usr/local/bin/main /usr/local/bin/xray\nFROM r${T}\n' >>"$tmp/final-from-arg-built-stage/Dockerfile"
+check final-from-arg-built-stage 1 "whose base 'r\${t}' is chosen by a build argument"
+
 final_inst_refused="which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET or ENTRYPOINT [\"./main\"]"
 while IFS='|' read -r name line; do
   fixture "$name"
