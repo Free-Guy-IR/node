@@ -412,6 +412,21 @@ upstream_fixture upstream-check-swallowed-by-semicolon
 edit Dockerfile 's/^ && grep -qF "if a && b; then" app\/x.go \\$/ \&\& grep -qF "if a \&\& b; then" app\/x.go; true \\/'
 check upstream-check-swallowed-by-semicolon 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
 
+upstream_fixture upstream-check-in-command-substitution
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& echo $(true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true)/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& echo $(true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true) \\/'
+check upstream-check-in-command-substitution 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-in-backquotes
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& echo `true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true`/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& echo `true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true` \\/'
+check upstream-check-in-backquotes 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-in-subshell-list
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& (true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true)/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& (true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true) \\/'
+check upstream-check-in-subshell-list 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
 upstream_fixture upstream-check-in-other-stage
 edit Dockerfile '/grep -q "golang.org\/x\/net /d'
 edit Dockerfile 's@^RUN make build$@RUN grep -q "golang.org/x/net v0.62.0$" go.mod \&\& make build@'

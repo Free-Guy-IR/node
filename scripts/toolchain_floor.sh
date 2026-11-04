@@ -197,8 +197,8 @@ fi
 xray_chain() {
   awk '
     function trim(text) { sub(/^[[:space:]]+/, "", text); sub(/[[:space:]]+$/, "", text); return text }
-    function run(body,   i, c, quote, cur, size, n, unsafe, parts) {
-      quote = 0; cur = ""; n = 0; unsafe = 0; size = length(body)
+    function run(body,   i, c, quote, cur, size, n, unsafe, parts, depth, tick) {
+      quote = 0; cur = ""; n = 0; unsafe = 0; size = length(body); depth = 0; tick = 0
       for (i = 1; i <= size; i++) {
         c = substr(body, i, 1)
         if (quote == 1) {
@@ -211,12 +211,15 @@ xray_chain() {
         if (c == "\"") { quote = 1; cur = cur c; continue }
         if (c == "\047") { quote = 2; cur = cur c; continue }
         if (c == "\\" && i < size) { cur = cur c substr(body, i + 1, 1); i++; continue }
-        if (c == "&" && substr(body, i + 1, 1) == "&") { parts[++n] = trim(cur); cur = ""; i++; continue }
+        if (c == "`") tick = !tick
+        if (c == "(") depth++
+        if (c == ")") { if (depth > 0) depth--; else unsafe = 1 }
+        if (c == "&" && substr(body, i + 1, 1) == "&" && depth == 0 && !tick) { parts[++n] = trim(cur); cur = ""; i++; continue }
         if (c == "|" && substr(body, i + 1, 1) == "|") unsafe = 1
         if (c == ";" || c == "&") unsafe = 1
         cur = cur c
       }
-      if (quote != 0) unsafe = 1
+      if (quote != 0 || depth != 0 || tick) unsafe = 1
       parts[++n] = trim(cur)
       for (i = 1; i <= n; i++) printf "%s\t%s\n", (unsafe ? "unsafe" : "safe"), parts[i]
     }
