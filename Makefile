@@ -31,6 +31,14 @@ XRAY_OS_EFFECTIVE   := $(if $(XRAY_OS),$(XRAY_OS),$(GOOS))
 XRAY_ARCH_EFFECTIVE := $(if $(XRAY_ARCH),$(XRAY_ARCH),$(XRAY_ARCH_MAP_$(GOARCH)))
 XRAY_INSTALL_ARGS   := $(strip $(if $(XRAY_VERSION),--tag $(XRAY_VERSION)) $(if $(XRAY_OS_EFFECTIVE),--os $(XRAY_OS_EFFECTIVE)) $(if $(XRAY_ARCH_EFFECTIVE),--arch $(XRAY_ARCH_EFFECTIVE)))
 
+GEOFILES_TAG ?= $(shell sed -n 's/^ARG GEOFILES_TAG=//p' Dockerfile)
+GEOIP_SHA256 ?= $(shell sed -n 's/^ARG GEOIP_SHA256=//p' Dockerfile)
+GEOSITE_SHA256 ?= $(shell sed -n 's/^ARG GEOSITE_SHA256=//p' Dockerfile)
+GEOFILES_REPO ?= Loyalsoldier/v2ray-rules-dat
+GEOFILES_DIR ?= /usr/local/share/xray
+GEOFILES_XRAY ?= /usr/local/bin/xray
+GEOFILES_CHECK_CONFIG ?= $(CURDIR)/testdata/geofiles-check.json
+
 ifeq ($(GOOS),windows)
 OUTPUT = $(NAME).exe
 ADDITION = go build -o w$(NAME).exe -trimpath -ldflags "-H windowsgui $(LDFLAGS)" -v $(MAIN)
@@ -42,7 +50,8 @@ ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
 ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
-.PHONY: clean build build_xray build_singbox test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift
+.PHONY: clean build build_xray build_singbox test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift \
+	install_geofiles check_geofiles update_geofiles_pin
 
 build:
 	CGO_ENABLED=0 go build -o $(OUTPUT) $(PARAMS) $(MAIN)
@@ -133,11 +142,84 @@ ifeq ($(UNAME_S),Linux)
 	else \
 		curl -fL $(INSTALL_CORE_URL) | bash -s -- $(XRAY_INSTALL_ARGS); \
 	fi
+	@$(MAKE) --no-print-directory install_geofiles
 
 else
 	@echo "Unsupported operating system: $(UNAME_S)"
 	@exit 1
 endif
+
+GEOFILES_SUDO ?= $(if $(filter debian ubuntu centos rhel fedora arch,$(DISTRO)),sudo)
+
+install_geofiles:
+	@set -e; \
+	case "$(GEOFILES_TAG)" in ""|*[!0-9]*) echo "error: GEOFILES_TAG '$(GEOFILES_TAG)' is not a release tag" >&2; exit 1 ;; esac; \
+	for want in "$(GEOIP_SHA256)" "$(GEOSITE_SHA256)"; do \
+		if ! printf '%s\n' "$$want" | grep -Eqx '[0-9a-f]{64}'; then echo "error: '$$want' is not a sha256" >&2; exit 1; fi; \
+	done; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	url="https://github.com/$(GEOFILES_REPO)/releases/download/$(GEOFILES_TAG)"; \
+	echo "Installing geo files from $(GEOFILES_REPO) $(GEOFILES_TAG) into $(GEOFILES_DIR)"; \
+	fetch() { \
+		ok=0; \
+		for try in 1 2 3; do \
+			if curl -fsSL "$$url/$$1" -o "$$tmp/$$1"; then ok=1; break; fi; \
+			sleep 2; \
+		done; \
+		if [ "$$ok" -ne 1 ]; then \
+			echo "error: cannot download $$1 from $(GEOFILES_REPO) $(GEOFILES_TAG)" >&2; \
+			exit 1; \
+		fi; \
+		got=$$(sha256sum "$$tmp/$$1" | cut -d ' ' -f 1); \
+		if [ "$$got" != "$$2" ]; then \
+			echo "error: $$1 from $(GEOFILES_REPO) $(GEOFILES_TAG) has sha256 $$got, expected $$2" >&2; \
+			exit 1; \
+		fi; \
+		echo "$$1: sha256 OK ($$got)"; \
+	}; \
+	fetch geoip.dat "$(GEOIP_SHA256)"; \
+	fetch geosite.dat "$(GEOSITE_SHA256)"; \
+	$(GEOFILES_SUDO) install -d "$(GEOFILES_DIR)"; \
+	$(GEOFILES_SUDO) install -m 644 "$$tmp/geoip.dat" "$(GEOFILES_DIR)/geoip.dat"; \
+	$(GEOFILES_SUDO) install -m 644 "$$tmp/geosite.dat" "$(GEOFILES_DIR)/geosite.dat"
+	@$(MAKE) --no-print-directory check_geofiles
+
+check_geofiles:
+	@set -e; \
+	host_os=$$(go env GOHOSTOS 2>/dev/null || uname -s | tr '[:upper:]' '[:lower:]'); \
+	host_arch=$$(go env GOHOSTARCH 2>/dev/null || case "$$(uname -m)" in (x86_64) echo amd64 ;; (aarch64|arm64) echo arm64 ;; (*) uname -m ;; esac); \
+	if { [ -n "$(GOOS)" ] && [ "$(GOOS)" != "$$host_os" ]; } || \
+	   { [ -n "$(GOARCH)" ] && [ "$(GOARCH)" != "$$host_arch" ]; }; then \
+		echo "Skipping the geo files check: cross build for $(GOOS)/$(GOARCH), $(GEOFILES_XRAY) cannot run on this host"; \
+		exit 0; \
+	fi; \
+	status=0; \
+	out=$$(XRAY_LOCATION_ASSET="$(GEOFILES_DIR)" "$(GEOFILES_XRAY)" run -test -c "$(GEOFILES_CHECK_CONFIG)" 2>&1) || status=$$?; \
+	printf '%s\n' "$$out"; \
+	case "$$out" in *"Configuration OK"*) ;; *) status=1 ;; esac; \
+	if [ "$$status" -ne 0 ]; then \
+		echo "error: $(GEOFILES_XRAY) cannot load $(GEOFILES_CHECK_CONFIG) with the geo files in $(GEOFILES_DIR)" >&2; \
+		exit 1; \
+	fi; \
+	echo "Geo files check passed: $(GEOFILES_DIR)"
+
+update_geofiles_pin:
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	latest=$$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/$(GEOFILES_REPO)/releases/latest"); \
+	tag=$${latest##*/releases/tag/}; \
+	case "$$tag" in ""|*/*) echo "error: cannot resolve the latest $(GEOFILES_REPO) release from $$latest" >&2; exit 1 ;; esac; \
+	url="https://github.com/$(GEOFILES_REPO)/releases/download/$$tag"; \
+	for name in geoip.dat geosite.dat; do \
+		curl -fsSL --retry 3 --retry-connrefused "$$url/$$name" -o "$$tmp/$$name"; \
+		curl -fsSL --retry 3 --retry-connrefused "$$url/$$name.sha256sum" -o "$$tmp/$$name.sha256sum"; \
+		(cd "$$tmp" && sha256sum -c "$$name.sha256sum") >&2; \
+	done; \
+	echo "ARG GEOFILES_TAG=$$tag"; \
+	echo "ARG GEOIP_SHA256=$$(sha256sum "$$tmp/geoip.dat" | cut -d ' ' -f 1)"; \
+	echo "ARG GEOSITE_SHA256=$$(sha256sum "$$tmp/geosite.dat" | cut -d ' ' -f 1)"
 
 XRAY_REPO ?= https://github.com/XTLS/Xray-core.git
 XRAY_COMMIT ?= $(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)

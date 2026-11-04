@@ -209,20 +209,17 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 
 FROM --platform=$BUILDPLATFORM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS geo-assets
 
-ARG XRAY_VERSION
-ARG XRAY_ZIP_SHA256=e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214
-ARG GEOIP_SHA256=ce90dc02a81528109c99d769e1f8fe3071ded6b02a574f31e62d8f4eee312563
-ARG GEOSITE_SHA256=9ee94acb06e2f795831fb1589c0dc7af9242b0fb8d9196afd981b915b1097ed3
+ARG GEOFILES_TAG=202610202206
+ARG GEOIP_SHA256=4a1b1eddabf5614fa51dd93ac0498856cb82dd65933cd6d6d5890d8c7bb5e902
+ARG GEOSITE_SHA256=9a4f9f84cf6201cf135afbc9d67190359cdc28e4e02e2e9f3e2b359cac317ed2
 
 RUN apk add --no-cache curl
 WORKDIR /geo
-RUN curl -fsSL --retry 3 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" \
- && echo "${XRAY_ZIP_SHA256}  /tmp/xray.zip" | sha256sum -c - \
- && unzip -q /tmp/xray.zip geoip.dat geosite.dat -d /geo \
+RUN curl -fsSL --retry 3 -o /geo/geoip.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${GEOFILES_TAG}/geoip.dat" \
+ && curl -fsSL --retry 3 -o /geo/geosite.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/${GEOFILES_TAG}/geosite.dat" \
  && echo "${GEOIP_SHA256}  /geo/geoip.dat" | sha256sum -c - \
  && echo "${GEOSITE_SHA256}  /geo/geosite.dat" | sha256sum -c - \
- && chmod 0644 /geo/geoip.dat /geo/geosite.dat \
- && rm /tmp/xray.zip
+ && chmod 0644 /geo/geoip.dat /geo/geosite.dat
 
 FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS filter-assets
 
