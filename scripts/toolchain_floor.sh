@@ -194,34 +194,123 @@ if [ -f Dockerfile ] && xray_stage=$(awk '
   xray_stage_found=1
 fi
 
+xray_chain() {
+  awk '
+    function trim(text) { sub(/^[[:space:]]+/, "", text); sub(/[[:space:]]+$/, "", text); return text }
+    function run(body,   i, c, quote, cur, size, n, unsafe, parts) {
+      quote = 0; cur = ""; n = 0; unsafe = 0; size = length(body)
+      for (i = 1; i <= size; i++) {
+        c = substr(body, i, 1)
+        if (quote == 1) {
+          cur = cur c
+          if (c == "\\" && i < size) { i++; cur = cur substr(body, i, 1) }
+          else if (c == "\"") quote = 0
+          continue
+        }
+        if (quote == 2) { cur = cur c; if (c == "\047") quote = 0; continue }
+        if (c == "\"") { quote = 1; cur = cur c; continue }
+        if (c == "\047") { quote = 2; cur = cur c; continue }
+        if (c == "\\" && i < size) { cur = cur c substr(body, i + 1, 1); i++; continue }
+        if (c == "&" && substr(body, i + 1, 1) == "&") { parts[++n] = trim(cur); cur = ""; i++; continue }
+        if (c == "|" && substr(body, i + 1, 1) == "|") unsafe = 1
+        if (c == ";" || c == "&") unsafe = 1
+        cur = cur c
+      }
+      if (quote != 0) unsafe = 1
+      parts[++n] = trim(cur)
+      for (i = 1; i <= n; i++) printf "%s\t%s\n", (unsafe ? "unsafe" : "safe"), parts[i]
+    }
+    function logical(line,   word) {
+      word = line
+      sub(/^[[:space:]]+/, "", word)
+      if (toupper(substr(word, 1, 4)) != "RUN " && toupper(substr(word, 1, 4)) != "RUN\t") return
+      word = trim(substr(word, 5))
+      if (substr(word, 1, 1) == "[") return
+      run(word)
+    }
+    {
+      line = $0
+      if (line ~ /\\[[:space:]]*$/) {
+        sub(/\\[[:space:]]*$/, "", line)
+        buffer = buffer line " "
+        next
+      }
+      logical(buffer line)
+      buffer = ""
+    }
+    END { if (buffer != "") logical(buffer) }
+  '
+}
+
+xnet_check_re='^grep -q "golang\.org/x/net (v[^"$[:space:]]+)( // indirect)?\$" go\.mod$'
+apply_re='git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch'
+
+upstream_xnet=
 if [ "$xray_stage_found" = 0 ]; then
   checked=$((checked + 1))
   refuse "the Dockerfile has no xray-builder stage, so the Xray binary's x/net cannot be checked against v$xnet_floor"
 else
-  docker_patches=()
-  while IFS= read -r patch; do
-    [ -n "$patch" ] || continue
-    docker_patches+=("patches/$patch")
-  done <<EOF
-$(printf '%s\n' "$xray_stage" | grep -oE 'git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch' | sed -E 's@.*/patches/@@')
+  docker_xnet=
+  docker_source=
+  while IFS=$'\t' read -r safety element; do
+    [ -n "$element" ] || continue
+    applied=$(printf '%s\n' "$element" | grep -oE "$apply_re" | sed -E 's@.*/patches/@@' || true)
+    if [ -n "$applied" ]; then
+      while IFS= read -r patch; do
+        [ -n "$patch" ] || continue
+        final_xnet "patches/$patch"
+        if [ -n "$final" ]; then
+          docker_xnet=$final
+          docker_source="patch order"
+        fi
+      done <<EOF
+$applied
 EOF
-  final=
-  [ "${#docker_patches[@]}" = 0 ] || final_xnet "${docker_patches[@]}"
-  if [ -z "$final" ]; then
+      continue
+    fi
+    [ "$safety" = safe ] || continue
+    [[ $element =~ $xnet_check_re ]] || continue
+    asserted=${BASH_REMATCH[1]}
+    if [ -z "$docker_xnet" ]; then
+      docker_xnet=$asserted
+      docker_source="go.mod check"
+      upstream_xnet=$asserted
+    elif [ "$asserted" != "$docker_xnet" ]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage checks go.mod for golang.org/x/net $asserted, but its $docker_source leaves $docker_xnet there"
+    fi
+  done <<EOF
+$(printf '%s\n' "$xray_stage" | xray_chain)
+EOF
+  if [ -z "$docker_xnet" ]; then
     checked=$((checked + 1))
-    refuse "no patch applied by the Dockerfile xray-builder stage sets golang.org/x/net, so the Xray binary's x/net cannot be checked against v$xnet_floor"
+    refuse "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net, so the Xray binary's x/net cannot be checked against v$xnet_floor"
+  elif [ "$docker_source" = "patch order" ]; then
+    require_xnet "the Xray binary (Dockerfile patch order)" "$docker_xnet"
   else
-    require_xnet "the Xray binary (Dockerfile patch order)" "$final"
+    require_xnet "the Xray binary (Dockerfile xray-builder go.mod check)" "$docker_xnet"
   fi
+fi
+
+make_commit_line="XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
+make_builds_docker_commit=0
+if [ -n "$upstream_xnet" ] && [ -f Makefile ] \
+  && [ "$(grep -cE '^[[:space:]]*(export[[:space:]]+|override[[:space:]]+)*XRAY_COMMIT[[:space:]]*(\?|:|::|:::|\+|!)?=' Makefile || true)" = 1 ] \
+  && grep -qxF "$make_commit_line" Makefile \
+  && [ "$(grep -c '^ARG XRAY_COMMIT=' Dockerfile || true)" = 1 ] \
+  && printf '%s\n' "$xray_stage" | grep -q '^ARG XRAY_COMMIT='; then
+  make_builds_docker_commit=1
 fi
 
 final=
 [ "${#glob_patches[@]}" = 0 ] || final_xnet "${glob_patches[@]}"
-if [ -z "$final" ]; then
-  checked=$((checked + 1))
-  refuse "no patches/xray-*.patch sets golang.org/x/net, so the make build_xray binary's x/net cannot be checked against v$xnet_floor"
-else
+if [ -n "$final" ]; then
   require_xnet "the Xray binary (make build_xray patch order)" "$final"
+elif [ "$make_builds_docker_commit" = 1 ]; then
+  require_xnet "the Xray binary (make build_xray, upstream go.mod at the Dockerfile XRAY_COMMIT)" "$upstream_xnet"
+else
+  checked=$((checked + 1))
+  refuse "no patches/xray-*.patch sets golang.org/x/net and make build_xray has no upstream go.mod value (it must build the one Dockerfile XRAY_COMMIT whose go.mod the xray-builder stage checks), so the make build_xray binary's x/net cannot be checked against v$xnet_floor"
 fi
 
 if [ "$problems" -gt 0 ]; then
