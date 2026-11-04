@@ -142,43 +142,181 @@ func packageProtocolConstants(t *testing.T, files []*ast.File) map[string]string
 	return nil
 }
 
-func protocolSwitchCases(files []*ast.File, constants map[string]string) map[string]int {
-	cases := map[string]int{}
+func packageStringConstants(t *testing.T, files []*ast.File) map[string]string {
+	t.Helper()
+
+	values := map[string]string{}
 	for _, file := range files {
 		ast.Inspect(file, func(node ast.Node) bool {
-			sw, ok := node.(*ast.SwitchStmt)
-			if !ok {
+			gen, ok := node.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
 				return true
 			}
-			sel, ok := sw.Tag.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Protocol" {
-				return true
-			}
-			for _, stmt := range sw.Body.List {
-				clause, ok := stmt.(*ast.CaseClause)
-				if !ok {
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Values) != len(vs.Names) {
 					continue
 				}
-				for _, expr := range clause.List {
-					var value string
-					switch e := expr.(type) {
-					case *ast.Ident:
-						value, ok = constants[e.Name]
-						if !ok {
-							value = "<unresolved " + e.Name + ">"
-						}
-					case *ast.BasicLit:
-						value, _ = strconv.Unquote(e.Value)
-					default:
-						value = "<unresolved expression>"
+				for idx, name := range vs.Names {
+					lit, ok := vs.Values[idx].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
 					}
-					cases[value]++
+					value, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					values[name.Name] = value
 				}
 			}
 			return true
 		})
 	}
-	return cases
+	return values
+}
+
+func isProtocolDerived(expr ast.Node, derived map[string]bool) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.SelectorExpr:
+			if n.Sel.Name == "Protocol" {
+				found = true
+			}
+		case *ast.Ident:
+			if derived[n.Name] {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func protocolDerivedNames(body ast.Node) map[string]bool {
+	derived := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		ast.Inspect(body, func(node ast.Node) bool {
+			var lhs, rhs []ast.Expr
+			switch n := node.(type) {
+			case *ast.AssignStmt:
+				lhs, rhs = n.Lhs, n.Rhs
+			case *ast.ValueSpec:
+				for _, name := range n.Names {
+					lhs = append(lhs, name)
+				}
+				rhs = n.Values
+			default:
+				return true
+			}
+			if len(lhs) != len(rhs) {
+				return true
+			}
+			for idx := range lhs {
+				id, ok := lhs[idx].(*ast.Ident)
+				if !ok || id.Name == "_" || derived[id.Name] || !isProtocolDerived(rhs[idx], derived) {
+					continue
+				}
+				derived[id.Name] = true
+				changed = true
+			}
+			return true
+		})
+	}
+	return derived
+}
+
+func protocolOperandValue(expr ast.Expr, constants map[string]string) (string, bool) {
+	switch e := ast.Unparen(expr).(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		value, err := strconv.Unquote(e.Value)
+		return value, err == nil
+	case *ast.Ident:
+		value, ok := constants[e.Name]
+		return value, ok
+	}
+	return "", false
+}
+
+func protocolValuesCompared(files []*ast.File, constants map[string]string) (map[string]map[string]bool, int) {
+	uses := map[string]map[string]bool{}
+	record := func(kind, value string) {
+		if uses[value] == nil {
+			uses[value] = map[string]bool{}
+		}
+		uses[value][kind] = true
+	}
+	switches := 0
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			derived := protocolDerivedNames(fn.Body)
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				switch n := node.(type) {
+				case *ast.SwitchStmt:
+					if n.Tag == nil || !isProtocolDerived(n.Tag, derived) {
+						return true
+					}
+					switches++
+					for _, stmt := range n.Body.List {
+						clause, ok := stmt.(*ast.CaseClause)
+						if !ok {
+							continue
+						}
+						for _, expr := range clause.List {
+							value, ok := protocolOperandValue(expr, constants)
+							if !ok {
+								switch e := ast.Unparen(expr).(type) {
+								case *ast.Ident:
+									value = "<unresolved " + e.Name + ">"
+								default:
+									value = "<unresolved expression>"
+								}
+							}
+							record("switch case", value)
+						}
+					}
+				case *ast.BinaryExpr:
+					if n.Op != token.EQL && n.Op != token.NEQ {
+						return true
+					}
+					for _, pair := range [][2]ast.Expr{{n.X, n.Y}, {n.Y, n.X}} {
+						if !isProtocolDerived(pair[0], derived) || isProtocolDerived(pair[1], derived) {
+							continue
+						}
+						if value, ok := protocolOperandValue(pair[1], constants); ok {
+							record("comparison", value)
+						}
+					}
+				case *ast.CallExpr:
+					sel, ok := n.Fun.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "EqualFold" || len(n.Args) != 2 {
+						return true
+					}
+					if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "strings" {
+						return true
+					}
+					for _, pair := range [][2]ast.Expr{{n.Args[0], n.Args[1]}, {n.Args[1], n.Args[0]}} {
+						if !isProtocolDerived(pair[0], derived) || isProtocolDerived(pair[1], derived) {
+							continue
+						}
+						if value, ok := protocolOperandValue(pair[1], constants); ok {
+							record("strings.EqualFold", strings.ToLower(value))
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	return uses, switches
 }
 
 func TestSiblingGuardCoversEveryUserProtocolOfTheConfig(t *testing.T) {
@@ -201,8 +339,8 @@ func TestSiblingGuardCoversEveryUserProtocolOfTheConfig(t *testing.T) {
 	}
 
 	constants := packageProtocolConstants(t, files)
-	cases := protocolSwitchCases(files, constants)
-	if len(cases) == 0 {
+	uses, switches := protocolValuesCompared(files, packageStringConstants(t, files))
+	if switches == 0 {
 		t.Fatal("found no switch over an inbound Protocol field")
 	}
 
@@ -212,9 +350,15 @@ func TestSiblingGuardCoversEveryUserProtocolOfTheConfig(t *testing.T) {
 			missing = append(missing, "const "+name+" = "+strconv.Quote(value))
 		}
 	}
-	for value := range cases {
-		if _, ok := siblingGuardUserProtocols[value]; !ok {
-			missing = append(missing, "switch case "+strconv.Quote(value))
+	for value, kinds := range uses {
+		if value == "" {
+			continue
+		}
+		if _, ok := siblingGuardUserProtocols[value]; ok {
+			continue
+		}
+		for kind := range kinds {
+			missing = append(missing, kind+" "+strconv.Quote(value))
 		}
 	}
 	sort.Strings(missing)
