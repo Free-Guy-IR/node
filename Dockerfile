@@ -91,6 +91,7 @@ RUN git init -q . \
  && test "$(git rev-parse HEAD)" = "${XRAY_COMMIT}" \
  && git apply --verbose /patches/xray-commander-message-size.patch \
  && grep -q "grpc.MaxRecvMsgSize(commanderMaxMessageSize)" app/commander/commander.go \
+ && ! grep -q "MaxSendMsgSize" app/commander/commander.go \
  && git apply --verbose /patches/xray-dns-long-domain.patch \
  && grep -q "name, err := dnsmessage.NewName(domain)" app/dns/dnscommon.go \
  && ! grep -q "MustNewName" app/dns/dnscommon.go \
