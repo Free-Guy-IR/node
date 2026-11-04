@@ -248,6 +248,7 @@ xray_chain() {
     }
     {
       line = $0
+      if (line ~ /^[[:space:]]*#/) next
       if (line ~ /\\[[:space:]]*$/) {
         sub(/\\[[:space:]]*$/, "", line)
         buffer = buffer line
