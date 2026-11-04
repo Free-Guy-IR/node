@@ -79,7 +79,7 @@ RUN git init -q . \\
 RUN go build -o /out/xray ./main
 
 FROM alpine:3.24.2@$alpine
-COPY --from=builder /src/main /usr/local/bin/main
+COPY --from=builder /src/main /app/main
 COPY --from=xray-builder /out/xray /usr/local/bin/xray
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 EOF
@@ -357,7 +357,7 @@ RUN git init -q . \\
 RUN go build -o /out/xray ./main
 
 FROM alpine:3.24.2@$alpine
-COPY --from=builder /src/main /usr/local/bin/main
+COPY --from=builder /src/main /app/main
 COPY --from=xray-builder /out/xray /usr/local/bin/xray
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 EOF
@@ -898,7 +898,7 @@ check xray-copied-dot-segment 1 "the Dockerfile copies /usr/local/bin/xray from 
 
 fixture xray-copied-json-from-xray-builder
 printf 'COPY --from=xray-builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-from-xray-builder/Dockerfile"
-check xray-copied-json-from-xray-builder 0 "11 pins checked"
+check xray-copied-json-from-xray-builder 1 "which is not one of the image's own copies"
 
 toolchain_env="which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
 
@@ -976,6 +976,55 @@ if [ -f "$repo_root/Dockerfile" ] && [ -f "$repo_root/Makefile" ]; then
     failed=$((failed + 1))
   fi
 fi
+
+final_copy_refused="which is not one of the image's own copies"
+while IFS='|' read -r name line; do
+  fixture "$name"
+  printf 'WORKDIR /app\n%s\n' "$line" >>"$tmp/$name/Dockerfile"
+  check "$name" 1 "$final_copy_refused"
+done <<'EOF'
+final-copy-relative-up|COPY --from=builder /src/main ../usr/local/bin/xray
+final-copy-relative|COPY --from=builder /src/main main
+final-copy-dotenv|COPY .env.example /app/.env
+final-copy-dotenv-relative|COPY --from=filter-assets /assets/pgfilter_index.json .env
+final-copy-app-other|COPY --from=builder /src/main /app/main2
+final-copy-dot-segment-app|COPY --from=builder /src/main /app/./.env
+final-copy-flag|COPY --chmod=755 --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
+final-copy-share-other|COPY --from=builder /src/main /usr/local/share/xray/xray
+EOF
+
+fixture final-copy-real-set
+printf '%s\n' 'WORKDIR /app' 'COPY --from=builder /src/main /app/main' 'COPY --from=xray-builder /out/xray /usr/local/bin/xray' \
+  'COPY --from=geo-assets /geo/geoip.dat /usr/local/share/xray/geoip.dat' 'COPY --from=geo-assets /geo/geosite.dat /usr/local/share/xray/geosite.dat' \
+  'COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box' 'COPY --from=filter-assets /assets/pgfilter.dat /usr/local/share/xray/pgfilter.dat' \
+  'COPY  --from=filter-assets   /assets/pgfilter_index.json /usr/local/share/xray/pgfilter_index.json' >>"$tmp/final-copy-real-set/Dockerfile"
+check final-copy-real-set 0 "pins checked"
+
+go_env_write="which writes the Go env file with go env -w or -u"
+while IFS='|' read -r name line; do
+  inject_before "$name" 'RUN git init -q . \' "$line"
+  check "$name" 1 "$go_env_write"
+done <<'EOF'
+early-go-env-write-modcache|RUN go env -w GOMODCACHE=/tmp/m
+early-go-env-write-quoted|RUN "go" env -w GOMODCACHE=/tmp/m
+early-go-env-write-double-dash|RUN go env --w GOPROXY=direct
+early-go-env-unset|RUN go env -u GOMODCACHE
+early-go-env-write-exec|RUN ["go", "env", "-w", "GOMODCACHE=/tmp/m"]
+EOF
+
+vendor_write="which names a vendor directory, so go build can take golang.org/x/net from vendor/ instead of the checked go.mod"
+while IFS='|' read -r name line; do
+  inject_before "$name" 'RUN git init -q . \' "$line"
+  check "$name" 1 "$vendor_write"
+done <<'EOF'
+early-vendor-mkdir|RUN mkdir -p vendor/golang.org/x && printf x > vendor/modules.txt
+early-vendor-quoted|RUN mkdir -p "ven"dor/golang.org/x
+early-vendor-copy-patches|COPY vendor /patches/vendor
+early-vendor-exec|RUN ["mkdir", "-p", "vendor"]
+EOF
+
+inject_before early-go-env-read 'RUN git init -q . \' 'RUN go env GOMODCACHE GOPATH'
+check early-go-env-read 0 "pins checked"
 
 fixture base-tree-shape
 edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'

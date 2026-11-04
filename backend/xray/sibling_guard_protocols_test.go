@@ -373,3 +373,30 @@ func TestSiblingGuardCoversEveryUserProtocolOfTheConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestProtocolValuesComparedReportsUnresolvedOperands(t *testing.T) {
+	src := `package xray
+
+var zzTuicName = "tuic"
+
+func zzAddUsers(in *Inbound) {
+	if in.Protocol == zzTuicName {
+	}
+	p := in.Protocol
+	if strings.EqualFold(p, zzTuicName) {
+	}
+	if zzTuicName != p {
+	}
+}
+`
+	file, err := parser.ParseFile(token.NewFileSet(), "zz.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uses, _ := protocolValuesCompared([]*ast.File{file}, map[string]string{})
+	for _, kind := range []string{"comparison", "strings.EqualFold"} {
+		if !uses["<unresolved zzTuicName>"][kind] {
+			t.Errorf("a %s of the protocol with the package variable zzTuicName is not reported as unresolved: %v", kind, uses)
+		}
+	}
+}
