@@ -565,6 +565,54 @@ upstream_fixture upstream-no-makefile
 rm "$tmp/upstream-no-makefile/Makefile"
 check upstream-no-makefile 1 "make build_xray has no upstream go.mod value"
 
+fixture gotoolchain-env-version
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOTOOLCHAIN=go1.27.0\nRUN go build -o /out/xray ./main@'
+check gotoolchain-env-version 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-env-legacy-form
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOTOOLCHAIN go1.27.0+auto\nRUN go build -o /out/xray ./main@'
+check gotoolchain-env-legacy-form 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-arg
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ARG GOTOOLCHAIN=go1.27.0\nRUN go build -o /out/xray ./main@'
+check gotoolchain-arg 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-inline-run
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN GOTOOLCHAIN=go1.27.0 go build -o /out/xray ./main@'
+check gotoolchain-inline-run 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-export
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN export GOTOOLCHAIN=go1.27.0 \&\& go build -o /out/xray ./main@'
+check gotoolchain-export 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-go-env-w
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN go env -w GOTOOLCHAIN=go1.27.0\nRUN go build -o /out/xray ./main@'
+check gotoolchain-go-env-w 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-quoted-name
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN GOTOOL""CHAIN=go1.27.0 go build -o /out/xray ./main@'
+check gotoolchain-quoted-name 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture goenv-env
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOENV=/tmp/goenv\nRUN go build -o /out/xray ./main@'
+check goenv-env 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+fixture gotoolchain-local-accepted
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOTOOLCHAIN=local\nRUN go build -o /out/xray ./main@'
+check gotoolchain-local-accepted 0 "11 pins checked"
+
+fixture stage-xray-builder-twice
+printf "\nFROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@%s AS Xray-Builder\nRUN go build -o /out/xray ./main\n" "$digest" >>"$tmp/stage-xray-builder-twice/Dockerfile"
+check stage-xray-builder-twice 1 "the Dockerfile has 2 xray-builder stages, so the one the image copies from cannot be told apart"
+
+fixture xray-copied-from-other-stage
+printf 'COPY --from=builder /out/xray /usr/local/bin/xray\n' >>"$tmp/xray-copied-from-other-stage/Dockerfile"
+check xray-copied-from-other-stage 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
+
+fixture xray-copied-from-xray-builder
+printf 'COPY --from=xray-builder /out/xray /usr/local/bin/xray\n' >>"$tmp/xray-copied-from-xray-builder/Dockerfile"
+check xray-copied-from-xray-builder 0 "11 pins checked"
+
 if [ -f "$repo_root/Dockerfile" ] && [ -f "$repo_root/Makefile" ]; then
   set +e
   bash "$guard" "$repo_root" >"$tmp/repo-tree.out" 2>&1
