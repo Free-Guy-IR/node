@@ -181,6 +181,8 @@ final_xnet() {
   done
 }
 
+xray_stages=0
+[ ! -f Dockerfile ] || xray_stages=$(awk 'tolower($1) == "from" && NF >= 3 && tolower($(NF - 1)) == "as" && tolower($NF) == "xray-builder" { n++ } END { print n + 0 }' Dockerfile)
 xray_stage=
 xray_stage_found=0
 if [ -f Dockerfile ] && xray_stage=$(awk '
@@ -262,6 +264,7 @@ xnet_check_re='^grep -q "golang\.org/x/net (v[^"$[:space:]]+)( // indirect)?\$" 
 apply_re='git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch'
 foreign_apply_re='(^|[^[:alnum:]_.-])(git[[:space:]]+(apply|am)|patch)([[:space:]]|$)'
 gomod_name_re='go\.(mod|work)'
+toolchain_env_re='GOTOOLCHAIN|GOENV'
 patch_copy_re='^(COPY|ADD)[[:space:]]+([^[:space:]]+[[:space:]]+)+/patches/[A-Za-z0-9._-]+$'
 gomod_tool_re='(^|[^[:alnum:]_.-])go[[:space:]]+(get|work|mod[[:space:]]+(edit|tidy|init))([[:space:]]|$)'
 chdir_re='(^|[^[:alnum:]_./-])(cd|pushd|popd|chdir)([[:space:]]|$)|(^|[[:space:]])(-C|--chdir|--directory)([[:space:]=]|$)|-modfile|GOFLAGS|GOWORK'
@@ -269,10 +272,19 @@ gomod_write_re='(^|[^[:alnum:]_.-])(sed|perl|ruby|python3?|ed|ex|vi|vim|awk|gawk
 redirect_re='>[>|]?[[:space:]]*["'\'']?[^[:space:]&|;]*go\.(mod|work)'
 git_move_re='(^|[^[:alnum:]_.-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(checkout|reset|switch|restore|pull|merge|rebase|cherry-pick|am|fetch|stash|clone|read-tree|update-index|worktree|submodule)([[:space:]]|$)'
 
+toolchain_kept_local() {
+  local rest
+  rest=$(printf '%s\n' "$1" | sed -E 's/(^|[[:space:]])GOTOOLCHAIN=local([[:space:]]|$)/\1\2/g')
+  ! [[ $rest =~ $toolchain_env_re ]]
+}
+
 upstream_xnet=
 if [ "$xray_stage_found" = 0 ]; then
   checked=$((checked + 1))
   refuse "the Dockerfile has no xray-builder stage, so the Xray binary's x/net cannot be checked against v$xnet_floor"
+elif [ "$xray_stages" != 1 ]; then
+  checked=$((checked + 1))
+  refuse "the Dockerfile has $xray_stages xray-builder stages, so the one the image copies from cannot be told apart"
 else
   docker_xnet=
   docker_source=
@@ -284,6 +296,10 @@ else
     [ "$safety" != exec ] || scan=$(printf '%s\n' "$element" | tr '",[]' '    ')
     shown=${element:0:120}
     bare=$(printf '%s\n' "$scan" | sed -E 's/\$\{[^}]*\}//g' | tr -d "\"'\\\\")
+    if ! toolchain_kept_local "$scan" || ! toolchain_kept_local "$bare"; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
+    fi
     if [ "$safety" = heredoc ]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage has a heredoc RUN ('$shown'), whose commands cannot be checked for go.mod changes"
@@ -366,6 +382,16 @@ EOF
     require_xnet "the Xray binary (Dockerfile xray-builder go.mod check)" "$docker_xnet"
   fi
 fi
+
+while IFS= read -r source; do
+  [ -n "$source" ] || continue
+  if [ "$source" != xray-builder ]; then
+    checked=$((checked + 1))
+    refuse "the Dockerfile copies /usr/local/bin/xray from '$source', not from the xray-builder stage"
+  fi
+done <<EOF
+$([ ! -f Dockerfile ] || awk 'toupper($1) == "COPY" && $NF == "/usr/local/bin/xray" { from = "the build context"; for (i = 2; i < NF; i++) if (tolower($i) ~ /^--from=/) from = tolower(substr($i, 8)); print from }' Dockerfile)
+EOF
 
 make_commit_line="XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
 make_builds_docker_commit=0
