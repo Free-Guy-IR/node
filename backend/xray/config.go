@@ -33,6 +33,8 @@ const (
 	Masque      = "masque"
 )
 
+var userProtocols = []string{Vmess, Vless, Trojan, Shadowsocks, Hysteria, Masque}
+
 type Config struct {
 	LogConfig        *conf.LogConfig    `json:"log"`
 	RouterConfig     *conf.RouterConfig `json:"routing"`

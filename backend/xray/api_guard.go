@@ -104,12 +104,14 @@ func (c *Config) ensureAPIGuardOutbound() {
 
 const siblingGuardRuleTag = "PG_NODE_SIBLING_LOOPBACK_GUARD"
 
-var siblingGuardUserProtocols = map[string]struct{}{
-	Vmess:       {},
-	Vless:       {},
-	Trojan:      {},
-	Shadowsocks: {},
-	Hysteria:    {},
+var siblingGuardUserProtocols = protocolSet(userProtocols)
+
+func protocolSet(protocols []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(protocols))
+	for _, protocol := range protocols {
+		set[protocol] = struct{}{}
+	}
+	return set
 }
 
 var siblingGuardDomains = []string{
