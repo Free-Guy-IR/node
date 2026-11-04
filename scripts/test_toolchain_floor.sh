@@ -328,7 +328,7 @@ edit Dockerfile '/grep -q "golang.org\/x\/net /d'
 check apply-in-other-stage-not-counted 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
 
 fixture apply-after-stage-ignored
-printf 'FROM alpine:3.24.2@%s AS later\nRUN git apply --verbose /patches/other-lower.patch\n' "$alpine" >>"$tmp/apply-after-stage-ignored/Dockerfile"
+printf 'FROM alpine:3.24.2@%s AS later\nRUN git apply --verbose /patches/other-lower.patch\n\nFROM alpine:3.24.2@%s\nCOPY --from=xray-builder /out/xray /usr/local/bin/xray\n' "$alpine" "$alpine" >>"$tmp/apply-after-stage-ignored/Dockerfile"
 gomod_patch v0.60.0 v0.58.0 >"$tmp/apply-after-stage-ignored/patches/other-lower.patch"
 check apply-after-stage-ignored 0 "11 pins checked"
 

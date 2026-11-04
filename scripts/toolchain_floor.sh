@@ -271,7 +271,11 @@ chdir_re='(^|[^[:alnum:]_./-])(cd|pushd|popd|chdir)([[:space:]]|$)|(^|[[:space:]
 gomod_write_re='(^|[^[:alnum:]_.-])(sed|perl|ruby|python3?|ed|ex|vi|vim|awk|gawk|cp|mv|tee|install|ln|dd|truncate|rsync|touch|rm|unlink)[[:space:]][^&|;]*go\.(mod|work)'
 redirect_re='>[>|]?[[:space:]]*["'\'']?[^[:space:]&|;]*go\.(mod|work)'
 git_move_re='(^|[^[:alnum:]_.-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(checkout|reset|switch|restore|pull|merge|rebase|cherry-pick|am|fetch|stash|clone|read-tree|update-index|worktree|submodule)([[:space:]]|$)'
-go_build_unsafe_re='[$`]|(^|[[:space:]])--?(overlay|mod|C|toolchain)'
+go_build_token_re='^[[:space:]]+("[^"\\$`'"'"']*"|[^[:space:]"\\$`'"'"']+)([[:space:]].*)?$'
+assign_word_re='^[[:space:]]+([^[:space:]]+)([[:space:]].*)?$'
+final_package_re='^[a-z0-9][a-z0-9+_-]*$'
+final_command_re='^[a-z0-9._+-]+$'
+final_path_re='^/[A-Za-z0-9._/+-]+$'
 git_apply_args_re='^(--?[a-z][a-z-]*[[:space:]]+)*/patches/[A-Za-z0-9._-]+\.patch$'
 export_names_re='^(export|readonly|declare|typeset|local|env|set)$'
 
@@ -294,14 +298,15 @@ command_words() {
       return 0
     }
     function word_end() { if (inword) { words[++nw] = w; w = ""; inword = 0 } }
-    function command_end(   i, j, rest) {
+    function command_end(   i, j, rest, assigns) {
       word_end()
       i = 1
-      while (i <= nw && (words[i] == "!" || words[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++
+      assigns = ""
+      while (i <= nw && (words[i] == "!" || words[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) { assigns = assigns (assigns == "" ? "" : " ") words[i]; i++ }
       if (i <= nw) {
         rest = ""
         for (j = i + 2; j <= nw; j++) rest = rest (rest == "" ? "" : " ") words[j]
-        printf "%s\t%s\t%s\n", words[i], (i < nw ? words[i + 1] : ""), rest
+        printf "%s\037%s\037%s\037%s\n", words[i], (i < nw ? words[i + 1] : ""), rest, assigns
       }
       nw = 0
     }
@@ -311,34 +316,65 @@ command_words() {
         c = substr(s, i, 1)
         if (q == 2) { w = w c; if (c == "\047") q = 0; continue }
         if (c == "\\") { w = w c substr(s, i + 1, 1); i++; inword = 1; continue }
-        if (c == "`") { printf "`\t\t\n"; w = w c; inword = 1; continue }
+        if (c == "`") { printf "`\037\037\037\n"; w = w c; inword = 1; continue }
         if (c == "$" && substr(s, i + 1, 1) == "(") {
           j = close_sub(s, i + 2)
-          if (j == 0) { printf "$(\t\t\n"; return }
+          if (j == 0) { printf "$(\037\037\037\n"; return }
           queue[++qn] = substr(s, i + 2, j - i - 2)
           w = w substr(s, i, j - i + 1); inword = 1; i = j
           continue
         }
         if (q == 1) { w = w c; if (c == "\"") q = 0; continue }
-        if (c == "$" && (substr(s, i + 1, 1) == "\047" || substr(s, i + 1, 1) == "\"")) { printf "$%s\t\t\n", substr(s, i + 1, 1); w = w c; inword = 1; continue }
+        if (c == "$" && (substr(s, i + 1, 1) == "\047" || substr(s, i + 1, 1) == "\"")) { printf "$%s\037\037\037\n", substr(s, i + 1, 1); w = w c; inword = 1; continue }
         if (c == "\"" || c == "\047") { q = (c == "\"" ? 1 : 2); w = w c; inword = 1; continue }
         if (c == " " || c == "\t") { word_end(); continue }
         if (c == "|" || c == "&" || c == ";" || c == "(" || c == ")") { command_end(); continue }
-        if (c == ">" || c == "<") { command_end(); printf "%s\t\t\n", c; continue }
+        if (c == ">" || c == "<") { command_end(); printf "%s\037\037\037\n", c; continue }
         w = w c; inword = 1
       }
-      if (q != 0) printf "%s\t\t\n", "$unbalanced"
+      if (q != 0) printf "%s\037\037\037\n", "$unbalanced"
       command_end()
     }
     { qn = 1; queue[1] = $0; for (qi = 1; qi <= qn; qi++) scan(queue[qi]) }
   '
 }
 
+go_build_allowed() {
+  local rest=" $1" assigns=" $2" token want= package=0
+  while [[ $assigns =~ $assign_word_re ]]; do
+    token=${BASH_REMATCH[1]}
+    assigns=${BASH_REMATCH[2]}
+    case "$token" in
+      'CGO_ENABLED=0' | 'GOOS=${TARGETOS}' | 'GOARCH=${TARGETARCH}') ;;
+      *) return 1 ;;
+    esac
+  done
+  [[ $assigns =~ ^[[:space:]]*$ ]] || return 1
+  while [[ $rest =~ $go_build_token_re ]]; do
+    token=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+    [ "$package" = 0 ] || return 1
+    if [ -n "$want" ]; then
+      [ "$token" = "$want" ] || return 1
+      want=
+      continue
+    fi
+    case "$token" in
+      -trimpath) ;;
+      -ldflags) want='"-s -w -buildid="' ;;
+      -o) want=/out/xray ;;
+      ./main) package=1 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -z "$rest" ] && [ -z "$want" ] && [ "$package" = 1 ]
+}
+
 allowed_after_check() {
-  local name=$1 sub=$2 rest=$3
+  local name=$1 sub=$2 rest=$3 assigns=$4
   case "$name" in
     grep | test) return 0 ;;
-    go) [ "$sub" = build ] && ! [[ $rest =~ $go_build_unsafe_re ]] && ! [[ ${rest//[\"\'\\]/} =~ $go_build_unsafe_re ]] ;;
+    go) [ "$sub" = build ] && go_build_allowed "$rest" "$assigns" ;;
     git) [ "$sub" = apply ] && [[ $rest =~ $git_apply_args_re ]] ;;
     *) return 1 ;;
   esac
@@ -361,6 +397,57 @@ check_toolchain_env() {
     checked=$((checked + 1))
     refuse "the Dockerfile $1 stage runs '${2:0:120}', which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
   fi
+  if [[ $scan == *XRAY_EXECUTABLE_PATH* ]] || [[ $bare == *XRAY_EXECUTABLE_PATH* ]]; then
+    checked=$((checked + 1))
+    refuse "the Dockerfile $1 stage runs '${2:0:120}', which sets XRAY_EXECUTABLE_PATH, so the node need not run the /usr/local/bin/xray the xray-builder stage checks"
+  fi
+  if [[ $scan == *GOFLAGS* ]] || [[ $bare == *GOFLAGS* ]]; then
+    checked=$((checked + 1))
+    refuse "the Dockerfile $1 stage runs '${2:0:120}', which sets GOFLAGS, so the build need not use the flags and go.mod the guard checks"
+  fi
+}
+
+final_stage_run_allowed() {
+  local name sub rest assigns word words
+  case "$1" in heredoc | exec) return 1 ;; esac
+  [[ $2 != *[\$\`\\\"\']* ]] || return 1
+  while IFS=$'\037' read -r name sub rest assigns; do
+    [ -n "$name" ] || continue
+    [ -z "$assigns" ] || return 1
+    if [ "$name" = "{" ]; then
+      name=$sub
+      if [[ $rest == *" "* ]]; then
+        sub=${rest%% *}
+        rest=${rest#* }
+      else
+        sub=$rest
+        rest=
+      fi
+    fi
+    case "$name" in
+      apk)
+        case "$sub" in
+          update) [ -z "$rest" ] || return 1 ;;
+          add)
+            read -r -a words <<<"$rest"
+            for word in "${words[@]}"; do
+              [ "$word" = --no-cache ] || [[ $word =~ $final_package_re ]] || return 1
+            done
+            ;;
+          *) return 1 ;;
+        esac
+        ;;
+      command) [ "$sub" = -v ] && [[ $rest =~ $final_command_re ]] || return 1 ;;
+      test)
+        { [ "$sub" = -x ] || [ "$sub" = -f ]; } && [[ $rest =~ $final_path_re ]] && [[ $rest != *..* ]] \
+          && [[ $rest != /usr/local && $rest != /usr/local/* ]] || return 1
+        ;;
+      '>' | /dev/null | '}') [ -z "$sub" ] && [ -z "$rest" ] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$2" | command_words)
+EOF
 }
 
 dockerfile_chain=
@@ -429,20 +516,20 @@ else
     if [ "$safety" != inst ]; then
       if [ "$safety" = exec ]; then
         if [[ $element == *\\* ]]; then
-          commands=$'\\\t\t'
+          commands=$'\\\037\037\037'
         else
-          commands=$(printf '%s\n' "$scan" | awk '{ rest = ""; for (i = 3; i <= NF; i++) rest = rest (rest == "" ? "" : " ") $i; printf "%s\t%s\t%s\n", $1, $2, rest }')
+          commands=$(printf '%s\n' "$scan" | awk '{ rest = ""; for (i = 3; i <= NF; i++) rest = rest (rest == "" ? "" : " ") $i; printf "%s\037%s\037%s\037\n", $1, $2, rest }')
         fi
       else
         commands=$(printf '%s\n' "$element" | command_words)
       fi
-      while IFS=$'\t' read -r name sub rest; do
+      while IFS=$'\037' read -r name sub rest assigns; do
         [ -n "$name" ] || continue
         if [[ $name == *[\$\`]* ]] || { { [[ $name =~ $export_names_re ]] || { [ "$name" = go ] && [ "$sub" = env ]; }; } && [[ "$sub $rest" == *[\$\`]* ]]; }; then
           checked=$((checked + 1))
           refuse "the Dockerfile xray-builder stage runs '$shown', which has a \$ or a backquote in a command name or in what it exports, so the command it runs cannot be read"
         fi
-        if [ "$check_seen" = 1 ] && ! allowed_after_check "$name" "$sub" "$rest"; then
+        if [ "$check_seen" = 1 ] && ! allowed_after_check "$name" "$sub" "$rest" "$assigns"; then
           checked=$((checked + 1))
           refuse "the Dockerfile xray-builder stage runs '$shown', whose command '${name:0:40}' is not grep, test, git apply of a /patches/ patch or go build, after its golang.org/x/net go.mod check"
         fi
@@ -491,11 +578,18 @@ EOF
 fi
 
 stage=preamble
+froms_total=$(printf '%s\n' "$dockerfile_chain" | awk -F '\t' '$1 == "inst" && $2 ~ /^[Ff][Rr][Oo][Mm][[:space:]]/ { n++ } END { print n + 0 }')
+froms_seen=0
 while IFS=$'\t' read -r safety element; do
   [ -n "$element" ] || continue
   if [ "$safety" = inst ] && [[ $element =~ ^[Ff][Rr][Oo][Mm][[:space:]] ]]; then
     stage=$(printf '%s\n' "$element" | awk 'NF >= 3 && tolower($(NF - 1)) == "as" { print tolower($NF); next } { print "unnamed" }')
+    froms_seen=$((froms_seen + 1))
     continue
+  fi
+  if [ "$froms_seen" -gt 0 ] && [ "$froms_seen" = "$froms_total" ] && [ "$safety" != inst ] && ! final_stage_run_allowed "$safety" "$element"; then
+    checked=$((checked + 1))
+    refuse "the Dockerfile final stage runs '${element:0:120}', which is not apk update, apk add of package names, command -v or test, so it can write /usr/local/bin/xray after the COPY from xray-builder"
   fi
   [ "$stage" != xray-builder ] || continue
   element_forms "$safety" "$element"
