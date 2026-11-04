@@ -197,38 +197,51 @@ fi
 xray_chain() {
   awk '
     function trim(text) { sub(/^[[:space:]]+/, "", text); sub(/[[:space:]]+$/, "", text); return text }
-    function run(body,   i, c, quote, cur, size, n, unsafe, parts, depth, tick) {
-      quote = 0; cur = ""; n = 0; unsafe = 0; size = length(body); depth = 0; tick = 0
+    function run(body,   i, c, cur, size, n, unsafe, parts, d, kind, q) {
+      cur = ""; n = 0; unsafe = 0; size = length(body); d = 0; kind[0] = ""; q[0] = 0
       for (i = 1; i <= size; i++) {
         c = substr(body, i, 1)
-        if (quote == 1) {
+        if (q[d] == 2) { cur = cur c; if (c == "\047") q[d] = 0; continue }
+        if (q[d] == 1) {
           cur = cur c
           if (c == "\\" && i < size) { i++; cur = cur substr(body, i, 1) }
-          else if (c == "\"") quote = 0
+          else if (c == "\"") q[d] = 0
+          else if (c == "$" && substr(body, i + 1, 1) == "(") { i++; cur = cur "("; kind[++d] = "("; q[d] = 0 }
+          else if (c == "`") { kind[++d] = "`"; q[d] = 0 }
           continue
         }
-        if (quote == 2) { cur = cur c; if (c == "\047") quote = 0; continue }
-        if (c == "\"") { quote = 1; cur = cur c; continue }
-        if (c == "\047") { quote = 2; cur = cur c; continue }
         if (c == "\\" && i < size) { cur = cur c substr(body, i + 1, 1); i++; continue }
-        if (c == "`") tick = !tick
-        if (c == "(") depth++
-        if (c == ")") { if (depth > 0) depth--; else unsafe = 1 }
-        if (c == "&" && substr(body, i + 1, 1) == "&" && depth == 0 && !tick) { parts[++n] = trim(cur); cur = ""; i++; continue }
+        if (c == "\"") { q[d] = 1; cur = cur c; continue }
+        if (c == "\047") { q[d] = 2; cur = cur c; continue }
+        if (c == "`") {
+          if (d > 0 && kind[d] == "`") d--
+          else { kind[++d] = "`"; q[d] = 0 }
+          cur = cur c
+          continue
+        }
+        if (c == "(") { kind[++d] = "("; q[d] = 0; cur = cur c; continue }
+        if (c == ")") {
+          if (d > 0 && kind[d] == "(") d--
+          else unsafe = 1
+          cur = cur c
+          continue
+        }
+        if (c == "&" && substr(body, i + 1, 1) == "&" && d == 0) { parts[++n] = trim(cur); cur = ""; i++; continue }
         if (c == "|" && substr(body, i + 1, 1) == "|") unsafe = 1
         if (c == ";" || c == "&") unsafe = 1
         cur = cur c
       }
-      if (quote != 0 || depth != 0 || tick) unsafe = 1
+      if (q[d] != 0 || d != 0) unsafe = 1
       parts[++n] = trim(cur)
       for (i = 1; i <= n; i++) printf "%s\t%s\n", (unsafe ? "unsafe" : "safe"), parts[i]
     }
     function logical(line,   word) {
-      word = line
-      sub(/^[[:space:]]+/, "", word)
-      if (toupper(substr(word, 1, 4)) != "RUN " && toupper(substr(word, 1, 4)) != "RUN\t") return
+      word = trim(line)
+      if (word == "" || substr(word, 1, 1) == "#") return
+      if (toupper(substr(word, 1, 4)) != "RUN " && toupper(substr(word, 1, 4)) != "RUN\t") { printf "inst\t%s\n", word; return }
       word = trim(substr(word, 5))
-      if (substr(word, 1, 1) == "[") return
+      if (substr(word, 1, 1) == "[") { printf "exec\t%s\n", word; return }
+      if (index(word, "<<")) { printf "heredoc\t%s\n", word; return }
       run(word)
     }
     {
@@ -247,6 +260,14 @@ xray_chain() {
 
 xnet_check_re='^grep -q "golang\.org/x/net (v[^"$[:space:]]+)( // indirect)?\$" go\.mod$'
 apply_re='git apply[^&]*/patches/[A-Za-z0-9._-]+\.patch'
+foreign_apply_re='(^|[^[:alnum:]_.-])(git[[:space:]]+(apply|am)|patch)([[:space:]]|$)'
+gomod_name_re='go\.(mod|work)'
+patch_copy_re='^(COPY|ADD)[[:space:]]+([^[:space:]]+[[:space:]]+)+/patches/[A-Za-z0-9._-]+$'
+gomod_tool_re='(^|[^[:alnum:]_.-])go[[:space:]]+(get|work|mod[[:space:]]+(edit|tidy|init))([[:space:]]|$)'
+chdir_re='(^|[^[:alnum:]_./-])(cd|pushd|popd|chdir)([[:space:]]|$)|(^|[[:space:]])(-C|--chdir|--directory)([[:space:]=]|$)|-modfile|GOFLAGS|GOWORK'
+gomod_write_re='(^|[^[:alnum:]_.-])(sed|perl|ruby|python3?|ed|ex|vi|vim|awk|gawk|cp|mv|tee|install|ln|dd|truncate|rsync|touch|rm|unlink)[[:space:]][^&|;]*go\.(mod|work)'
+redirect_re='>[>|]?[[:space:]]*["'\'']?[^[:space:]&|;]*go\.(mod|work)'
+git_move_re='(^|[^[:alnum:]_.-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(checkout|reset|switch|restore|pull|merge|rebase|cherry-pick|am|fetch|stash|clone|read-tree|update-index|worktree|submodule)([[:space:]]|$)'
 
 upstream_xnet=
 if [ "$xray_stage_found" = 0 ]; then
@@ -255,8 +276,57 @@ if [ "$xray_stage_found" = 0 ]; then
 else
   docker_xnet=
   docker_source=
+  check_seen=0
+  workdirs=0
   while IFS=$'\t' read -r safety element; do
     [ -n "$element" ] || continue
+    scan=$element
+    [ "$safety" != exec ] || scan=$(printf '%s\n' "$element" | tr '",[]' '    ')
+    shown=${element:0:120}
+    if [ "$safety" = heredoc ]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage has a heredoc RUN ('$shown'), whose commands cannot be checked for go.mod changes"
+      continue
+    fi
+    if [ "$safety" = inst ]; then
+      word=$(printf '%s\n' "$element" | awk '{ print toupper($1) }')
+      case "$word" in
+        WORKDIR)
+          workdirs=$((workdirs + 1))
+          if [ "$workdirs" -gt 1 ] || [ "$check_seen" = 1 ]; then
+            checked=$((checked + 1))
+            refuse "the Dockerfile xray-builder stage sets '$shown' after its first WORKDIR or its golang.org/x/net go.mod check, so the go.mod check need not read the go.mod the build uses"
+          fi
+          ;;
+        SHELL)
+          checked=$((checked + 1))
+          refuse "the Dockerfile xray-builder stage sets '$shown', so the go.mod check need not read the go.mod the build uses"
+          ;;
+        COPY | ADD)
+          if [[ $scan =~ $gomod_name_re ]] || ! [[ $scan =~ $patch_copy_re ]]; then
+            checked=$((checked + 1))
+            refuse "the Dockerfile xray-builder stage runs '$shown', which writes go.mod or can, since it copies outside /patches/"
+          fi
+          ;;
+      esac
+    fi
+    if [[ $scan =~ $gomod_tool_re ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', which can change the golang.org/x/net requirement in go.mod outside its go.mod check"
+    fi
+    if [[ $scan =~ $chdir_re ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', so the go.mod check need not read the go.mod the build uses"
+    fi
+    if [[ $scan =~ $gomod_write_re ]] || [[ $scan =~ $redirect_re ]] || { [[ $scan =~ $foreign_apply_re ]] && ! [[ $scan =~ $apply_re ]]; }; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', which writes go.mod"
+    fi
+    if [ "$check_seen" = 1 ] && [[ $scan =~ $git_move_re ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown' after its golang.org/x/net go.mod check, which can replace the checked go.mod"
+    fi
+    case "$safety" in inst | exec) continue ;; esac
     applied=$(printf '%s\n' "$element" | grep -oE "$apply_re" | sed -E 's@.*/patches/@@' || true)
     if [ -n "$applied" ]; then
       while IFS= read -r patch; do
@@ -274,6 +344,7 @@ EOF
     [ "$safety" = safe ] || continue
     [[ $element =~ $xnet_check_re ]] || continue
     asserted=${BASH_REMATCH[1]}
+    check_seen=1
     if [ -z "$docker_xnet" ]; then
       docker_xnet=$asserted
       docker_source="go.mod check"
