@@ -774,6 +774,24 @@ check goflags-run-export-builder 1 "which sets GOFLAGS"
 fixture_before goflags-run-assignment-singbox-builder 'RUN go build ./cmd/sing-box' 'RUN GOFLAGS=-mod=mod go build ./cmd/sing-box'
 check goflags-run-assignment-singbox-builder 1 "which sets GOFLAGS"
 
+later_run comment-continuation-build $'# note \\\nRUN go build -toolexec=/tmp/t -o /out/xray ./main'
+check comment-continuation-build 1 "$not_allowed"
+
+later_run comment-inside-run-build $'RUN test -f go.mod \\\n#\n && go build -toolexec=/tmp/t -o /out/xray ./main'
+check comment-inside-run-build 1 "$not_allowed"
+
+fixture comment-continuation-final-run
+printf '# note \\\nRUN cp /usr/local/bin/main /usr/local/bin/xray\n' >>"$tmp/comment-continuation-final-run/Dockerfile"
+check comment-continuation-final-run 1 "$final_run_refused"
+
+fixture comment-continuation-final-env
+printf '# note \\\nENV XRAY_EXECUTABLE_PATH=/opt/xray\n' >>"$tmp/comment-continuation-final-env/Dockerfile"
+check comment-continuation-final-env 1 "which sets XRAY_EXECUTABLE_PATH"
+
+fixture comment-inside-final-run
+printf 'RUN apk update \\\n    # note\n    && cp /usr/local/bin/main /usr/local/bin/xray\n' >>"$tmp/comment-inside-final-run/Dockerfile"
+check comment-inside-final-run 1 "$final_run_refused"
+
 fixture xray-copied-json-form
 printf 'COPY --from=builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-form/Dockerfile"
 check xray-copied-json-form 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
