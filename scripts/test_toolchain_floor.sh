@@ -427,6 +427,92 @@ edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& (tr
 edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& (true \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& true) \\/'
 check upstream-check-in-subshell-list 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
 
+upstream_fixture upstream-check-in-quoted-command-substitution
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& echo "$(echo " \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& echo ")"/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& echo "$(echo " \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& echo ")" \\/'
+check upstream-check-in-quoted-command-substitution 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-check-in-quoted-backquotes
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& echo "`echo " \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& echo "`"/'
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod \\$/ \&\& echo "`echo " \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& echo "`" \\/'
+check upstream-check-in-quoted-backquotes 1 "neither a patch applied by the Dockerfile xray-builder stage nor a go.mod check in it sets golang.org/x/net"
+
+upstream_fixture upstream-quoted-substitution-with-inner-quotes
+edit Dockerfile 's/^ && git apply --verbose \/patches\/xray-session-revoke.patch \\$/ \&\& test "$(grep -c "golang.org\/x\/net v" go.mod)" = "1" \&\& git apply --verbose \/patches\/xray-session-revoke.patch \\/'
+check upstream-quoted-substitution-with-inner-quotes 0 "11 pins checked"
+
+upstream_fixture upstream-later-go-get-same-run
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& go get golang.org\/x\/net@v0.50.0/'
+check upstream-later-go-get-same-run 1 "which can change the golang.org/x/net requirement in go.mod"
+
+upstream_fixture upstream-later-go-mod-edit-separate-run
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN go mod edit -require=golang.org/x/net\@v0.50.0\nRUN go build -o /out/xray ./main@'
+check upstream-later-go-mod-edit-separate-run 1 "which can change the golang.org/x/net requirement in go.mod"
+
+upstream_fixture upstream-later-go-mod-tidy-separate-run
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN go mod tidy \&\& go build -o /out/xray ./main@'
+check upstream-later-go-mod-tidy-separate-run 1 "which can change the golang.org/x/net requirement in go.mod"
+
+upstream_fixture upstream-later-go-get-exec-form
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN ["go", "get", "golang.org/x/net\@v0.50.0"]\nRUN go build -o /out/xray ./main@'
+check upstream-later-go-get-exec-form 1 "which can change the golang.org/x/net requirement in go.mod"
+
+upstream_fixture upstream-later-go-get-heredoc
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN <<EOS\ngo get golang.org/x/net\@v0.50.0\nEOS\nRUN go build -o /out/xray ./main@'
+check upstream-later-go-get-heredoc 1 "a heredoc RUN"
+
+upstream_fixture upstream-check-after-cd
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& cd \/tmp \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& cd \/xray-src/'
+check upstream-check-after-cd 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-check-after-cd-and-write
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& cd \/tmp \&\& printf x > go.mod \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& cd \/xray-src/'
+check upstream-check-after-cd-and-write 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-write-before-check
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& printf "golang.org\/x\/net v0.62.0\\n" >> go.mod \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod/'
+check upstream-write-before-check 1 "which writes go.mod"
+
+upstream_fixture upstream-sed-before-check
+edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& sed -i "s\/v0.50.0\/v0.62.0\/" go.mod \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod/'
+check upstream-sed-before-check 1 "which writes go.mod"
+
+upstream_fixture upstream-copy-go-mod
+edit Dockerfile 's@^COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch$@COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch\nCOPY other.mod go.mod@'
+check upstream-copy-go-mod 1 "which writes go.mod"
+
+upstream_fixture upstream-build-go-C
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN go -C /other build -o /out/xray ./main@'
+check upstream-build-go-C 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-build-modfile
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN go build -modfile=/other/go.mod -o /out/xray ./main@'
+check upstream-build-modfile 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-env-goflags
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOFLAGS=-modfile=/other/go.mod\nRUN go build -o /out/xray ./main@'
+check upstream-env-goflags 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-workdir-after-check
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@WORKDIR /other\nRUN go build -o /out/xray ./main@'
+check upstream-workdir-after-check 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-workdir-changed-before-check
+edit Dockerfile 's@^COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch$@WORKDIR /xray-src\nRUN git init -q .\nWORKDIR /other\nCOPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch@'
+check upstream-workdir-changed-before-check 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-one-workdir-before-check
+edit Dockerfile 's@^COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch$@WORKDIR /xray-src\nCOPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch@'
+check upstream-one-workdir-before-check 0 "11 pins checked"
+
+upstream_fixture upstream-shell-instruction
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@SHELL ["/bin/sh", "-c", "cd /other \&\& sh -c \\"$0\\""]\nRUN go build -o /out/xray ./main@'
+check upstream-shell-instruction 1 "so the go.mod check need not read the go.mod the build uses"
+
+upstream_fixture upstream-git-checkout-after-check
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN git checkout -q FETCH_HEAD~1 \&\& go build -o /out/xray ./main@'
+check upstream-git-checkout-after-check 1 "after its golang.org/x/net go.mod check"
+
 upstream_fixture upstream-check-in-other-stage
 edit Dockerfile '/grep -q "golang.org\/x\/net /d'
 edit Dockerfile 's@^RUN make build$@RUN grep -q "golang.org/x/net v0.62.0$" go.mod \&\& make build@'
