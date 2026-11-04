@@ -461,6 +461,10 @@ upstream_fixture upstream-later-go-get-heredoc
 edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN <<EOS\ngo get golang.org/x/net\@v0.50.0\nEOS\nRUN go build -o /out/xray ./main@'
 check upstream-later-go-get-heredoc 1 "a heredoc RUN"
 
+upstream_fixture upstream-later-go-get-quoted-command
+edit Dockerfile 's@^RUN go build -o /out/xray ./main$@RUN "go" get golang.org/x/net\@v0.50.0\nRUN go${X} get golang.org/x/net\@v0.50.0\nRUN sh -c "g""o get golang.org/x/n""et\@v0.50.0"\nRUN go build -o /out/xray ./main@'
+check upstream-later-go-get-quoted-command 1 "3 problems in 14 pins"
+
 upstream_fixture upstream-check-after-cd
 edit Dockerfile 's/^ && grep -q "golang.org\/x\/net v0.62.0\$" go.mod$/ \&\& cd \/tmp \&\& grep -q "golang.org\/x\/net v0.62.0$" go.mod \&\& cd \/xray-src/'
 check upstream-check-after-cd 1 "so the go.mod check need not read the go.mod the build uses"
