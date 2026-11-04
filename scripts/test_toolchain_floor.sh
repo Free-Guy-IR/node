@@ -613,6 +613,86 @@ fixture xray-copied-from-xray-builder
 printf 'COPY --from=xray-builder /out/xray /usr/local/bin/xray\n' >>"$tmp/xray-copied-from-xray-builder/Dockerfile"
 check xray-copied-from-xray-builder 0 "11 pins checked"
 
+inject_before() {
+  upstream_fixture "$1"
+  printf '%s\n' "$3" >"$tmp/$1.inject"
+  awk -v f="$tmp/$1.inject" -v at="$2" '$0 == at { while ((getline l < f) > 0) print l } { print }' "$r/Dockerfile" >"$r/Dockerfile.new"
+  mv "$r/Dockerfile.new" "$r/Dockerfile"
+}
+
+later_run() {
+  inject_before "$1" "RUN go build -o /out/xray ./main" "$2"
+}
+
+not_allowed="which is not grep, test, git apply of a /patches/ patch or go build, after its golang.org/x/net go.mod check"
+while IFS='|' read -r name line; do
+  later_run "$name" "$line"
+  check "$name" 1 "$not_allowed"
+done <<'EOF'
+later-unbraced-parameter|RUN go$X get golang.org/x/net@v0.50.0
+later-sh-c-positional|RUN sh -c 'go$1 get golang.org/x/net@v0.50.0'
+later-cd-unbraced|RUN cd$X /tmp
+later-default-value|RUN g${X:-o} get golang.org/x/net@v0.50.0
+later-exec-default-value|RUN ["sh","-c","g${X:-o} get golang.org/x/net@v0.50.0"]
+later-nested-braces|RUN go${X:-${Y}} get golang.org/x/net@v0.50.0
+later-ansi-c-hex|RUN $'\x67o' get golang.org/x/net@v0.50.0
+later-ansi-c-octal|RUN $'\147o' get golang.org/x/net@v0.50.0
+later-empty-substitution|RUN go$(true) get golang.org/x/net@v0.50.0
+later-substituted-command|RUN $(echo go) get golang.org/x/net@v0.50.0
+later-backquoted-command|RUN `echo go` get golang.org/x/net@v0.50.0
+later-variable-command|RUN G=go; $G get golang.org/x/net@v0.50.0
+later-variable-subcommand|RUN G=get; go $G golang.org/x/net@v0.50.0
+later-symlinked-go|RUN ln -s /usr/local/go/bin/go /usr/local/bin/g && g get golang.org/x/net@v0.50.0
+later-patch-script|RUN sh /patches/x.sh
+later-pipeline-part|RUN grep -c golang go.sum | g get golang.org/x/net@v0.50.0
+later-inside-substitution|RUN test "$(G=go; $G get golang.org/x/net@v0.50.0)" = ""
+later-inside-quoted-pipe|RUN grep -q "a|b" go.sum | g get golang.org/x/net@v0.50.0
+later-git-apply-elsewhere|RUN git apply /tmp/x.patch
+later-go-env-write|RUN go env -w GOFLAGS=-mod=mod
+EOF
+
+later_run later-continuation-joined-without-space 'RUN go g\
+et golang.org/x/net@v0.50.0'
+check later-continuation-joined-without-space 1 "$not_allowed"
+
+inject_before early-go-env-variable-name 'RUN git init -q . \' 'RUN X=TOOLCHAIN; go env -w GO$X=go1.27.0'
+check early-go-env-variable-name 1 "has a \$ or a backquote in a command name or in what it exports"
+
+inject_before early-export-variable-name 'RUN git init -q . \' 'RUN export GO$X=go1.27.0 && go build -o /out/xray ./main'
+check early-export-variable-name 1 "has a \$ or a backquote in a command name or in what it exports"
+
+inject_before early-command-from-variable 'RUN git init -q . \' 'RUN $G version'
+check early-command-from-variable 1 "has a \$ or a backquote in a command name or in what it exports"
+
+inject_before env-name-split-by-continuation 'RUN git init -q . \' 'ENV GO\
+TOOLCHAIN=go1.27.0'
+check env-name-split-by-continuation 1 "which sets GOTOOLCHAIN to something other than local or sets GOENV"
+
+later_run later-allowed-shapes 'RUN test "$(grep -cF '"'"'a|b'"'"' go.mod)" = "1" \
+ && ! (grep -hE "(^|x)r[.](a|b)" go.mod | grep -qvE "r[.](a|b)[.](Load|Store)[(]") \
+ && grep -A1 -F "a" go.mod | grep -qF "b" \
+ && git apply --verbose /patches/xray-session-revoke.patch
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags "-s -w -buildid=" \
+    -o /out/xray2 ./main'
+check later-allowed-shapes 0 "pins checked"
+
+fixture xray-copied-json-form
+printf 'COPY --from=builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-form/Dockerfile"
+check xray-copied-json-form 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
+
+fixture xray-copied-double-slash
+printf 'COPY --from=builder /out/xray /usr/local/bin//xray\n' >>"$tmp/xray-copied-double-slash/Dockerfile"
+check xray-copied-double-slash 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
+
+fixture xray-copied-dot-segment
+printf 'COPY --from=builder /out/xray /usr/local/./bin/xray\n' >>"$tmp/xray-copied-dot-segment/Dockerfile"
+check xray-copied-dot-segment 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
+
+fixture xray-copied-json-from-xray-builder
+printf 'COPY --from=xray-builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-from-xray-builder/Dockerfile"
+check xray-copied-json-from-xray-builder 0 "11 pins checked"
+
 if [ -f "$repo_root/Dockerfile" ] && [ -f "$repo_root/Makefile" ]; then
   set +e
   bash "$guard" "$repo_root" >"$tmp/repo-tree.out" 2>&1
