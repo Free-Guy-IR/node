@@ -653,7 +653,19 @@ later-inside-substitution|RUN test "$(G=go; $G get golang.org/x/net@v0.50.0)" = 
 later-inside-quoted-pipe|RUN grep -q "a|b" go.sum | g get golang.org/x/net@v0.50.0
 later-git-apply-elsewhere|RUN git apply /tmp/x.patch
 later-go-env-write|RUN go env -w GOFLAGS=-mod=mod
+later-build-quoted-overlay|RUN go build "-overlay=/tmp/o.json" -o /out/xray ./main
+later-build-escaped-overlay|RUN go build -o\verlay=/tmp/o.json -o /out/xray ./main
+later-build-quoted-mod|RUN go build '-mod=mod' -o /out/xray ./main
 EOF
+
+if grep -nE '\|[[:space:]]*grep[[:space:]]+(-[a-zA-Z]*q|--quiet)' "$guard" >"$tmp/guard-no-early-exit-reader.out"; then
+  printf 'FAIL     %-40s a pipe ends in grep -q under pipefail\n' guard-no-early-exit-reader
+  sed 's/^/         | /' "$tmp/guard-no-early-exit-reader.out"
+  failed=$((failed + 1))
+else
+  printf 'ok       %-40s exit 0\n' guard-no-early-exit-reader
+  pass=$((pass + 1))
+fi
 
 later_run later-continuation-joined-without-space 'RUN go g\
 et golang.org/x/net@v0.50.0'
