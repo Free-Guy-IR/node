@@ -792,6 +792,93 @@ fixture comment-inside-final-run
 printf 'RUN apk update \\\n    # note\n    && cp /usr/local/bin/main /usr/local/bin/xray\n' >>"$tmp/comment-inside-final-run/Dockerfile"
 check comment-inside-final-run 1 "$final_run_refused"
 
+not_literal="whose name is not a plain [A-Za-z_][A-Za-z0-9_]* word"
+
+fixture_before envname-arg-built-goflags-xray-builder 'RUN go build -o /out/xray ./main' $'ARG N=GOFL\nENV ${N}AGS=-toolexec=/tmp/t'
+check envname-arg-built-goflags-xray-builder 1 "$not_literal"
+
+fixture_before envname-arg-built-toolchain-builder 'RUN make build' $'ARG N=GOTOOLCH\nENV ${N}AIN=go1.26.0'
+check envname-arg-built-toolchain-builder 1 "$not_literal"
+
+fixture envname-arg-built-xray-path-final
+printf 'ARG P=XRAY_EXECUTABLE\nENV ${P}_PATH=/usr/local/bin/main\n' >>"$tmp/envname-arg-built-xray-path-final/Dockerfile"
+check envname-arg-built-xray-path-final 1 "$not_literal"
+
+fixture_before envname-arg-built-second-pair 'RUN make build' $'ARG N=GOFL\nENV A=1 ${N}AGS=-mod=mod'
+check envname-arg-built-second-pair 1 "$not_literal"
+
+fixture_before argname-built-builder 'RUN make build' $'ARG N=GOFL\nARG ${N}AGS=-mod=mod'
+check argname-built-builder 1 "$not_literal"
+
+xray_builder_names="which declares a variable other than the build arguments TARGETOS, TARGETARCH, XRAY_VERSION and XRAY_COMMIT"
+fixture_before xray-builder-other-arg 'RUN go build -o /out/xray ./main' 'ARG CGO_CFLAGS=-O0'
+check xray-builder-other-arg 1 "$xray_builder_names"
+
+fixture_before xray-builder-env 'RUN go build -o /out/xray ./main' 'ENV GOMODCACHE=/tmp/m'
+check xray-builder-env 1 "$xray_builder_names"
+
+fixture_before xray-builder-allowed-args 'COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch' $'ARG TARGETOS\nARG TARGETARCH\nARG XRAY_VERSION\nARG XRAY_COMMIT=556767e40baa142641838158d6cba743c879e5c3'
+check xray-builder-allowed-args 0 "pins checked"
+
+earlier_stage="builds FROM the earlier stage"
+fixture final-from-earlier-stage
+edit Dockerfile 's|^(FROM alpine:3\.24\.2@sha256:[0-9a-f]+)$|\1 AS rt|'
+printf 'RUN cp /usr/local/bin/main /usr/local/bin/xray\nFROM rt\n' >>"$tmp/final-from-earlier-stage/Dockerfile"
+check final-from-earlier-stage 1 "$earlier_stage 'rt'"
+
+fixture final-from-earlier-stage-upper
+edit Dockerfile 's|^(FROM alpine:3\.24\.2@sha256:[0-9a-f]+)$|\1 as Rt|'
+printf 'RUN cp /usr/local/bin/main /usr/local/bin/xray\nFROM --platform=linux/amd64 RT\n' >>"$tmp/final-from-earlier-stage-upper/Dockerfile"
+check final-from-earlier-stage-upper 1 "$earlier_stage 'rt'"
+
+final_inst_refused="which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET or ENTRYPOINT [\"./main\"]"
+while IFS='|' read -r name line; do
+  fixture "$name"
+  printf '%s\n' "$line" >>"$tmp/$name/Dockerfile"
+  check "$name" 1 "$final_inst_refused"
+done <<'EOF'
+final-entrypoint-shell|ENTRYPOINT ["/bin/sh","-c","cp /usr/local/bin/main /usr/local/bin/xray; exec ./main"]
+final-entrypoint-shell-form|ENTRYPOINT ./main
+final-cmd|CMD ["sh"]
+final-onbuild|ONBUILD RUN cp /usr/local/bin/main /usr/local/bin/xray
+final-volume|VOLUME /usr/local/bin
+final-user|USER nobody
+final-shell|SHELL ["/bin/sh","-c"]
+final-healthcheck|HEALTHCHECK CMD cp /usr/local/bin/main /usr/local/bin/xray
+final-workdir-bin|WORKDIR /usr/local/bin
+final-env-other|ENV LD_PRELOAD=/usr/local/bin/main
+final-arg|ARG X=1
+final-stopsignal|STOPSIGNAL SIGKILL
+EOF
+
+fixture final-allowed-instructions
+printf '%s\n' 'LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"' 'WORKDIR /app' \
+  'ENV XRAY_LOCATION_ASSET=/usr/local/share/xray' 'ENTRYPOINT ["./main"]' >>"$tmp/final-allowed-instructions/Dockerfile"
+check final-allowed-instructions 0 "pins checked"
+
+directive_refused="parser directive"
+prepend_line() {
+  { printf '%s\n' "$2"; cat "$tmp/$1/Dockerfile"; } >"$tmp/$1/Dockerfile.new"
+  mv "$tmp/$1/Dockerfile.new" "$tmp/$1/Dockerfile"
+}
+
+fixture escape-directive
+prepend_line escape-directive '# escape=`'
+printf 'RUN apk update `\n    && cp /usr/local/bin/main /usr/local/bin/xray\n' >>"$tmp/escape-directive/Dockerfile"
+check escape-directive 1 "$directive_refused"
+
+fixture escape-directive-spaced
+prepend_line escape-directive-spaced '#  ESCAPE = `'
+check escape-directive-spaced 1 "$directive_refused"
+
+fixture escape-directive-bom
+prepend_line escape-directive-bom $'\357\273\277# escape=`'
+check escape-directive-bom 1 "$directive_refused"
+
+fixture syntax-directive
+prepend_line syntax-directive '# syntax=docker.io/example/frontend:1'
+check syntax-directive 1 "$directive_refused"
+
 fixture xray-copied-json-form
 printf 'COPY --from=builder ["/out/xray", "/usr/local/bin/xray"]\n' >>"$tmp/xray-copied-json-form/Dockerfile"
 check xray-copied-json-form 1 "the Dockerfile copies /usr/local/bin/xray from 'builder', not from the xray-builder stage"
