@@ -451,6 +451,65 @@ $(printf '%s\n' "$2" | command_words)
 EOF
 }
 
+declared_names() {
+  printf '%s\n' "$1" | awk '
+    {
+      kind = toupper($1)
+      s = $0
+      sub(/^[[:space:]]*[^[:space:]]+[[:space:]]*/, "", s)
+      n = 0; w = ""; q = 0; inword = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q == 2) { w = w c; if (c == "\047") q = 0; continue }
+        if (c == "\\") { w = w c substr(s, i + 1, 1); i++; inword = 1; continue }
+        if (q == 1) { w = w c; if (c == "\"") q = 0; continue }
+        if (c == "\"") { q = 1; w = w c; inword = 1; continue }
+        if (c == "\047") { q = 2; w = w c; inword = 1; continue }
+        if (c == " " || c == "\t") { if (inword) { words[++n] = w; w = ""; inword = 0 } continue }
+        w = w c; inword = 1
+      }
+      if (inword) words[++n] = w
+      if (n == 0) { print ""; exit }
+      if (kind == "ENV" && index(words[1], "=") == 0) { print words[1]; exit }
+      for (i = 1; i <= n; i++) { k = words[i]; e = index(k, "="); if (e) k = substr(k, 1, e - 1); print k }
+    }
+  '
+}
+
+names_within() {
+  local name allowed=" $2 "
+  while IFS= read -r name; do
+    if [ -n "$2" ]; then
+      [[ $allowed == *" $name "* ]] || return 1
+    else
+      [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    fi
+  done <<EOF
+$(declared_names "$1")
+EOF
+}
+
+final_stage_inst_allowed() {
+  local rest
+  rest=$(printf '%s\n' "$2" | sed -E 's/^[[:space:]]*[^[:space:]]+[[:space:]]*//; s/[[:space:]]+$//')
+  case "$1" in
+    LABEL | COPY) return 0 ;;
+    WORKDIR) [ "$rest" = /app ] ;;
+    ENV) names_within "$2" XRAY_LOCATION_ASSET ;;
+    ENTRYPOINT) [ "$rest" = '["./main"]' ] ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -f Dockerfile ] && awk '
+  NR == 1 { sub(/^\357\273\277/, "") }
+  tolower($0) ~ /^[[:space:]]*#[[:space:]]*(escape|syntax)[[:space:]]*=/ { found = 1 }
+  END { exit found ? 0 : 1 }
+' Dockerfile; then
+  checked=$((checked + 1))
+  refuse "the Dockerfile sets an escape or syntax parser directive, so BuildKit need not split it into the instructions the guard reads"
+fi
+
 dockerfile_chain=
 [ ! -f Dockerfile ] || dockerfile_chain=$(xray_chain <Dockerfile)
 
@@ -581,16 +640,44 @@ fi
 stage=preamble
 froms_total=$(printf '%s\n' "$dockerfile_chain" | awk -F '\t' '$1 == "inst" && $2 ~ /^[Ff][Rr][Oo][Mm][[:space:]]/ { n++ } END { print n + 0 }')
 froms_seen=0
+stages_seen=" "
 while IFS=$'\t' read -r safety element; do
   [ -n "$element" ] || continue
   if [ "$safety" = inst ] && [[ $element =~ ^[Ff][Rr][Oo][Mm][[:space:]] ]]; then
+    base=$(printf '%s\n' "$element" | awk '{ for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print tolower($i); exit } }')
+    if [[ $base == *[\$\`\\\"\']* ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile runs '${element:0:120}', whose base '$base' is chosen by a build argument, so it can name an earlier stage and escape the final-stage rules"
+    elif [ -n "$base" ] && [[ $stages_seen == *" $base "* ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile builds FROM the earlier stage '$base' ('${element:0:120}'), so the image's last stage need not be the one held to the final-stage rules"
+    fi
     stage=$(printf '%s\n' "$element" | awk 'NF >= 3 && tolower($(NF - 1)) == "as" { print tolower($NF); next } { print "unnamed" }')
+    [ "$stage" = unnamed ] || stages_seen="$stages_seen$stage "
     froms_seen=$((froms_seen + 1))
     continue
   fi
-  if [ "$froms_seen" -gt 0 ] && [ "$froms_seen" = "$froms_total" ] && [ "$safety" != inst ] && ! final_stage_run_allowed "$safety" "$element"; then
+  final_stage=0
+  [ "$froms_seen" -gt 0 ] && [ "$froms_seen" = "$froms_total" ] && final_stage=1
+  if [ "$final_stage" = 1 ] && [ "$safety" != inst ] && ! final_stage_run_allowed "$safety" "$element"; then
     checked=$((checked + 1))
     refuse "the Dockerfile final stage runs '${element:0:120}', which is not apk update, apk add of package names, command -v or test, so it can write /usr/local/bin/xray after the COPY from xray-builder"
+  fi
+  if [ "$safety" = inst ]; then
+    keyword=$(printf '%s\n' "$element" | awk '{ print toupper($1) }')
+    if [ "$keyword" = ENV ] || [ "$keyword" = ARG ]; then
+      if ! names_within "$element" ""; then
+        checked=$((checked + 1))
+        refuse "the Dockerfile $stage stage runs '${element:0:120}', which sets a variable whose name is not a plain [A-Za-z_][A-Za-z0-9_]* word, so BuildKit can expand it to GOFLAGS, GOTOOLCHAIN or XRAY_EXECUTABLE_PATH"
+      elif [ "$stage" = xray-builder ] && if [ "$keyword" = ENV ]; then ! [[ $element =~ ^[Ee][Nn][Vv][[:space:]]+GOTOOLCHAIN=local$ ]]; else ! names_within "$element" "TARGETOS TARGETARCH XRAY_VERSION XRAY_COMMIT"; fi; then
+        checked=$((checked + 1))
+        refuse "the Dockerfile xray-builder stage runs '${element:0:120}', which declares a variable other than the build arguments TARGETOS, TARGETARCH, XRAY_VERSION and XRAY_COMMIT, so it can change how go builds the Xray binary"
+      fi
+    fi
+    if [ "$final_stage" = 1 ] && ! final_stage_inst_allowed "$keyword" "$element"; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile final stage sets '${element:0:120}', which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET or ENTRYPOINT [\"./main\"], so the image need not start ./main with the /usr/local/bin/xray the xray-builder stage checks"
+    fi
   fi
   [ "$stage" != xray-builder ] || continue
   element_forms "$safety" "$element"
