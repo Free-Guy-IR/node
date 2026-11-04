@@ -242,6 +242,13 @@ func protocolOperandValue(expr ast.Expr, constants map[string]string) (string, b
 	return "", false
 }
 
+func unresolvedOperand(expr ast.Expr) string {
+	if id, ok := ast.Unparen(expr).(*ast.Ident); ok {
+		return "<unresolved " + id.Name + ">"
+	}
+	return "<unresolved expression>"
+}
+
 func protocolValuesCompared(files []*ast.File, constants map[string]string) (map[string]map[string]bool, int) {
 	uses := map[string]map[string]bool{}
 	record := func(kind, value string) {
@@ -273,12 +280,7 @@ func protocolValuesCompared(files []*ast.File, constants map[string]string) (map
 						for _, expr := range clause.List {
 							value, ok := protocolOperandValue(expr, constants)
 							if !ok {
-								switch e := ast.Unparen(expr).(type) {
-								case *ast.Ident:
-									value = "<unresolved " + e.Name + ">"
-								default:
-									value = "<unresolved expression>"
-								}
+								value = unresolvedOperand(expr)
 							}
 							record("switch case", value)
 						}
@@ -291,9 +293,11 @@ func protocolValuesCompared(files []*ast.File, constants map[string]string) (map
 						if !isProtocolDerived(pair[0], derived) || isProtocolDerived(pair[1], derived) {
 							continue
 						}
-						if value, ok := protocolOperandValue(pair[1], constants); ok {
-							record("comparison", value)
+						value, ok := protocolOperandValue(pair[1], constants)
+						if !ok {
+							value = unresolvedOperand(pair[1])
 						}
+						record("comparison", value)
 					}
 				case *ast.CallExpr:
 					sel, ok := n.Fun.(*ast.SelectorExpr)
@@ -307,9 +311,13 @@ func protocolValuesCompared(files []*ast.File, constants map[string]string) (map
 						if !isProtocolDerived(pair[0], derived) || isProtocolDerived(pair[1], derived) {
 							continue
 						}
-						if value, ok := protocolOperandValue(pair[1], constants); ok {
-							record("strings.EqualFold", strings.ToLower(value))
+						value, ok := protocolOperandValue(pair[1], constants)
+						if ok {
+							value = strings.ToLower(value)
+						} else {
+							value = unresolvedOperand(pair[1])
 						}
+						record("strings.EqualFold", value)
 					}
 				}
 				return true

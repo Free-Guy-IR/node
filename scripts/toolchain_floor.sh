@@ -271,6 +271,15 @@ gomod_tool_re='(^|[^[:alnum:]_.-])go[[:space:]]+(get|work|mod[[:space:]]+(edit|t
 chdir_re='(^|[^[:alnum:]_./-])(cd|pushd|popd|chdir)([[:space:]]|$)|(^|[[:space:]])(-C|--chdir|--directory)([[:space:]=]|$)|-modfile|GOFLAGS|GOWORK'
 gomod_write_re='(^|[^[:alnum:]_.-])(sed|perl|ruby|python3?|ed|ex|vi|vim|awk|gawk|cp|mv|tee|install|ln|dd|truncate|rsync|touch|rm|unlink)[[:space:]][^&|;]*go\.(mod|work)'
 redirect_re='>[>|]?[[:space:]]*["'\'']?[^[:space:]&|;]*go\.(mod|work)'
+goenv_write_re='(^|[^[:alnum:]_.-])go[[:space:]]+env[[:space:]]+([^&|;]*[[:space:]])?-{1,2}[wu]([[:space:]=]|$)'
+vendor_re='(^|[^[:alnum:]_])vendor([^[:alnum:]_]|$)'
+final_copies='--from=builder /src/main /app/main
+--from=xray-builder /out/xray /usr/local/bin/xray
+--from=geo-assets /geo/geoip.dat /usr/local/share/xray/geoip.dat
+--from=geo-assets /geo/geosite.dat /usr/local/share/xray/geosite.dat
+--from=singbox-builder /out/sing-box /usr/local/bin/sing-box
+--from=filter-assets /assets/pgfilter.dat /usr/local/share/xray/pgfilter.dat
+--from=filter-assets /assets/pgfilter_index.json /usr/local/share/xray/pgfilter_index.json'
 git_move_re='(^|[^[:alnum:]_.-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(checkout|reset|switch|restore|pull|merge|rebase|cherry-pick|am|fetch|stash|clone|read-tree|update-index|worktree|submodule)([[:space:]]|$)'
 go_build_token_re='^[[:space:]]+("[^"\\$`'"'"']*"|[^[:space:]"\\$`'"'"']+)([[:space:]].*)?$'
 assign_word_re='^[[:space:]]+([^[:space:]]+)([[:space:]].*)?$'
@@ -489,6 +498,16 @@ $(declared_names "$1")
 EOF
 }
 
+final_copy_allowed() {
+  local rest
+  rest=$(printf '%s\n' "$1" | sed -E 's/^[[:space:]]*[^[:space:]]+[[:space:]]*//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')
+  [ -n "$rest" ] || return 1
+  case $'\n'"$final_copies"$'\n' in
+    *$'\n'"$rest"$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+
 final_stage_inst_allowed() {
   local rest
   rest=$(printf '%s\n' "$2" | sed -E 's/^[[:space:]]*[^[:space:]]+[[:space:]]*//; s/[[:space:]]+$//')
@@ -560,6 +579,14 @@ else
     if [[ $scan =~ $gomod_tool_re ]] || [[ $bare =~ $gomod_tool_re ]]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage runs '$shown', which can change the golang.org/x/net requirement in go.mod outside its go.mod check"
+    fi
+    if [[ $scan =~ $goenv_write_re ]] || [[ $bare =~ $goenv_write_re ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', which writes the Go env file with go env -w or -u, so go build can take GOMODCACHE, GOPROXY or GOFLAGS the guard never sees"
+    fi
+    if [[ $scan =~ $vendor_re ]] || [[ $bare =~ $vendor_re ]]; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile xray-builder stage runs '$shown', which names a vendor directory, so go build can take golang.org/x/net from vendor/ instead of the checked go.mod"
     fi
     if [[ $scan =~ $chdir_re ]] || [[ $bare =~ $chdir_re ]]; then
       checked=$((checked + 1))
@@ -673,6 +700,10 @@ while IFS=$'\t' read -r safety element; do
         checked=$((checked + 1))
         refuse "the Dockerfile xray-builder stage runs '${element:0:120}', which declares a variable other than the build arguments TARGETOS, TARGETARCH, XRAY_VERSION and XRAY_COMMIT, so it can change how go builds the Xray binary"
       fi
+    fi
+    if [ "$final_stage" = 1 ] && [ "$keyword" = COPY ] && ! final_copy_allowed "$element"; then
+      checked=$((checked + 1))
+      refuse "the Dockerfile final stage runs '${element:0:120}', which is not one of the image's own copies (/app/main from builder, /usr/local/bin/xray from xray-builder, /usr/local/bin/sing-box from singbox-builder and the four /usr/local/share/xray files from geo-assets and filter-assets), so it can replace /usr/local/bin/xray or write a .env that ./main loads"
     fi
     if [ "$final_stage" = 1 ] && ! final_stage_inst_allowed "$keyword" "$element"; then
       checked=$((checked + 1))
