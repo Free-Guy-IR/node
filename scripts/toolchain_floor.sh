@@ -350,6 +350,22 @@ toolchain_kept_local() {
   ! [[ $rest =~ $toolchain_env_re ]]
 }
 
+element_forms() {
+  scan=$2
+  [ "$1" != exec ] || scan=$(printf '%s\n' "$2" | tr '",[]' '    ')
+  bare=$(printf '%s\n' "$scan" | sed -E 's/\$\{[^}]*\}//g' | tr -d "\"'\\\\")
+}
+
+check_toolchain_env() {
+  if ! toolchain_kept_local "$scan" || ! toolchain_kept_local "$bare"; then
+    checked=$((checked + 1))
+    refuse "the Dockerfile $1 stage runs '${2:0:120}', which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
+  fi
+}
+
+dockerfile_chain=
+[ ! -f Dockerfile ] || dockerfile_chain=$(xray_chain <Dockerfile)
+
 upstream_xnet=
 if [ "$xray_stage_found" = 0 ]; then
   checked=$((checked + 1))
@@ -364,14 +380,9 @@ else
   workdirs=0
   while IFS=$'\t' read -r safety element; do
     [ -n "$element" ] || continue
-    scan=$element
-    [ "$safety" != exec ] || scan=$(printf '%s\n' "$element" | tr '",[]' '    ')
+    element_forms "$safety" "$element"
     shown=${element:0:120}
-    bare=$(printf '%s\n' "$scan" | sed -E 's/\$\{[^}]*\}//g' | tr -d "\"'\\\\")
-    if ! toolchain_kept_local "$scan" || ! toolchain_kept_local "$bare"; then
-      checked=$((checked + 1))
-      refuse "the Dockerfile xray-builder stage runs '$shown', which sets GOTOOLCHAIN to something other than local or sets GOENV, so the build need not use the image's Go"
-    fi
+    check_toolchain_env xray-builder "$element"
     if [ "$safety" = heredoc ]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage has a heredoc RUN ('$shown'), whose commands cannot be checked for go.mod changes"
@@ -479,16 +490,48 @@ EOF
   fi
 fi
 
-while IFS= read -r source; do
-  [ -n "$source" ] || continue
-  if [ "$source" != xray-builder ]; then
-    checked=$((checked + 1))
-    refuse "the Dockerfile copies /usr/local/bin/xray from '$source', not from the xray-builder stage"
+stage=preamble
+while IFS=$'\t' read -r safety element; do
+  [ -n "$element" ] || continue
+  if [ "$safety" = inst ] && [[ $element =~ ^[Ff][Rr][Oo][Mm][[:space:]] ]]; then
+    stage=$(printf '%s\n' "$element" | awk 'NF >= 3 && tolower($(NF - 1)) == "as" { print tolower($NF); next } { print "unnamed" }')
+    continue
   fi
+  [ "$stage" != xray-builder ] || continue
+  element_forms "$safety" "$element"
+  check_toolchain_env "$stage" "$element"
 done <<EOF
-$([ ! -f Dockerfile ] || awk '
-  toupper($1) == "COPY" || toupper($1) == "ADD" {
-    line = $0
+$dockerfile_chain
+EOF
+
+xray_copies=0
+while IFS=$'\t' read -r kind source dest; do
+  [ -n "$kind" ] || continue
+  case "$kind" in
+    add)
+      checked=$((checked + 1))
+      refuse "the Dockerfile ADDs /usr/local/bin/xray from '$source'; only COPY --from=xray-builder may write it"
+      ;;
+    dir)
+      checked=$((checked + 1))
+      refuse "the Dockerfile copies from '$source' into the directory $dest, so it can create /usr/local/bin/xray without the xray-builder stage"
+      ;;
+    copy)
+      if [ "$source" = xray-builder ]; then
+        xray_copies=$((xray_copies + 1))
+      else
+        checked=$((checked + 1))
+        refuse "the Dockerfile copies /usr/local/bin/xray from '$source', not from the xray-builder stage"
+      fi
+      ;;
+  esac
+done <<EOF
+$(printf '%s\n' "$dockerfile_chain" | awk -F '\t' '
+  $1 == "inst" {
+    line = substr($0, index($0, "\t") + 1)
+    split(line, head, /[[:space:]]+/)
+    kind = toupper(head[1])
+    if (kind != "COPY" && kind != "ADD") next
     gsub(/[][",]/, " ", line)
     n = split(line, part, /[[:space:]]+/)
     while (n > 0 && part[n] == "") n--
@@ -496,13 +539,19 @@ $([ ! -f Dockerfile ] || awk '
     gsub(/\/+/, "/", dest)
     while (sub(/\/\.\//, "/", dest)) {}
     sub(/\/\.$/, "", dest)
-    if (dest != "/usr/local/bin/xray") next
+    dir = dest
+    sub(/\/$/, "", dir)
     from = "the build context"
     for (i = 2; i < n; i++) if (tolower(part[i]) ~ /^--from=/) from = tolower(substr(part[i], 8))
-    print from
+    if (dest == "/usr/local/bin/xray") printf "%s\t%s\t%s\n", (kind == "ADD" ? "add" : "copy"), from, dest
+    else if (dir == "" || dir == "/usr" || dir == "/usr/local" || dir == "/usr/local/bin") printf "dir\t%s\t%s\n", from, dest
   }
-' Dockerfile)
+')
 EOF
+if [ -f Dockerfile ] && [ "$xray_copies" = 0 ]; then
+  checked=$((checked + 1))
+  refuse "the Dockerfile has no COPY --from=xray-builder of /usr/local/bin/xray, so the image's Xray binary is not the one the xray-builder stage checks"
+fi
 
 make_commit_line="XRAY_COMMIT ?= \$(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
 make_builds_docker_commit=0
