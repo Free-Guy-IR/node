@@ -283,6 +283,7 @@ else
     scan=$element
     [ "$safety" != exec ] || scan=$(printf '%s\n' "$element" | tr '",[]' '    ')
     shown=${element:0:120}
+    bare=$(printf '%s\n' "$scan" | sed -E 's/\$\{[^}]*\}//g' | tr -d "\"'\\\\")
     if [ "$safety" = heredoc ]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage has a heredoc RUN ('$shown'), whose commands cannot be checked for go.mod changes"
@@ -310,11 +311,11 @@ else
           ;;
       esac
     fi
-    if [[ $scan =~ $gomod_tool_re ]]; then
+    if [[ $scan =~ $gomod_tool_re ]] || [[ $bare =~ $gomod_tool_re ]]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage runs '$shown', which can change the golang.org/x/net requirement in go.mod outside its go.mod check"
     fi
-    if [[ $scan =~ $chdir_re ]]; then
+    if [[ $scan =~ $chdir_re ]] || [[ $bare =~ $chdir_re ]]; then
       checked=$((checked + 1))
       refuse "the Dockerfile xray-builder stage runs '$shown', so the go.mod check need not read the go.mod the build uses"
     fi
