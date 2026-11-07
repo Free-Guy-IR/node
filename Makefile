@@ -259,6 +259,7 @@ build_singbox:
 XRAY_GUARD_SRC ?= $(CURDIR)/xray-guard-src
 
 test_xray_guards:
+	python3 -B scripts/test_xray_guard_replay.py
 	test -n "$(XRAY_COMMIT)" && test -n "$(XRAY_GUARD_SRC)"
 	rm -rf "$(XRAY_GUARD_SRC)"
 	git init -q "$(XRAY_GUARD_SRC)"
