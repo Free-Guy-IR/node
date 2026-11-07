@@ -27,7 +27,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b5265
 ARG TARGETOS
 ARG TARGETARCH
 ARG SINGBOX_VERSION=v1.13.21
-ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api
+ARG SINGBOX_TAGS=with_quic,with_utls,with_clash_api,with_v2ray_api,http2legacy
 # Our fork of sing-box v1.13.14: adds a clash_api PUT /hysteria2/users endpoint so
 # Hysteria2 user changes apply live, without restarting the core (no dropped sessions).
 ARG SINGBOX_REPO=https://github.com/Free-Guy-IR/sing-box.git
