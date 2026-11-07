@@ -36,12 +36,15 @@ ARG SINGBOX_COMMIT=dbd00be874a06d9870b2602dd92885367384c779
 
 RUN apk update && apk add --no-cache git
 
+COPY scripts/singbox_http2_guard.sh /singbox_http2_guard.sh
+
 WORKDIR /singbox-src
 RUN git init -q . \
  && git remote add origin ${SINGBOX_REPO} \
  && git fetch -q --depth 1 origin ${SINGBOX_COMMIT} \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${SINGBOX_COMMIT}"
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} sh /singbox_http2_guard.sh "${SINGBOX_TAGS}"
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -tags "${SINGBOX_TAGS}" \
     -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' -s -w -buildid=" \

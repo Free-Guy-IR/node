@@ -50,7 +50,7 @@ ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
 ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
-.PHONY: clean build build_xray build_singbox test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift \
+.PHONY: clean build build_xray build_singbox test_singbox_http2_guard test_xray_guards test_xray_patches test test-race-wireguard test-integration test-integration-full test-integration-wireguard test-drift \
 	install_geofiles check_geofiles update_geofiles_pin
 
 build:
@@ -245,7 +245,7 @@ SINGBOX_TAGS ?= $(shell sed -n 's/^ARG SINGBOX_TAGS=//p' Dockerfile)
 SINGBOX_SRC ?= $(CURDIR)/sing-box-src
 SINGBOX_OUTPUT ?= $(SINGBOX_SRC)/sing-box
 
-build_singbox:
+build_singbox: test_singbox_http2_guard
 	test -n "$(SINGBOX_REPO)" && test -n "$(SINGBOX_COMMIT)" && test -n "$(SINGBOX_VERSION)" && test -n "$(SINGBOX_TAGS)" && test -n "$(SINGBOX_SRC)"
 	rm -rf "$(SINGBOX_SRC)"
 	git init -q "$(SINGBOX_SRC)"
@@ -253,8 +253,12 @@ build_singbox:
 	git -C "$(SINGBOX_SRC)" fetch -q --depth 1 origin $(SINGBOX_COMMIT)
 	git -C "$(SINGBOX_SRC)" checkout -q FETCH_HEAD
 	test "$$(git -C "$(SINGBOX_SRC)" rev-parse HEAD)" = "$(SINGBOX_COMMIT)"
+	cd "$(SINGBOX_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 sh $(CURDIR)/scripts/singbox_http2_guard.sh "$(SINGBOX_TAGS)"
 	cd "$(SINGBOX_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -tags "$(SINGBOX_TAGS)" -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$(SINGBOX_VERSION)' -s -w -buildid=" -o "$(SINGBOX_OUTPUT)" ./cmd/sing-box
 	"$(SINGBOX_OUTPUT)" version
+
+test_singbox_http2_guard:
+	bash scripts/test_singbox_http2_guard.sh
 
 XRAY_GUARD_SRC ?= $(CURDIR)/xray-guard-src
 
