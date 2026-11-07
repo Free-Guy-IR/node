@@ -864,6 +864,11 @@ removals fail; before the guards for `sessionrevoke/config.proto`, `sessionrevok
 `shadowsocks_2022/outbound.go` and `wireguard/bind.go` were added, those five applied, passed every guard and built
 (r2-B review). On 2026-10-11, at node `125a51e`, all 56 removals fail; the 56th is the `packet.go` diff of
 `xray-ss2022-singbridge-close-race.patch`.
+A rename that parks a test file under a name Go never builds, such as `headers_test.go` to
+`headers_test.go.upstream`, is a test-file diff too: the replay does not drop it. Dropping both such renames of
+`xray-xff-trusted-header.patch` leaves the linux/amd64 `./main` binary byte-identical (sha256 checked on 2026-11-07),
+and `go test` of the two packages, which `make test_xray_patches` runs, then fails to compile on redeclared test
+functions. At the `v26.10.31` pin all 19 removals fail.
 
 Every `go test` line of `make test_xray_patches` states its own race mode: `-race` with `CGO_ENABLED=1`, or
 `-race=false`. CI runs the target as `CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches`. A `-race` or `-race=false`

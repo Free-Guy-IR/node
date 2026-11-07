@@ -40,12 +40,38 @@ def split_patch(path):
     return header, [part for part in parts if part.startswith("diff --git ")]
 
 
+def section_paths(section):
+    old, new = section.split("\n", 1)[0][len("diff --git a/"):].split(" b/", 1)
+    return old, new
+
+
 def section_file(section):
-    return section.split("\n", 1)[0].split(" b/", 1)[1]
+    return section_paths(section)[1]
 
 
-def test_only(path):
+def test_path(path):
     return path.endswith("_test.go") or path.startswith("testing/")
+
+
+def parked(old, new):
+    suffix = new[len(old):]
+    return new.startswith(old + ".") and "/" not in suffix and not new.endswith(".go")
+
+
+def test_only(section):
+    old, new = section_paths(section)
+    return test_path(old) and (test_path(new) or parked(old, new))
+
+
+def replay_targets(patches, only):
+    targets = []
+    for name in sorted(os.listdir(patches)):
+        if name.startswith("xray-") and name.endswith(".patch"):
+            for section in split_patch(os.path.join(patches, name))[1]:
+                path = section_file(section)
+                if not test_only(section) and (only is None or name + ":" + path in only):
+                    targets.append((name, path))
+    return targets
 
 
 class Replay:
@@ -106,13 +132,7 @@ def main():
         print("BASELINE BUILD FAIL:", last)
         return 1
     print("BASELINE ok: every patch applies, every guard passes and ./main builds for linux/amd64", flush=True)
-    targets = []
-    for name in sorted(os.listdir(patches)):
-        if name.startswith("xray-") and name.endswith(".patch"):
-            for section in split_patch(os.path.join(patches, name))[1]:
-                path = section_file(section)
-                if not test_only(path) and (only is None or name + ":" + path in only):
-                    targets.append((name, path))
+    targets = replay_targets(patches, only)
     uncaught = []
     for name, path in targets:
         workdir = tempfile.mkdtemp(prefix="xray-guard-replay-")
