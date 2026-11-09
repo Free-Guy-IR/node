@@ -154,6 +154,12 @@ node_released() {
   [ -n "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ]
 }
 
+node_in_release_scope() {
+  [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
+  git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
+    awk '$0 == "main" { f = 1 } END { exit !f }'
+}
+
 node_on_release_line() {
   [ -z "$(git for-each-ref --count=1 --contains "$1" "$node_ns/tags/")" ] || return 0
   git for-each-ref --format='%(refname:strip=4)' --contains "$1" "$node_ns/heads/" |
@@ -820,6 +826,7 @@ check_node() {
   empty=0
   waived=0
   unported=0
+  devonly=0
   while read -r sha labels <&3; do
     total=$((total + 1))
     waiver=$(waiver_for "$sha")
@@ -866,11 +873,15 @@ check_node() {
       detail=$waiver
       waived=$((waived + 1))
       note_pending "$sha" "node commit" "$waiver"
-    else
+    elif node_in_release_scope "$sha"; then
       status=UNPORTED
       detail="not ported and not waived"
       unported=$((unported + 1))
       count_unported
+    else
+      status=DEVONLY
+      detail="no release tag and not upstream main carry this commit, only upstream dev or a side branch: reported for information and it turns UNPORTED the day a release carries it"
+      devonly=$((devonly + 1))
     fi
     printf '%-8s node commit %s [%s] %s\n' "$status" "$(git rev-parse --short=12 "$sha")" "$labels" "$(git log -1 --format=%s "$sha")"
     printf '         %s\n' "$detail"
@@ -882,8 +893,8 @@ check_node() {
     fi
   done 3<"$work/upstream"
 
-  printf 'upstream-drift: node: %d upstream commits outside the target: %d ported, %d empty, %d waived, %d unported\n' \
-    "$total" "$ported" "$empty" "$waived" "$unported"
+  printf 'upstream-drift: node: %d upstream commits outside the target: %d ported, %d empty, %d waived, %d unported, %d dev-only (reported, not blocking)\n' \
+    "$total" "$ported" "$empty" "$waived" "$unported" "$devonly"
 
   : >"$work/upstream-merges"
   while IFS= read -r ref; do

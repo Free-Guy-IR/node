@@ -1040,6 +1040,46 @@ fi
 node_branch_only branch-scope-not-required-on-dev dev
 check branch-scope-not-required-on-dev 0
 
+dev_only_no_waiver() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b dev
+  printf 'package main\n\nfunc devonly() int { return 11 }\n' >"$s/upw/devonly.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "D1 dev-only work"
+  git -C "$s/upw" checkout -q main
+}
+
+dev_only_no_waiver dev-only-needs-no-waiver
+check dev-only-needs-no-waiver 0
+if ! grep -q '^DEVONLY  node commit [0-9a-f]* \[dev\] D1 dev-only work$' "$tmp/dev-only-needs-no-waiver/out"; then
+  printf 'FAIL     %-28s does not report the dev-only commit as DEVONLY\n' dev-only-needs-no-waiver
+  failed=$((failed + 1))
+fi
+
+tag_only_unported() {
+  base "$1"
+  s=$tmp/$1
+  git -C "$s/fork" fetch -q "$s/upw" "$(sha_of "$s/upw" U1)"
+  git -C "$s/fork" cherry-pick -x "$(sha_of "$s/upw" U1)" >/dev/null
+  git -C "$s/upw" checkout -q -b rel
+  printf 'package main\n\nfunc released() int { return 13 }\n' >"$s/upw/released.go"
+  git -C "$s/upw" add -A
+  commit "$s/upw" -m "R1 released work"
+  git -C "$s/upw" tag v9.9.9
+  git -C "$s/upw" checkout -q main
+  git -C "$s/upw" branch -q -D rel
+}
+
+tag_only_unported released-tag-still-blocks
+check released-tag-still-blocks 1
+if ! grep -q '^UNPORTED node commit [0-9a-f]* \[tag:v9.9.9\] R1 released work$' "$tmp/released-tag-still-blocks/out"; then
+  printf 'FAIL     %-28s a commit carried only by a release tag must stay UNPORTED\n' released-tag-still-blocks
+  failed=$((failed + 1))
+fi
+
 xray_branch_only() {
   xray_fixture "$1" "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
