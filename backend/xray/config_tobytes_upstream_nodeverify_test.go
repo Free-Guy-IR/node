@@ -2,8 +2,13 @@ package xray
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
+
+	applog "github.com/xtls/xray-core/app/log"
+	clog "github.com/xtls/xray-core/common/log"
+	"github.com/xtls/xray-core/infra/conf"
 
 	"github.com/pasarguard/node/common"
 )
@@ -124,11 +129,65 @@ func TestToBytesDropsLogFilesWithoutChangingTheConfig(t *testing.T) {
 	if errorLog, _ := out.Log["error"].(string); errorLog != "" {
 		t.Fatalf("serialized error log = %q, want empty", errorLog)
 	}
-	if level, _ := out.Log["loglevel"].(string); level != "warning" {
-		t.Fatalf("serialized loglevel = %q, want warning", level)
+	if severity := wireLogSeverity(t, cfg); severity != clog.Severity_Warning {
+		t.Fatalf("the core reads the serialized log level as %v, want %v", severity, clog.Severity_Warning)
 	}
 	if cfg.LogConfig.AccessLog != "/var/log/xray/access.log" || cfg.LogConfig.ErrorLog != "/var/log/xray/error.log" {
 		t.Fatalf("ToBytes changed the stored log files: access %q, error %q", cfg.LogConfig.AccessLog, cfg.LogConfig.ErrorLog)
+	}
+}
+
+func wireLogSeverity(t *testing.T, cfg *Config) clog.Severity {
+	t.Helper()
+
+	raw, err := cfg.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Log *conf.LogConfig `json:"log"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Log == nil {
+		t.Fatal("the serialized config carries no log section")
+	}
+	return wire.Log.Build().GetErrorLogLevel()
+}
+
+func TestTheCoreReadsTheLogLevelUnderEitherSpelling(t *testing.T) {
+	for _, spelling := range []string{"loglevel", "logLevel"} {
+		t.Run(spelling, func(t *testing.T) {
+			cfg, err := NewConfig(fmt.Sprintf(`{"log":{%q:"debug"},"inbounds":[]}`, spelling), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if severity := wireLogSeverity(t, cfg); severity != clog.Severity_Debug {
+				t.Fatalf("a config written with %q reaches the core as %v, want %v", spelling, severity, clog.Severity_Debug)
+			}
+		})
+	}
+}
+
+func TestTheCoreReadsALogLevelThatSilencesXray(t *testing.T) {
+	cfg, err := NewConfig(`{"log":{"loglevel":"none"},"inbounds":[]}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := cfg.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Log *conf.LogConfig `json:"log"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	built := wire.Log.Build()
+	if built.GetErrorLogType() != applog.LogType_None || built.GetAccessLogType() != applog.LogType_None {
+		t.Fatalf("loglevel none reaches the core as error %v and access %v, want both none", built.GetErrorLogType(), built.GetAccessLogType())
 	}
 }
 
