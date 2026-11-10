@@ -31,9 +31,10 @@ const (
 	Shadowsocks = "shadowsocks"
 	Hysteria    = "hysteria"
 	Masque      = "masque"
+	Wireguard   = "wireguard"
 )
 
-var userProtocols = []string{Vmess, Vless, Trojan, Shadowsocks, Hysteria, Masque}
+var userProtocols = []string{Vmess, Vless, Trojan, Shadowsocks, Hysteria, Masque, Wireguard}
 
 type Config struct {
 	LogConfig        *conf.LogConfig    `json:"log"`
@@ -248,6 +249,23 @@ func (i *Inbound) syncUsers(users []*common.User) {
 				i.clients[user.GetEmail()] = account
 			}
 		}
+
+	case Wireguard:
+		for _, user := range users {
+			if user.GetProxies().GetWireguard().GetPublicKey() == "" {
+				continue
+			}
+			if slices.Contains(user.Inbounds, i.Tag) {
+				account, err := api.NewWireguardAccount(user)
+				if err != nil {
+					log.Println("error for user", user.GetEmail(), ":", err)
+					continue
+				}
+				if filtered, ok := i.wireguardAccountForInbound(account); ok {
+					i.clients[filtered.GetEmail()] = filtered
+				}
+			}
+		}
 	}
 }
 
@@ -289,6 +307,9 @@ func (i *Inbound) storeLocked(account api.Account) {
 		i.clients[email] = a
 
 	case *api.MasqueAccount:
+		i.clients[email] = a
+
+	case *api.WireguardAccount:
 		i.clients[email] = a
 	}
 }
@@ -350,6 +371,13 @@ func (i *Inbound) updateUsers(accounts []api.Account, removeEmails []string) {
 	case Masque:
 		for _, account := range accounts {
 			if a, ok := account.(*api.MasqueAccount); ok {
+				i.clients[account.GetEmail()] = a
+			}
+		}
+
+	case Wireguard:
+		for _, account := range accounts {
+			if a, ok := account.(*api.WireguardAccount); ok {
 				i.clients[account.GetEmail()] = a
 			}
 		}
@@ -521,8 +549,17 @@ func (i *Inbound) wireClientsLocked() (any, bool) {
 		return typedAccounts[*api.HysteriaAccount](accounts), true
 	case Masque:
 		return typedAccounts[*api.MasqueAccount](accounts), true
+	case Wireguard:
+		return typedAccounts[*api.WireguardAccount](accounts), true
 	}
 	return nil, false
+}
+
+func (i *Inbound) wireClientsKey() string {
+	if i.Protocol == Wireguard {
+		return "peers"
+	}
+	return "clients"
 }
 
 func (i *Inbound) snapshotLocked() *Inbound {
@@ -545,7 +582,7 @@ func (i *Inbound) snapshotLocked() *Inbound {
 		settings = make(map[string]any)
 	}
 	if clients, ok := i.wireClientsLocked(); ok {
-		settings["clients"] = clients
+		settings[i.wireClientsKey()] = clients
 	}
 	snapshot.Settings = settings
 	return snapshot

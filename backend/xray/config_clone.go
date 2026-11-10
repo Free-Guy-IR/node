@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/pasarguard/node/backend/xray/api"
 )
@@ -29,6 +30,10 @@ func cloneAccount(account api.Account) api.Account {
 		return &copy
 	case *api.MasqueAccount:
 		copy := *a
+		return &copy
+	case *api.WireguardAccount:
+		copy := *a
+		copy.AllowedIPs = slices.Clone(a.AllowedIPs)
 		return &copy
 	default:
 		return account

@@ -17,7 +17,8 @@ const toBytesConfig = `{
 	"log":{"access":"/var/log/xray/access.log","error":"/var/log/xray/error.log","loglevel":"warning"},
 	"inbounds":[
 		{"tag":"static","protocol":"vless","settings":{"decryption":"none","clients":[{"id":"6b1d1f0e-5c1d-4c3a-9f6e-111111111111","email":"hand-written"}]}},
-		{"tag":"managed","protocol":"vless","settings":{"decryption":"none","clients":[]}}
+		{"tag":"managed","protocol":"vless","settings":{"decryption":"none","clients":[]}},
+		{"tag":"wg","protocol":"wireguard","settings":{"secretKey":"","peers":[]}}
 	]
 }`
 
@@ -38,6 +39,7 @@ func toBytesUsers() []*common.User {
 			Inbounds: []string{"static", "managed"},
 			Proxies:  &common.Proxy{Vless: &common.Vless{Id: "6b1d1f0e-5c1d-4c3a-9f6e-222222222222"}},
 		},
+		wireguardUser("2", wireguardKey(2), ""),
 	}
 }
 
@@ -109,6 +111,14 @@ func TestToBytesWritesSyncedClientsAndPeers(t *testing.T) {
 	if got := emails(t, out.settings(t, "managed"), "clients"); len(got) != 1 || got[0] != "1" {
 		t.Fatalf("managed inbound clients = %v, want [1]", got)
 	}
+
+	wg := out.settings(t, "wg")
+	if got := emails(t, wg, "peers"); len(got) != 1 || got[0] != "2" {
+		t.Fatalf("wireguard peers = %v, want [2]", got)
+	}
+	if _, ok := wg["clients"]; ok {
+		t.Fatalf("wireguard inbound got a clients key: %v", wg)
+	}
 }
 
 func TestToBytesWritesEmptyListsWithoutUsers(t *testing.T) {
@@ -116,6 +126,13 @@ func TestToBytesWritesEmptyListsWithoutUsers(t *testing.T) {
 
 	if got := emails(t, out.settings(t, "managed"), "clients"); len(got) != 0 {
 		t.Fatalf("managed inbound clients = %v, want none", got)
+	}
+	wg := out.settings(t, "wg")
+	if got := emails(t, wg, "peers"); len(got) != 0 {
+		t.Fatalf("wireguard peers = %v, want none", got)
+	}
+	if _, ok := wg["clients"]; ok {
+		t.Fatalf("wireguard inbound got a clients key: %v", wg)
 	}
 }
 

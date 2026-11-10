@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -15,8 +16,7 @@ import (
 	"github.com/pasarguard/node/common"
 )
 
-func setupUserAccount(user *common.User) (api.ProxySettings, error) {
-	settings := api.ProxySettings{}
+func setupUserAccount(user *common.User) (settings api.ProxySettings, wireguardErr error) {
 	if user.GetProxies().GetVmess() != nil {
 		if vmessAccount, err := api.NewVmessAccount(user); err == nil {
 			settings.Vmess = vmessAccount
@@ -44,7 +44,78 @@ func setupUserAccount(user *common.User) (api.ProxySettings, error) {
 
 	settings.Masque = api.NewMasqueAccount(user)
 
-	return settings, nil
+	if user.GetProxies().GetWireguard().GetPublicKey() != "" {
+		if wgAccount, err := api.NewWireguardAccount(user); err == nil {
+			settings.Wireguard = wgAccount
+		} else {
+			wireguardErr = err
+		}
+	}
+
+	return settings, wireguardErr
+}
+
+func wireguardInboundNetwork(address string) *net.IPNet {
+	address = strings.TrimSpace(address)
+	if _, network, err := net.ParseCIDR(address); err == nil {
+		return network
+	}
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return nil
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return &net.IPNet{IP: ipv4, Mask: net.CIDRMask(32, 32)}
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
+}
+
+func (i *Inbound) wireguardAccountForInbound(account *api.WireguardAccount) (*api.WireguardAccount, bool) {
+	addresses, hasAddress := i.Settings["address"]
+	var interfaceNets []*net.IPNet
+	switch values := addresses.(type) {
+	case []any:
+		for _, address := range values {
+			if value, ok := address.(string); ok {
+				if network := wireguardInboundNetwork(value); network != nil {
+					interfaceNets = append(interfaceNets, network)
+				}
+			}
+		}
+	case []string:
+		for _, address := range values {
+			if network := wireguardInboundNetwork(address); network != nil {
+				interfaceNets = append(interfaceNets, network)
+			}
+		}
+	}
+
+	allowed := make([]string, 0, len(account.AllowedIPs))
+	for _, cidr := range account.AllowedIPs {
+		_, peerNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Printf("skipping wireguard user %s with invalid peer IP %s: %v", account.GetEmail(), cidr, err)
+			return nil, false
+		}
+		if !hasAddress {
+			allowed = append(allowed, cidr)
+			continue
+		}
+		for _, pool := range interfaceNets {
+			peerBits, _ := peerNet.Mask.Size()
+			poolBits, _ := pool.Mask.Size()
+			if len(peerNet.IP) == len(pool.IP) && pool.Contains(peerNet.IP) && peerBits >= poolBits {
+				allowed = append(allowed, cidr)
+				break
+			}
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, false
+	}
+	filtered := *account
+	filtered.AllowedIPs = allowed
+	return &filtered, true
 }
 
 func hasHysteriaAuth(user *common.User) bool {
@@ -128,6 +199,16 @@ func isActiveInbound(inbound *Inbound, inbounds []string, settings api.ProxySett
 				return nil, false
 			}
 			return settings.Masque, true
+
+		case Wireguard:
+			if settings.Wireguard == nil {
+				return nil, false
+			}
+			account, ok := inbound.wireguardAccountForInbound(settings.Wireguard)
+			if !ok {
+				return nil, false
+			}
+			return account, true
 		}
 	}
 	return nil, false
@@ -288,8 +369,16 @@ func pushAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound
 	var revokeErr error
 	if step == coreReplace {
 		revokeErr = releaseAccount(ctx, handler, inbound, account)
+		if addLeavesStaleWireguardPeer(inbound, revokeErr) {
+			inbound.markUnsettled(account.GetEmail())
+			return revokeErr
+		}
 	}
 	return addAccount(ctx, handler, inbound, account, revokeErr)
+}
+
+func addLeavesStaleWireguardPeer(inbound *Inbound, revokeErr error) bool {
+	return revokeErr != nil && inbound.Protocol == Wireguard
 }
 
 func releaseAccount(ctx context.Context, handler *api.XrayHandler, inbound *Inbound, account api.Account) error {
@@ -308,6 +397,11 @@ func pushAccounts(ctx context.Context, handler *api.XrayHandler, inbound *Inboun
 	var failures []error
 	for index, account := range accounts {
 		if steps[index] == coreUnchanged {
+			continue
+		}
+		if addLeavesStaleWireguardPeer(inbound, revokeErrs[index]) {
+			inbound.markUnsettled(account.GetEmail())
+			failures = append(failures, revokeErrs[index])
 			continue
 		}
 		if err := addAccount(ctx, handler, inbound, account, revokeErrs[index]); err != nil {
@@ -359,10 +453,7 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (x *Xray) syncUserLocked(ctx context.Context, user *common.User) error {
-	proxySetting, err := setupUserAccount(user)
-	if err != nil {
-		return err
-	}
+	proxySetting, wireguardErr := setupUserAccount(user)
 
 	handler := x.handler
 	inbounds := x.config.InboundConfigs
@@ -374,6 +465,13 @@ func (x *Xray) syncUserLocked(ctx context.Context, user *common.User) error {
 
 	for _, inbound := range inbounds {
 		if inbound.exclude {
+			continue
+		}
+
+		if wireguardErr != nil && inbound.Protocol == Wireguard && slices.Contains(userInbounds, inbound.Tag) {
+			invalid := fmt.Errorf("wireguard user %s on inbound %s: %w", user.GetEmail(), inbound.Tag, wireguardErr)
+			log.Println(invalid)
+			errMessage.WriteString("\n" + invalid.Error())
 			continue
 		}
 
