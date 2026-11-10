@@ -103,7 +103,7 @@ func startHysteriaVictim(t *testing.T) (*Xray, *common.User, int) {
 				},
 			},
 		}},
-		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}}},
+		"outbounds": []any{directOutbound(t)},
 	}
 	rawServer, err := json.Marshal(serverConfig)
 	if err != nil {

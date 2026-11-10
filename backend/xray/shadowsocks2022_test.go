@@ -34,11 +34,7 @@ const shadowsocks2022TestConfig = `{
 		"protocol": "shadowsocks",
 		"settings": {"clients": [], "method": "2022-blake3-aes-128-gcm", "password": "MDEyMzQ1Njc4OWFiY2RlZg==", "network": "tcp"}
 	}],
-	"outbounds": [{
-		"tag": "direct",
-		"protocol": "freedom",
-		"settings": {"finalRules": [{"action": "allow", "ip": ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}]}
-	}]
+	"outbounds": [%s]
 }`
 
 func startShadowsocks2022Client(t *testing.T, exe string, serverPort int, password string) int {
@@ -120,7 +116,7 @@ func TestShadowsocks2022InboundStartedWithoutUsers(t *testing.T) {
 	source := startByteSource(t)
 	inboundPort := netutil.FindFreePort()
 
-	xrayConfig, err := NewConfig(fmt.Sprintf(shadowsocks2022TestConfig, inboundPort), nil)
+	xrayConfig, err := NewConfig(fmt.Sprintf(shadowsocks2022TestConfig, inboundPort, directOutboundJSON(t)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

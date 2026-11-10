@@ -34,7 +34,7 @@ const siblingTestConfig = `{
 			"settings": {"address": "127.0.0.1", "port": %d, "network": "tcp"}
 		}
 	],
-	"outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow", "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}]}}]
+	"outbounds": [%s]
 }`
 
 func startLoopbackStandIn(t *testing.T, banner string) int {
@@ -73,7 +73,7 @@ func startSiblingBackend(t *testing.T, binary string, standInPort int, users ...
 
 	inboundPort := netutil.FindFreePort()
 	tunnelPort := netutil.FindFreePort()
-	xrayConfig, err := NewConfig(fmt.Sprintf(siblingTestConfig, inboundPort, tunnelPort, standInPort), nil)
+	xrayConfig, err := NewConfig(fmt.Sprintf(siblingTestConfig, inboundPort, tunnelPort, standInPort, directOutboundJSON(t)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"fmt"
 	"net"
 	"sort"
 	"sync"
@@ -88,4 +89,30 @@ func userTrafficHost(t *testing.T) string {
 		t.Skip("this host has no reachable non-loopback IPv4 address to place user traffic targets on")
 	}
 	return trafficHost
+}
+
+func trafficHostPrefix(t *testing.T) string {
+	t.Helper()
+	return userTrafficHost(t) + "/32"
+}
+
+func directOutbound(t *testing.T) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"tag":      "direct",
+		"protocol": "freedom",
+		"settings": map[string]any{
+			"finalRules": []any{
+				map[string]any{"action": "allow", "ip": []any{trafficHostPrefix(t)}},
+			},
+		},
+	}
+}
+
+func directOutboundJSON(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf(
+		`{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow", "ip": [%q]}]}}`,
+		trafficHostPrefix(t),
+	)
 }

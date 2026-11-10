@@ -30,7 +30,7 @@ const sessionTestConfig = `{
 		"protocol": "vless",
 		"settings": {"clients": [], "decryption": "none"}
 	}],
-	"outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {"finalRules": [{"action": "allow", "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}]}}]
+	"outbounds": [%s]
 }`
 
 const sessionTestInbound = "VLESS TCP SESSION"
@@ -127,8 +127,14 @@ func sessionUser(email string, id uuid.UUID, inbounds ...string) *common.User {
 func startSessionBackend(t *testing.T, binary string, users ...*common.User) (*Xray, int) {
 	t.Helper()
 
+	return startSessionBackendWithOutbound(t, binary, directOutboundJSON(t), users...)
+}
+
+func startSessionBackendWithOutbound(t *testing.T, binary, outbound string, users ...*common.User) (*Xray, int) {
+	t.Helper()
+
 	inboundPort := netutil.FindFreePort()
-	xrayConfig, err := NewConfig(fmt.Sprintf(sessionTestConfig, inboundPort), nil)
+	xrayConfig, err := NewConfig(fmt.Sprintf(sessionTestConfig, inboundPort, outbound), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
