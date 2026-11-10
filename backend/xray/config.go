@@ -599,7 +599,7 @@ func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, err
 		if outboundTagValue, ok := obj["outboundTag"].(string); ok && outboundTagValue == apiTag {
 			continue
 		}
-		if ruleTagValue, ok := obj["ruleTag"].(string); ok && (ruleTagValue == malformedDomainGuardRuleTag || ruleTagValue == apiGuardRuleTag || ruleTagValue == siblingGuardRuleTag) {
+		if ruleTagValue, ok := obj["ruleTag"].(string); ok && nodeGuardRuleTag(ruleTagValue) {
 			continue
 		}
 

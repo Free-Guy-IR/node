@@ -136,7 +136,7 @@ func TestSiblingGuardIsIdempotentAndSurvivesSerialization(t *testing.T) {
 		if err := json.Unmarshal(rawRule, &r); err != nil {
 			t.Fatal(err)
 		}
-		if r.RuleTag == "PG_NODE_SIBLING_LOOPBACK_GUARD" {
+		if r.RuleTag == siblingGuardIPRuleTag || r.RuleTag == siblingGuardDomainRuleTag {
 			siblingRules++
 		}
 	}

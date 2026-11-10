@@ -398,7 +398,6 @@ func TestApplyAPIControlPortGuardIsSingleAndTargetsANodeBlackhole(t *testing.T) 
 	const (
 		apiPort    = 48001
 		metricPort = 48002
-		guardTag   = "PG_NODE_API_GUARD"
 		blockTag   = "PG_NODE_API_GUARD_BLOCK"
 	)
 
@@ -420,7 +419,7 @@ func TestApplyAPIControlPortGuardIsSingleAndTargetsANodeBlackhole(t *testing.T) 
 				if err := json.Unmarshal(raw, &r); err != nil {
 					t.Fatal(err)
 				}
-				if r.RuleTag == guardTag {
+				if r.RuleTag == apiGuardIPRuleTag || r.RuleTag == apiGuardDomainRuleTag {
 					guardRules++
 					if r.OutboundTag != blockTag {
 						t.Errorf("guard rule targets %q, want %q", r.OutboundTag, blockTag)

@@ -78,7 +78,7 @@ func TestSiblingGuardBlocksMasqueUserFromLoopback(t *testing.T) {
 		if err := json.Unmarshal(rawRule, &r); err != nil {
 			t.Fatal(err)
 		}
-		if r.RuleTag == siblingGuardRuleTag && slices.Contains(r.InboundTag, masqueProbeTag) {
+		if (r.RuleTag == siblingGuardIPRuleTag || r.RuleTag == siblingGuardDomainRuleTag) && slices.Contains(r.InboundTag, masqueProbeTag) {
 			guarded = true
 		}
 	}

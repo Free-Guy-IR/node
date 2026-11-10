@@ -101,6 +101,9 @@ func TestMain(m *testing.M) {
 		defer do.Body.Close()
 
 		responseBody, _ := io.ReadAll(do.Body)
+		if do.StatusCode < 200 || do.StatusCode > 299 {
+			return fmt.Errorf("%s %s: %s: %s", method, endpoint, do.Status, strings.TrimSpace(string(responseBody)))
+		}
 		if err = proto.Unmarshal(responseBody, response); err != nil {
 			return err
 		}

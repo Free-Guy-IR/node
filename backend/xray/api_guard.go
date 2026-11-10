@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	apiGuardRuleTag     = "PG_NODE_API_GUARD"
-	apiGuardOutboundTag = "PG_NODE_API_GUARD_BLOCK"
+	apiGuardRuleTag       = "PG_NODE_API_GUARD"
+	apiGuardIPRuleTag     = apiGuardRuleTag + "_IP"
+	apiGuardDomainRuleTag = apiGuardRuleTag + "_DOMAIN"
+	apiGuardOutboundTag   = "PG_NODE_API_GUARD_BLOCK"
 )
 
 var apiGuardDestinationCIDRs = []string{
@@ -52,14 +54,14 @@ func apiGuardRules(ports ...int) ([]json.RawMessage, error) {
 	rules := []map[string]any{
 		{
 			"type":        "field",
-			"ruleTag":     apiGuardRuleTag,
+			"ruleTag":     apiGuardIPRuleTag,
 			"ip":          apiGuardDestinationIPs(),
 			"port":        portSpec,
 			"outboundTag": apiGuardOutboundTag,
 		},
 		{
 			"type":        "field",
-			"ruleTag":     apiGuardRuleTag,
+			"ruleTag":     apiGuardDomainRuleTag,
 			"domain":      apiGuardDomains,
 			"port":        portSpec,
 			"outboundTag": apiGuardOutboundTag,
@@ -102,7 +104,22 @@ func (c *Config) ensureAPIGuardOutbound() {
 	c.OutboundConfigs = append(kept, guard)
 }
 
-const siblingGuardRuleTag = "PG_NODE_SIBLING_LOOPBACK_GUARD"
+const (
+	siblingGuardRuleTag       = "PG_NODE_SIBLING_LOOPBACK_GUARD"
+	siblingGuardIPRuleTag     = siblingGuardRuleTag + "_IP"
+	siblingGuardDomainRuleTag = siblingGuardRuleTag + "_DOMAIN"
+)
+
+func nodeGuardRuleTag(tag string) bool {
+	switch tag {
+	case malformedDomainGuardRuleTag,
+		apiGuardRuleTag, apiGuardIPRuleTag, apiGuardDomainRuleTag,
+		siblingGuardRuleTag, siblingGuardIPRuleTag, siblingGuardDomainRuleTag:
+		return true
+	default:
+		return false
+	}
+}
 
 var siblingGuardUserProtocols = protocolSet(userProtocols)
 
@@ -150,14 +167,14 @@ func siblingGuardRules(userInboundTags []string) ([]json.RawMessage, error) {
 	rules := []map[string]any{
 		{
 			"type":        "field",
-			"ruleTag":     siblingGuardRuleTag,
+			"ruleTag":     siblingGuardIPRuleTag,
 			"inboundTag":  userInboundTags,
 			"ip":          append([]string{}, apiGuardDestinationCIDRs...),
 			"outboundTag": apiGuardOutboundTag,
 		},
 		{
 			"type":        "field",
-			"ruleTag":     siblingGuardRuleTag,
+			"ruleTag":     siblingGuardDomainRuleTag,
 			"inboundTag":  userInboundTags,
 			"domain":      siblingGuardDomains,
 			"outboundTag": apiGuardOutboundTag,
