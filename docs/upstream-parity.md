@@ -296,6 +296,17 @@ For each component the script fetches every upstream branch and tag. It fetches 
    pre-release suffix. The tag must be created after the pin commit, and its commit must not be reachable from the pin
    (or the fork commit). Only a waiver on the tag's commit clears it. Moving the pin past it removes it.
 
+"Release" is not defined the same way here and in the panel, and the difference is deliberate. The Releases rule above
+drops pre-release tags, as the panel does. The release-scope predicates do not: `node_in_release_scope` and
+`tp_in_release_scope` ask only whether any tag contains the commit (`git for-each-ref --contains`), with no version
+parsing, so a commit carried only by a `-rc` or `-beta` tag is in release scope here. The panel filters those out
+first (`scripts/upstream_inventory.py`, `is_prerelease_tag`, covered by
+`test_a_prerelease_tag_keeps_a_commit_held_and_the_final_tag_releases_it` and
+`test_a_prerelease_tag_does_not_pull_a_dev_only_commit_into_release_scope`), so there such a commit stays dev-only.
+Node is therefore the stricter of the two: it asks for a port or a waiver where the panel would still hold the commit.
+Nothing turns on it today, because none of the 45 upstream node tags carries a pre-release suffix, but the two repos
+do not mean the same thing by the phrase.
+
 | pattern | meant to catch |
 |---|---|
 | `GHSA-[[:alnum:]]{4}-`, `CVE-[0-9]{4}-` | advisory references, including advisories that are not published yet |
@@ -483,9 +494,14 @@ New upstream commits since 2026-09-24:
 - `243b818`, `f0877ce` and the merge `b744287` on `masque`: pending, waived until 2026-11-06.
 
 0.6.21 takes five server-side Xray fixes early as patches. Each fix was written test-first: its test fails on the pin
-and passes with the fix.
+and passes with the fix. None of them carries a code hunk any more: the `v26.11.9` pin contains every one of these
+upstream fixes, so what is left in `patches/` is the regression test alone, and `xray-http-100-continue.patch` is gone
+entirely (see "State on 2026-11-10: the Xray pin moves to the `v26.11.9` tag commit").
 
-- `8ee131c`, the HTTP inbound 1xx panic: `xray-http-100-continue.patch`, verbatim.
+- `8ee131c`, the HTTP inbound 1xx panic: was `xray-http-100-continue.patch`, verbatim. The patch was deleted in
+`5464902a` with the `v26.10.31` pin move, because `8ee131c` is an ancestor of the pin (GitHub compare against
+`676eaf66f8f0` on 2026-11-10: 164 ahead, 0 behind). `make test_xray_patches` still runs
+`TestReadResponseAndHandle100Continue`, now against upstream's own test in the pinned tree.
 - `a2cec2e`, the DNS query panic on a name over 255 bytes: `xray-dns-long-domain.patch`, verbatim.
 - `d878fc8`, the SS2022 inbound invalid-destination panic: `xray-ss2022-dispatch.patch`, verbatim.
 - `0bafca9`, the stats `GetOrRegister*` races, which cost billed bytes and online-map IPs:
@@ -605,7 +621,7 @@ New items and their decisions:
 | Xray `6cdd323ad82fe21bb9c1d06e6a5c5f909de2ffaf` (#7288) | `not-applicable` | the same TUN option, merged into `main` and released in `v26.10.31`, so it has no branch scope |
 | Xray `967ade1e03f4c9458240a44e6247045da171869b` (#7315) | `not-applicable` | the same TUN option again, more values and always-allowed loopback, DHCP and neighbor discovery; on `main` at 2026-11-02T21:40Z, after main `f2712fdd`'s green drift run, and in no release yet. It touches only `proxy/tun` and one error string in `infra/conf/tun.go` |
 | Xray `f2f292c90ce100093cfad5849bafadd49e873d26` and `266df8c6448ba01709be0dae7bb2ede6d258f756` | `superseded`, `branch:windows-tun-wfp-ports` | the two commits of branch `windows-tun-wfp-ports`, squash-merged as `6cdd323`. The tip `266df8c` equals `6cdd323` in every file the branch touches; the one `proxy/tun` difference, `config.pb.go`, comes from `main`'s regeneration `d1140de` and differs the same way between their parents `0afec66` and `316e07a` |
-| Xray release `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) | `pending` until 2026-11-20, in the same form as `v26.10.21` | 29 non-merge commits after `v26.10.21`; the only security-looking one is `6cdd323`. Its HTTP inbound change `bc7c895` (#7298) edits `proxy/http/server.go`, which `xray-http-100-continue.patch` also changes, and is to be checked against that patch at the pin move. On 2026-11-04 the image pin moved past it to `556767e40baa`, `v26.10.31` plus 4 `main` commits (see "State on 2026-11-04"); the waiver row keeps its own status in `.github/upstream-waivers.txt` |
+| Xray release `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) | taken by the pin move; waiver row closed and removed on 2026-11-10 | 29 non-merge commits after `v26.10.21`; the only security-looking one is `6cdd323`, which keeps its own `not-applicable` row. Its HTTP inbound change `bc7c895` (#7298) edits `proxy/http/server.go`, which the fork no longer patches: `xray-http-100-continue.patch` was deleted with the `v26.10.31` pin move and `bc7c895` is itself an ancestor of the pin (28 ahead, 0 behind). The pin is now `v26.11.9` (`676eaf66f8f0`), which contains `a4a3dff5b20c` (GitHub compare on 2026-11-10: 24 ahead, 0 behind), so by the Releases rule ("Moving the pin past it removes it") the drift check no longer reports the release and the row waived nothing (see "State on 2026-11-10: the Xray pin moves to the `v26.11.9` tag commit") |
 
 Waivers removed because the run matched nothing for them (the check's own instruction):
 
@@ -826,6 +842,18 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
   the full `ARG XRAY_COMMIT`, either as the tag commit itself or as the tag plus N `main` commits. It fetches both
   commits from XTLS/Xray-core and checks the tag sha, that the build commit descends from the tag, and that N is
   `git rev-list --count` between them. It also refuses a second `ARG XRAY_VERSION` or `ARG XRAY_COMMIT` line.
+- Two Xray release waivers were closed as satisfied and removed from `.github/upstream-waivers.txt`, because the pin
+  now contains both and the Releases rule says moving the pin past a release removes it. GitHub compare against
+  `676eaf66f8f0` on 2026-11-10: `v26.10.21` (`1b1647cd9ddf`) 53 ahead, 0 behind; `v26.10.31` (`a4a3dff5b20c`) 24
+  ahead, 0 behind. Everything those two rows carried is accounted for: `6cdd323` keeps its own `not-applicable` row,
+  and `0afec66`, `bc7c895`, `061c2df`, `43c29f8` and `48f62b8` are all ancestors of the pin (34, 28, 58, 43 and 42
+  ahead, 0 behind), so the pin takes them. The two commits of the branches upstream deleted, `b291961` (`privateip`)
+  and `72b4d0c` (`limit-geodata-downloader`), are still not in the pin (diverged, 2 and 5 behind) and are reachable
+  from no upstream ref any more, so the check cannot see them; the hunks they carried arrive with `43c29f8` (#7249)
+  and `48f62b8` (#7267), which the pin has.
+- The waiver file's pin references were moved off the retired `556767e40baa` onto `676eaf66f8f0`, and the two
+  containment claims they rest on were re-measured on the new pin: it still contains `345c76f` (233 ahead, 0 behind)
+  and still does not contain `3af7f252b0d5` (diverged, 172 ahead, 1 behind), so both rows keep their verdicts.
 
 ### govulncheck on the patched Xray build
 
@@ -1017,8 +1045,9 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
      not handled by the UDP worker.
   3. The two Shadowsocks 2022 late-dispatch tests ran without `-race` until F-SINGBRIDGE-RACE was fixed: the same late
      dispatch tripped a data race in `common/singbridge/packet.go`, where `PacketConnWrapper.Close` released `cached`
-     while `ReadPacket` wrote it. That code comes from upstream through `xray-ss2022-dispatch.patch`. It is fixed by
-     `xray-ss2022-singbridge-close-race.patch` (see its own section below), and both tests now run under `-race`.
+     while `ReadPacket` wrote it. That code comes from upstream through `xray-ss2022-dispatch.patch`. It was fixed by
+     `xray-ss2022-singbridge-close-race.patch` (see its own section below), which the `v26.10.31` pin move retired
+     because the pin no longer carries `common/singbridge`; both tests still run under `-race`.
 - **Tests:**
   - `TestRevokeCutsAUDPFlowAndKeepsTheSourcesNextFlow` (`app/proxyman/inbound`): a revoke closes the flow, the next
     flow with the revoked user is refused and removed, a later flow of the same source with the new credential is kept
@@ -1046,7 +1075,13 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
     the revoke checks, which would let a revoked user's late dispatch through.
 - **Removal condition:** none while the node relies on `RevokeUserOperation`; it goes with the session revoke patch.
 
-### FORK DEVIATION: singbridge Close no longer releases the datagrams ReadPacket is using (patches/xray-ss2022-singbridge-close-race.patch)
+### Retired at the v26.10.31 pin move: singbridge Close no longer releases the datagrams ReadPacket is using (was patches/xray-ss2022-singbridge-close-race.patch)
+
+This section is history. The patch was deleted in `5464902a` with the `v26.10.31` pin move, on its own removal
+condition below: the pin passed `65e853e` (GitHub compare against `676eaf66f8f0` on 2026-11-10: 128 ahead, 0 behind)
+and `common/singbridge` no longer exists at the pin (`GET /repos/XTLS/Xray-core/contents/common/singbridge?ref=676eaf66f8f0`
+answers 404). Nothing in `patches/` carries this deviation now; the rest of the section describes what it did while it
+shipped.
 
 - **Upstream:** no upstream branch or tag fixes this race. On 2026-10-10 all 116 branches and 135 tags of
   XTLS/Xray-core were checked (`main` `701af60772cda123492f86e383e1fdba066614a9`, which is `v26.10.10`). Wherever
