@@ -1272,6 +1272,7 @@ branch does. Each commit is classified:
 | `EMPTY` | the upstream commit changes no file, so there is nothing to port |
 | `WAIVED` | `.github/upstream-waivers.txt` lists it with a reason |
 | `ALLOWED` | a fork commit with an upstream parent (see below) that the waiver file allowlists as `allowed-merge` |
+| `DEVONLY` | none of the above, and no upstream release tag and not upstream `main` reach the commit: it lives on `dev` or on a side branch. Reported in its own dev-only column and counted nowhere else, because only the released version decides parity; it turns `UNPORTED` the day a release carries it |
 | `UNPORTED` | none of the above; the check exits 1 |
 
 Two more kinds of item close the ways upstream work can slip past the commit list:
@@ -1300,11 +1301,19 @@ Two more kinds of item close the ways upstream work can slip past the commit lis
   - A clean merge is only counted.
   - The check needs git 2.36 or newer and refuses to run on an older one.
 
-The third-party sections are described above, and they use the same `PORTED`, `WAIVED` and `UNPORTED` statuses, plus
-`FIXED` for an advisory already fixed in the pin. Merge commits are skipped, because their content is the commits they
-merge. Upstream commits the fork already has through a merge, such as everything up to `v0.5.4`, are reachable and
-never listed. The check exits 0 when nothing is `UNPORTED`, 1 when something is, and 2 on any error: a failed fetch, a
-failed API call, a missing pin, or a malformed waiver.
+The third-party sections are described above, and they use the same `PORTED`, `WAIVED`, `DEVONLY` and `UNPORTED`
+statuses, plus `FIXED` for an advisory already fixed in the pin. Merge commits are skipped, because their content is
+the commits they merge. Upstream commits the fork already has through a merge, such as everything up to `v0.5.4`, are
+reachable and never listed. The check exits 0 when nothing is `UNPORTED`, 1 when something is, and 2 on any error: a
+failed fetch, a failed API call, a missing pin, or a malformed waiver.
+
+The release-only rule reads one branch per component, the release line the pin tracks: `main` for Xray-core and
+sing-quic, `oldstable` for sing-box, `master` for mtg, and upstream `main` for the node fork itself. A
+security-looking commit after the pin that no tag of that component contains and that its release line does not carry
+is `DEVONLY`: it sits on another branch, including a newer release line such as sing-box `stable`, and it blocks
+nothing until a tag reaches it. Release completeness is untouched by this: a commit a tag contains stays `UNPORTED`
+wherever else it lives, a commit on the pinned release line stays `UNPORTED` even before it is tagged, and an upstream
+release after the pin is still an item of its own that must be taken or waived by its tag commit.
 
 ### Porting an upstream commit
 

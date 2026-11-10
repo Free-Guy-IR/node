@@ -1143,6 +1143,76 @@ check stale-release-claim-on-a-tagged-xray-commit 1 DRIFT_COMPONENTS="node xray"
 xray_release_claim release-claim-holds-on-an-untagged-xray-commit open
 check release-claim-holds-on-an-untagged-xray-commit 0 DRIFT_COMPONENTS="node xray"
 
+tp_refetch() {
+  git --git-dir="$tmp/$1/cache/$2.git" fetch -q --prune "$tmp/$1/$2-up" \
+    '+refs/heads/*:refs/remotes/up/*' '+refs/tags/*:refs/tags/*'
+}
+
+tp_applied="$xray_copy
+RUN git init -q . && git apply --verbose /patches/xray-fix.patch"
+
+xray_fixture xray-dev-only-needs-no-waiver "$tp_applied" "$xray_makefile" X1
+s=$tmp/xray-dev-only-needs-no-waiver
+git -C "$s/xray-up" checkout -q -b side
+printf 'package core\n\nvar devonly = true\n' >"$s/xray-up/devonly.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "XD fix a panic on side"
+git -C "$s/xray-up" checkout -q main
+tp_refetch xray-dev-only-needs-no-waiver xray
+check xray-dev-only-needs-no-waiver 0 DRIFT_COMPONENTS="node xray"
+if ! grep -q '^DEVONLY  xray commit [0-9a-f]* \[side\] XD fix a panic on side$' "$tmp/xray-dev-only-needs-no-waiver/out"; then
+  printf 'FAIL     %-28s does not report the side-branch xray commit as DEVONLY\n' xray-dev-only-needs-no-waiver
+  failed=$((failed + 1))
+fi
+
+xray_fixture singbox-commit-off-the-pinned-release-line "$tp_applied" "$xray_makefile" X1
+s=$tmp/singbox-commit-off-the-pinned-release-line
+printf '%s rejected: fixture, the pinned oldstable fix stays out of the fork on purpose\n' \
+  "$(sha_of "$s/sing-box-up" B1)" >>"$s/waivers"
+git -C "$s/sing-box-up" checkout -q -b stable
+printf 'package core\n\nvar nextline = true\n' >"$s/sing-box-up/nextline.go"
+git -C "$s/sing-box-up" add -A
+commit "$s/sing-box-up" -m "BS fix a panic on stable"
+git -C "$s/sing-box-up" checkout -q oldstable
+tp_refetch singbox-commit-off-the-pinned-release-line sing-box
+check singbox-commit-off-the-pinned-release-line 0 DRIFT_COMPONENTS="node sing-box"
+if ! grep -q '^DEVONLY  sing-box commit [0-9a-f]* \[stable\] BS fix a panic on stable$' "$tmp/singbox-commit-off-the-pinned-release-line/out"; then
+  printf 'FAIL     %-28s does not report a commit off the pinned release line as DEVONLY\n' singbox-commit-off-the-pinned-release-line
+  failed=$((failed + 1))
+fi
+
+xray_fixture xray-released-side-branch-commit-still-blocks "$tp_applied" "$xray_makefile" X1
+s=$tmp/xray-released-side-branch-commit-still-blocks
+git -C "$s/xray-up" checkout -q -b side
+printf 'package core\n\nvar released = true\n' >"$s/xray-up/released.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "XR fix a panic on side"
+printf 'package core\n\nvar marker = true\n' >"$s/xray-up/marker.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "XT bump the version file"
+git -C "$s/xray-up" tag v1.1.0
+git -C "$s/xray-up" checkout -q main
+printf '%s rejected: fixture, the release line is judged by the commits it carries\n' \
+  "$(git -C "$s/xray-up" rev-parse 'v1.1.0^{commit}')" >>"$s/waivers"
+tp_refetch xray-released-side-branch-commit-still-blocks xray
+check xray-released-side-branch-commit-still-blocks 1 DRIFT_COMPONENTS="node xray"
+if ! grep -q '^UNPORTED xray commit [0-9a-f]* \[side\] XR fix a panic on side$' "$tmp/xray-released-side-branch-commit-still-blocks/out"; then
+  printf 'FAIL     %-28s a side-branch xray commit a release tag carries must stay UNPORTED\n' xray-released-side-branch-commit-still-blocks
+  failed=$((failed + 1))
+fi
+
+xray_fixture xray-release-line-commit-still-blocks "$tp_applied" "$xray_makefile" X1
+s=$tmp/xray-release-line-commit-still-blocks
+printf 'package core\n\nvar mainline = true\n' >"$s/xray-up/mainline.go"
+git -C "$s/xray-up" add -A
+commit "$s/xray-up" -m "XM fix a panic on main"
+tp_refetch xray-release-line-commit-still-blocks xray
+check xray-release-line-commit-still-blocks 1 DRIFT_COMPONENTS="node xray"
+if ! grep -q '^UNPORTED xray commit [0-9a-f]* \[main\] XM fix a panic on main$' "$tmp/xray-release-line-commit-still-blocks/out"; then
+  printf 'FAIL     %-28s an untagged xray commit on the pinned release line must stay UNPORTED\n' xray-release-line-commit-still-blocks
+  failed=$((failed + 1))
+fi
+
 xray_fixture xray-pin-declared-in-another-stage "$xray_copy
 RUN git init -q . && git apply --verbose /patches/xray-fix.patch" "$xray_makefile" X1
 xray_rewrite xray-pin-declared-in-another-stage "s/^ARG SINGBOX_VERSION=v1\.0\.0\$/ARG SINGBOX_VERSION=v1.0.0\nARG XRAY_COMMIT=$(sha_of "$tmp/xray-pin-declared-in-another-stage/xray-up" X1)/"

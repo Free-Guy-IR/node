@@ -1019,6 +1019,12 @@ tp_on_release_line() {
     awk -v lines=" $2 main master dev stable testing unstable oldstable " 'index(lines, " " $0 " ") { f = 1 } END { exit !f }'
 }
 
+tp_in_release_scope() {
+  [ -z "$(tpgit for-each-ref --count=1 --contains "$1" refs/tags/)" ] || return 0
+  tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
+    awk -v line="$2" '$0 == line { f = 1 } END { exit !f }'
+}
+
 tp_scope_violations() {
   allowed=" $2 "
   { tpgit for-each-ref --format='%(refname:strip=3)' --contains "$1" refs/remotes/up/ |
@@ -1084,6 +1090,7 @@ check_thirdparty() {
 
   commits=0
   unported=0
+  devonly=0
   security_log $refs --not $excl -- >"$work/$name-security"
   while read -r sha <&5; do
     commits=$((commits + 1))
@@ -1119,11 +1126,15 @@ check_thirdparty() {
       status=WAIVED
       detail=$waiver
       note_pending "$sha" "$name commit" "$waiver"
-    else
+    elif tp_in_release_scope "$sha" "$line"; then
       status=UNPORTED
       detail="security-looking upstream commit after the pin, not ported and not waived"
       unported=$((unported + 1))
       count_unported
+    else
+      status=DEVONLY
+      detail="no release tag and not the $line release line carry this commit, only another upstream branch: reported for information and it turns UNPORTED the day a release carries it"
+      devonly=$((devonly + 1))
     fi
     printf '%-8s %s commit %s [%s] %s\n' "$status" "$name" "$(printf '%.12s' "$sha")" \
       "$(awk -v s="$sha" '$1 == s { $1 = ""; sub(/^ /, ""); print; exit }' "$work/$name-labels")" \
@@ -1166,8 +1177,8 @@ check_thirdparty() {
     printf '         %s\n' "$detail"
   done 6<"$work/$name-tags"
 
-  printf 'upstream-drift: %s: %d security-looking commits and %d releases after the pin, %d unported\n' \
-    "$name" "$commits" "$releases" "$unported"
+  printf 'upstream-drift: %s: %d security-looking commits and %d releases after the pin, %d unported, %d dev-only (reported, not blocking)\n' \
+    "$name" "$commits" "$releases" "$unported" "$devonly"
   check_advisories "$name" "$slug" "$module" "$tp_gd" "$work/$name-refs" "$excl"
 }
 
