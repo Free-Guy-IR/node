@@ -290,7 +290,7 @@ func startRevokeHarness(t *testing.T, cases []revokeCase) *revokeHarness {
 	serverConfig := map[string]any{
 		"log":       map[string]any{"loglevel": "warning"},
 		"inbounds":  serverInbounds,
-		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}},
+		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}}},
 	}
 	rawServer, err := json.Marshal(serverConfig)
 	if err != nil {

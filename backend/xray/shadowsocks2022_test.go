@@ -37,7 +37,7 @@ const shadowsocks2022TestConfig = `{
 	"outbounds": [{
 		"tag": "direct",
 		"protocol": "freedom",
-		"settings": {"finalRules": [{"action": "allow", "ip": ["127.0.0.1"]}]}
+		"settings": {"finalRules": [{"action": "allow", "ip": ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]}]}
 	}]
 }`
 

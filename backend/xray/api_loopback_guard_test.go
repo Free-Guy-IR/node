@@ -262,7 +262,7 @@ func loopbackProbeConfig(t *testing.T, routing panelRouting) *Config {
 			},
 		},
 		"outbounds": []any{
-			map[string]any{"tag": "DIRECT", "protocol": "freedom"},
+			map[string]any{"tag": "DIRECT", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}},
 			map[string]any{"tag": "BLOCK", "protocol": "blackhole"},
 		},
 	}

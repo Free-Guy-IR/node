@@ -37,7 +37,7 @@ func TestShouldIncludeObservatoryOutbound(t *testing.T) {
 func TestApplyAPISanitizesObservatorySelectors(t *testing.T) {
 	cfg := &Config{
 		OutboundConfigs: []any{
-			map[string]any{"tag": "direct", "protocol": "freedom"},
+			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}},
 			map[string]any{"tag": "blocked", "protocol": "blackhole"},
 			map[string]any{"tag": "dns-out", "protocol": "dns"},
 			map[string]any{"tag": "loop-out", "protocol": "loopback"},
@@ -69,7 +69,7 @@ func TestApplyAPIAddsMalformedDomainGuardWhenBlackholeExists(t *testing.T) {
 	cfg := &Config{
 		InboundConfigs: []*Inbound{},
 		OutboundConfigs: []any{
-			map[string]any{"tag": "direct", "protocol": "freedom"},
+			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}},
 			map[string]any{"tag": "Block", "protocol": "blackhole"},
 		},
 	}

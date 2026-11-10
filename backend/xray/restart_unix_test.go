@@ -258,7 +258,7 @@ func realXrayConfig(t *testing.T, tags []string) *Config {
 	raw, err := json.Marshal(map[string]any{
 		"log":       map[string]any{"loglevel": "warning"},
 		"inbounds":  inbounds,
-		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "DIRECT"}},
+		"outbounds": []any{map[string]any{"protocol": "freedom", "tag": "DIRECT", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}}},
 	})
 	if err != nil {
 		t.Fatal(err)

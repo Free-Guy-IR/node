@@ -56,7 +56,7 @@ func startHysteriaNode(t *testing.T, users []*common.User) *hysteriaNode {
 				},
 			},
 		}},
-		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}},
+		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"finalRules": []any{map[string]any{"action": "allow", "ip": []any{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}}}}}},
 	}
 	raw, err := json.Marshal(serverConfig)
 	if err != nil {
