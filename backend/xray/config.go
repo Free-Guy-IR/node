@@ -753,7 +753,7 @@ var canonicalAPIServices = map[string]string{
 // requiredAPIServices are always present — the node's own gRPC clients depend on
 // HandlerService (users/inbounds) and StatsService (traffic); LoggerService
 // preserves current behavior.
-var requiredAPIServices = []string{"HandlerService", "LoggerService", "StatsService"}
+var requiredAPIServices = []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"}
 
 // sanitizeAPIServices returns the required API services plus any valid
 // user-provided extras (canonicalized, deduped case-insensitively, sorted).

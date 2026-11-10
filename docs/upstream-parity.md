@@ -62,6 +62,7 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `03f66e9b4817a961d3085134b3e1d532fd57862d` | deps: grpc 1.84.0 to 1.85.0 (#122) | on upstream `dev` only, in no tag (2026-11-02). Held under the release-only rule and waived as `pending` until 2026-11-30; the waiver says `dev-only`, so the check turns it `UNPORTED` the day an upstream tag contains it. See [State on 2026-11-02](#state-on-2026-11-02) |
 | `68e84193ace5216cbe8faf572fa3533402005cb2` | deps: gopsutil 4.26.9 to 4.26.10 (#121) | on upstream `dev` only, in no tag (2026-11-02). Held and waived like #122 |
 | `ebb0d02944bdf4f7166819d31466a224f0daf7e2` | fix(wireguard): fix apparmor permission denied in e2e tests | on upstream `dev` only, in no tag (2026-11-02). Superseded, waived: the fork fixed the same failure in `b8679894` four days earlier; the AppArmor-unloading half is not taken. See [State on 2026-11-02](#state-on-2026-11-02) |
+| `25a8d740514256a1e109b10360fbc53cb80e9148` | feat: apply routing and outbound changes without restarting xray (#105) | released in v0.5.6. Ported in part on 2026-11-10: the "always enable the routing API service" half is taken (`RoutingService` joins `requiredAPIServices` in `backend/xray/config.go`), because the fork already ships RoutingService RPCs that were failing without it. The live-apply half is refused. See [Ported in part: #105](#ported-in-part-105-routingservice-taken-live-apply-refused) |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
@@ -131,6 +132,61 @@ serialisation (`a69d7ed` watchdog part and `d44ca8e`), the early detach in `Disc
 
 Revisit this only if the panel stops relying on `Start` for convergence, for example after the epoch protocol below
 lands in the panel and the bridge with a guaranteed full snapshot on every reconnect.
+
+## Ported in part: #105, RoutingService taken, live apply refused
+
+Upstream `25a8d740` (#105, released in `v0.5.6`) makes a changed panel config apply to the running Xray through its
+API instead of restarting it. It bundles two independent changes. The fork takes the first and refuses the second.
+
+**Taken: the routing API service is always enabled.** `RoutingService` joins `requiredAPIServices` in
+`backend/xray/config.go`. This is not cosmetic in the fork: the fork already exposes six RoutingService RPCs that
+upstream v0.5.4 did not have (`ListRoutingRules`, `GetBalancerInfo`, `TestRoute`, `AddRoutingRule`,
+`RemoveRoutingRule`, `OverrideBalancerTarget` in `backend/xray/routing.go` and `controller/rpc/routing.go`), and every
+one of them failed unless the panel's own config happened to list `routingservice` under `api.services`. Measured on
+`f6add707` against the pinned Xray 26.11.9 (`676eaf6`, the binary of the `go.mod` pin) with a panel config that has no
+`api` section: `rpc error: code = Unimplemented desc = unknown service xray.app.router.command.RoutingService`.
+`TestRoutingServiceServesWithoutAPanelOptIn` and `TestAddAndRemoveRoutingRuleWithoutAPanelOptIn`
+(`backend/xray/routing_test.go`) fail that way before the change and pass after it.
+
+**Refused: the live apply** (`backend/xray/live.go`, `live_convert.go`, `live_plan.go`, `backend/xray/api/outbound.go`,
+`backend.LiveConfigApplier`, `Core.executable`, `Xray.apiPort`, and the `controller` hook).
+
+1. **It has no caller in the fork.** Upstream calls `ApplyConfigLive` from one place only, `StartOrAttach`. The fork
+   does not carry `StartOrAttach`, `sameBackendConfig` or `activeData` — the three names appear in this document and
+   nowhere in any `.go` file. `controller/rpc/base.go` `Start` calls `Controller.ReplaceBackend`
+   (`controller/lifecycle.go`), which disconnects any running backend and calls `startBackend` unconditionally. A port
+   of the xray half alone would add about 650 lines of production code that nothing can reach.
+2. **Hooking it into `ReplaceBackend` breaks user convergence or earns nothing.** `ReplaceBackend` is the fork's
+   convergence point: `startBackend` rebuilds the backend from `Backend.users`. Skipping that for a live apply leaves
+   disabled, expired and deleted users running, which is the first reason the fork refuses `StartOrAttach` above.
+   Converging them instead is self-defeating, because on xray `SyncUsers` goes through `applyConfigWithRestart`
+   (`backend/xray/user.go`), which restarts the core. `UpdateUsers` does not close the gap: `buildInboundUpdates`
+   only touches the users in the list it is given, so a user the panel deleted while it was unreachable is never
+   removed.
+3. **It would also break the extra-backend contract.** `startBackend` calls `shutdownExtras`, and the panel re-adds
+   the extras after `Start`. A live apply that skips `startBackend` leaves them running, and the panel's next
+   `AttachBackend` is rejected by `attachPrecheck` with "a %s backend is already running on this node".
+4. **It has no rule for a degraded start, and needs one.** After `startCoreWithFilterFallback` strips content-filter
+   rules, `x.config` is the stripped config, not the panel's: `TestStartCoreWithFilterFallbackDegradesOnRuleRelatedFailure`
+   asserts `contentFilterRuleTags(x.activeConfig())` is empty while the panel config still carries the rule. Upstream's
+   `planLiveUpdate` compares that stripped config against a fresh build of the panel's raw config, sees a routing
+   change, and plans a `ReplaceRouting` that puts the stripped rules straight back into the running core. When the
+   strip was rule-related, `xray convert pb` rejects them again and the apply only costs a pointless restart; when it
+   was resource exhaustion — `TestPersistentResourceExhaustionStillStripsFilterRules` strips on `signal: killed`, where
+   the rules are valid — the conversion can succeed and the rules reach the live core the node deliberately started
+   without. That path was found by reading the code; the OOM was not reproduced.
+
+What the waiver's other objection, tracking live routing-RPC edits, turns out **not** to be is a reason against the
+live apply. The fork already loses those edits on every restart, because `restartCoreWithConfig` restarts from
+`x.config`, which never recorded them: `TestRestartDropsRulesAddedOverTheRoutingAPI` (`backend/xray/routing_test.go`)
+adds a rule over the API, restarts, and finds it gone. A live apply replaces routing only when the panel's routing
+changed, so it would preserve more of those edits than a restart does, not fewer. The fork's api-guard rules are not a
+problem either: `ApplyConfigLive` builds the candidate through `ApplyAPI`, so the guard rules and the
+`PG_NODE_API_GUARD_BLOCK` outbound are in both sides of the comparison and in anything a `ReplaceRouting` would send.
+
+Revisit this together with `StartOrAttach`. The live apply is only worth its code once a config change can reach a
+running core at all, which in this fork means after the epoch protocol below gives every reconnect a guaranteed
+authoritative user snapshot. A revisit must also add the degraded-start rule of point 4.
 
 ## Pending upstream work: PR #78 and `user_sync_epoch`
 
@@ -873,9 +929,11 @@ scripts/upstream_drift.sh` over all four components, with a live fetch, exits 1 
 `until:2026-11-20` and 2 carry `until:2026-11-30`.
 - The two node items are genuinely owed, not bookkeeping. `e03754dec4fc` (#64, WireGuard peers through Xray's
 inbound `UserManager`, 21 files, 1106 insertions) and `25a8d7405142` (#105, applying routing and outbound changes
-without restarting Xray, 16 files, 1149 insertions) both turn `UNPORTED` the day their waiver expires. Neither is
-ported here. They need a port or a fresh decision before 2026-11-21; until then the ledger states the date rather
-than letting them expire unannounced.
+without restarting Xray, 16 files, 1149 insertions) both turn `UNPORTED` the day their waiver expires. Neither was
+ported in that pass. They need a port or a fresh decision before 2026-11-21; until then the ledger states the date
+rather than letting them expire unannounced. `25a8d7405142` was settled later the same day: its waiver row is gone and
+it is ported in part, with the live-apply half refused
+(see [Ported in part: #105](#ported-in-part-105-routingservice-taken-live-apply-refused)).
 - The `8d0a7cf856fa` waiver was removed. It scoped the SS2022 inbound races to upstream branch `ss2022`, a branch
 upstream has since deleted, so the commit is reachable from no upstream ref and the check reported `note: waiver
 8d0a7cf856fa18da240f0eb913c1fd0237afba82 matches nothing this run checked; remove it`. Its `until:` was 2026-11-10,

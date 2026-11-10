@@ -16,15 +16,15 @@ func TestSanitizeAPIServices(t *testing.T) {
 		{
 			name: "nil yields required only",
 			in:   nil,
-			want: []string{"HandlerService", "LoggerService", "StatsService"},
+			want: []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"},
 		},
 		{
 			name: "empty yields required only",
 			in:   []string{},
-			want: []string{"HandlerService", "LoggerService", "StatsService"},
+			want: []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"},
 		},
 		{
-			name: "routing service appended",
+			name: "routing service is already required",
 			in:   []string{"routingservice"},
 			want: []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"},
 		},
@@ -41,12 +41,12 @@ func TestSanitizeAPIServices(t *testing.T) {
 		{
 			name: "unknown dropped, required preserved",
 			in:   []string{"foo", "RoutigService"},
-			want: []string{"HandlerService", "LoggerService", "StatsService"},
+			want: []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"},
 		},
 		{
 			name: "extras sorted deterministically",
 			in:   []string{"routingservice", "observatoryservice", "reflectionservice"},
-			want: []string{"HandlerService", "LoggerService", "StatsService", "ObservatoryService", "ReflectionService", "RoutingService"},
+			want: []string{"HandlerService", "LoggerService", "StatsService", "RoutingService", "ObservatoryService", "ReflectionService"},
 		},
 		{
 			name: "whitespace trimmed",
@@ -98,7 +98,7 @@ func TestApplyAPINilAPIYieldsRequiredServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []string{"HandlerService", "LoggerService", "StatsService"}
+	want := []string{"HandlerService", "LoggerService", "StatsService", "RoutingService"}
 	if !slices.Equal(cfg.API.Services, want) {
 		t.Fatalf("API.Services = %#v, want %#v", cfg.API.Services, want)
 	}
