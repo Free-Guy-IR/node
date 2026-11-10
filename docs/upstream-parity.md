@@ -788,24 +788,31 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
   `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`. It stays open, owned by NODE-LEAD, due
   2026-11-20.
 
-### State on 2026-11-04: the Xray pin moves to `556767e4`, which is not the `v26.10.31` tag commit
+### State on 2026-11-10: the Xray pin moves to the `v26.11.9` tag commit
 
-- Xray pin: `v26.10.31` (`a4a3dff5b20c2faae567b742c172c7b95e75c083`) plus 4 `main` commits (`556767e40baa142641838158d6cba743c879e5c3`)
-- The image builds Xray from `ARG XRAY_COMMIT` `556767e40baa`. GitHub compare `a4a3dff5b20c...556767e40baa` on
-  2026-11-04: `ahead` 4, `behind` 0:
-  - `8ab161a2b0ed` (#7312) moves `golang.org/x/net` from `v0.61.0` to `v0.62.0`;
-  - `7c8dbcb4bbec` (#7311) moves `google.golang.org/grpc` from `v1.84.0` to `v1.85.0`;
-  - `967ade1e03f4` (#7315) changes the Windows-only TUN `autoSystemWfpBlockLeak` values (waived as `not-applicable`);
-  - `556767e40baa` (#7316) retries the XDRIVE `local` Get on Windows sharing violations (Windows-only files).
-- The pin stays past the tag because of `8ab161a2b0ed`. `golang.org/x/net` `v0.62.0` fixes GO-2026-6860 and
-  GO-2026-6866 (`golang.org/x/net/html`, fixed in `v0.62.0`, OSV query for `v0.61.0` on 2026-11-04) and the `ipv4`
-  and `ipv6` bounds checks (`afcf8cd5ba`, `4b10404ac8`, `dad306f6ea`, `05c76ee9ad`). Xray imports `ipv4`, `ipv6` and
-  `icmp`, but not `html`. Pinning the tag commit would move the Xray binary back to `v0.61.0`, or would bring back an
-  `x/net` patch like the `xray-x-net-0.60.0.patch` that this move dropped.
-- Xray's own version string at `556767e4` is still `26.10.31`, because upstream did not change the version constants
-  after the tag. `xray version` in the image therefore prints `26.10.31` for a build that has the 4 commits as well.
-- `make install_xray` downloads the `v26.10.31` release binary, which is the tag commit `a4a3dff5`, not the image's
-  `556767e4` build. It installs a local development binary and is not what the image ships.
+- Xray pin: `v26.11.9` (`676eaf66f8f05d4d558ee7a74b4736623d3feeb9`), the release tag commit itself
+- Upstream released `v26.11.9` on 2026-11-09 at `676eaf66f8f0`, which is also the head of XTLS/Xray-core `main`. The
+  drift check reported the release and its TUN IPv6 commit `2d287bbdee1e` (#7341) as `UNPORTED`; `git for-each-ref
+  --contains 2d287bbdee1e refs/tags/` answers `v26.11.9`, so both are released items and the pin move ports them.
+- `git rev-list --count 556767e40baa..676eaf66f8f0` is 20. The previous pin `556767e40baa` sat 4 `main` commits past
+  `v26.10.31` only to hold `golang.org/x/net` `v0.62.0`; `v26.11.9` still requires `golang.org/x/net v0.62.0`,
+  `golang.org/x/crypto v0.58.0`, `google.golang.org/grpc v1.85.0` and `golang.org/x/text v0.43.0`, so every
+  Dockerfile floor assertion holds unchanged and the pin is back on a tag commit.
+- All 17 `patches/xray-*.patch` apply to `676eaf66f8f0` in the Dockerfile's order, and
+  `scripts/xray_guard_replay.py` reports `BASELINE ok: every patch applies, every guard passes and ./main builds for
+  linux/amd64`, then removes each of the 19 non-test file diffs one at a time with 0 uncaught.
+- Artifact proof, not pin-file proof: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w
+  -buildid=" -o xray ./main` on the patched tree, then `go version -m xray`, prints
+  `mod github.com/xtls/xray-core v0.0.0-20261109052709-676eaf66f8f0+dirty` with
+  `build vcs.revision=676eaf66f8f05d4d558ee7a74b4736623d3feeb9` and `build vcs.modified=true`.
+- `core/core.go` at the tag declares `Version_x 26`, `Version_y 11`, `Version_z 9`, so `xray version` in the image
+  prints `26.11.9` and `ARG XRAY_VERSION` names the version the binary really is.
+- `go.mod` moves with the binary, to `github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0`, which
+  also moves `github.com/refraction-networking/utls` to `v1.8.3-0.20261108164504-a13c59ffe98b` and
+  `github.com/xtls/reality` to `v0.0.0-20261108101329-4bb46b2afd8b`, drops `github.com/andybalholm/brotli` and adds
+  `github.com/molecule-man/go-brrr`. `go build ./...` and `go vet ./...` pass on the moved module.
+- `make install_xray` downloads the `v26.11.9` release binary, which is the tag commit and therefore the same commit
+  the image builds, but without the patches. It installs a local development binary and is not what the image ships.
 - The geo-assets stage no longer takes `geoip.dat` and `geosite.dat` from the `v26.10.31` release zip, which ships
   the lite files. It downloads Loyalsoldier/v2ray-rules-dat `202610202206` and checks each file by sha256 (`bb40094`,
   ported). `make install_xray` runs `install_geofiles` and `check_geofiles` with the same pins, read from the Dockerfile.
