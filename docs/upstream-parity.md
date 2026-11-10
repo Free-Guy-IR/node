@@ -855,6 +855,37 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
   containment claims they rest on were re-measured on the new pin: it still contains `345c76f` (233 ahead, 0 behind)
   and still does not contain `3af7f252b0d5` (diverged, 172 ahead, 1 behind), so both rows keep their verdicts.
 
+### State on 2026-11-10: node v0.5.7, and the waiver cliff on 2026-11-21
+
+Upstream node heads resolved with `git ls-remote` rather than a fetch, because `git fetch upstream --tags` refuses
+`v0.0.5` to `v0.5.3` with "would clobber existing tag": the fork reused those tag names on its own line.
+
+- Upstream `main` `739eab94a9343d9f0035baf7162796844109f4c4`, which is `v0.5.7`, the newest of 45 tags; `dev`
+`9ccd2638c7feb65e62c5350fba38b94809554b50`.
+- `v0.5.7` itself is tracked: its release commit only sets `controller.NodeVersion` to `0.5.7`, so it is waived
+`not-applicable`, and every change it contains is tracked commit by commit. The fork runs its own line,
+`NodeVersion` `0.6.23` in `controller/controller.go`, pinned by `controller/base_info_test.go`, and makes no
+upstream version claim.
+- The gate is green today. The run on this commit reports `0 unported items across [node xray sing-box sing-quic]`.
+- The gate goes red on 2026-11-21, and that is measured, not predicted. `DRIFT_TODAY=2026-11-21 bash
+scripts/upstream_drift.sh` over all four components, with a live fetch, exits 1 with `16 unported items across
+[node xray sing-box sing-quic]`: 2 on node, 12 on sing-box, 2 on sing-quic, 0 on xray. 30 waivers carry
+`until:2026-11-20` and 2 carry `until:2026-11-30`.
+- The two node items are genuinely owed, not bookkeeping. `e03754dec4fc` (#64, WireGuard peers through Xray's
+inbound `UserManager`, 21 files, 1106 insertions) and `25a8d7405142` (#105, applying routing and outbound changes
+without restarting Xray, 16 files, 1149 insertions) both turn `UNPORTED` the day their waiver expires. Neither is
+ported here. They need a port or a fresh decision before 2026-11-21; until then the ledger states the date rather
+than letting them expire unannounced.
+- The `8d0a7cf856fa` waiver was removed. It scoped the SS2022 inbound races to upstream branch `ss2022`, a branch
+upstream has since deleted, so the commit is reachable from no upstream ref and the check reported `note: waiver
+8d0a7cf856fa18da240f0eb913c1fd0237afba82 matches nothing this run checked; remove it`. Its `until:` was 2026-11-10,
+so it would have expired the next day while waiving nothing. If upstream re-lands that work it arrives on a new ref
+and the check raises it again.
+- The check still asks for 61 further waiver rows to be removed, each with the same `matches nothing this run
+checked` note, down from 64 before the three rows closed in this pass. They are not all dead: the note means
+the row matched nothing *this run*, which also covers a component or an advisory the run did not reach. Each needs
+its own decision and none is touched here.
+
 ### govulncheck on the patched Xray build
 
 govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3.27, with every 0.6.21 patch applied
