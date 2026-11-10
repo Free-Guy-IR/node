@@ -25,6 +25,8 @@ func credentialClaim(tag string, account api.Account) (string, bool) {
 		return tag + "\x00" + Vmess + "\x00" + string(a.ID[:]), true
 	case *api.TrojanAccount:
 		return tag + "\x00" + Trojan + "\x00" + a.Password, true
+	case *api.WireguardAccount:
+		return tag + "\x00" + Wireguard + "\x00" + a.PublicKey, true
 	}
 	return "", false
 }
@@ -38,6 +40,8 @@ func credentialConflictReason(claim, holder string) string {
 		kind = "vmess id"
 	case Trojan:
 		kind = "trojan password"
+	case Wireguard:
+		kind = "wireguard public key"
 	}
 	return fmt.Sprintf("its %s on inbound %s is already held by user %s", kind, tag, holder)
 }

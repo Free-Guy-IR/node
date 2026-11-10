@@ -52,7 +52,7 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `47857d43fe777f30f9ecc5f2ffe4ca0b037507cb` | v0.5.5 release: `NodeVersion` to 0.5.5 | not applicable, waived: the fork pins and versions its own `NodeVersion` |
 | `bb40094ba11bfa81ae917ab22f986e90ad9bb052` | full geo files instead of the release zip's lite ones (#111) | ported: the geo-assets stage and `make install_geofiles` take Loyalsoldier/v2ray-rules-dat `202610202206` checked by sha256, and `make check_geofiles` runs `xray run -test` on `testdata/geofiles-check.json`. Not taken: upstream's three `.env.example` lines, which describe a `pg-node geofiles` command the fork does not carry, and its `Dockerfile` and `Dockerfile.xray` comment lines (the fork adds no code comments and has no `Dockerfile.xray`) |
 | `d359a8f7c478044c0fb80afcda207c6d122affd5` | `StartOrAttach` restarts an unhealthy backend (#117) | not applicable, waived: it only changes `StartOrAttach`, which the fork does not carry |
-| `bd745b540bd52e0300718bb294fd9f06b55f96e1` | `SyncUser` for Xray WireGuard accounts (#118) | not applicable, waived, until #64 (`e03754de`) is ported: it fixes code that #64 adds |
+| `bd745b540bd52e0300718bb294fd9f06b55f96e1` | `SyncUser` for Xray WireGuard accounts (#118) | ported on 2026-11-10 together with #64 (`e03754de`), whose code it fixes; both waiver rows are gone and the porting commit carries both `Upstream:` lines. See [State on 2026-11-10 (later)](#state-on-2026-11-10-later-the-2026-11-21-cliff-cleared) |
 | `d30948378d7831827f56f174333b3f254a228d45` | refresh keep-alive on every authenticated call (#115) | released in v0.5.5; ported on 2026-11-03 by `c2e15f29`, which carries its `Upstream:` line |
 | `1549c96621837b3fd7391697adc09b2c6278fac8` | a core start outlives the Start request (#116) | released in v0.5.5; ported on 2026-11-03 by `58a47bd8` (RED `d4c5c83c`), which carries its `Upstream:` line, with `7788ee80`, which pins `AddBackend` to its request's context, and `cae06171`, an abandoned Start racing a second Start and a Disconnect. The `StartOrAttach` attach half does not apply |
 | `8ad52fed26401566dea3e7fd99295ccdcb4fb506` | WireGuard canonical keys, IPv6 `NODE_HOST`, counter resets (#112) | released in v0.5.5; ported on 2026-11-03 by `74e9aaa4` (keys and `NODE_HOST`, RED `9575025f`) and `ee73b4f7` (the counter rule), which carry its `Upstream:` line; `3515bf38` pins the counter resets the fork already handled. The counter rule is ported by design as a hybrid: upstream's rule (an unmarked dip in either direction restarts both counters from zero, pending delta kept) applies to the WireGuard tracker only, through `stats.NewRestartingOnAnyDip` (`ee73b4f7`, RED A `b2fe914c`; `c740d9c4` adds the Detach, hand-over and interleaving tests). OpenVPN and L2TP keep the fork's per-direction rebase of `17dfdf5` (`stats.New()`); MTProto did too until it was removed on 2026-11-10. Measured on the real tracker: A, a WireGuard peer re-created without a mark, true traffic 500/300: the per-direction rebase reported 200/100, upstream's rule 500/300. B, an OpenVPN management socket reconnect, whose `resetVolatileState` drops open sessions without settling them into `closedTotals`: true traffic at most 53 MB / 6 MB, upstream's rule reported 10293 MB / 1030 MB (it re-bills the closed history), the per-direction rebase exactly 53 MB / 6 MB; RED B `4bb90af6` holds the OpenVPN tracker to that |
@@ -920,8 +920,8 @@ Upstream node heads resolved with `git ls-remote` rather than a fetch, because `
 `9ccd2638c7feb65e62c5350fba38b94809554b50`.
 - `v0.5.7` itself is tracked: its release commit only sets `controller.NodeVersion` to `0.5.7`, so it is waived
 `not-applicable`, and every change it contains is tracked commit by commit. The fork runs its own line,
-`NodeVersion` `0.6.23` in `controller/controller.go`, pinned by `controller/base_info_test.go`, and makes no
-upstream version claim.
+`NodeVersion` in `controller/controller.go`, pinned by `controller/base_info_test.go`, and makes no
+upstream version claim. It was `0.6.23` when this section was written and is `0.6.24` after the cliff pass below.
 - The gate is green today. The run on this commit reports `0 unported items across [node xray sing-box sing-quic]`.
 - The gate goes red on 2026-11-21, and that is measured, not predicted. `DRIFT_TODAY=2026-11-21 bash
 scripts/upstream_drift.sh` over all four components, with a live fetch, exits 1 with `16 unported items across
@@ -1589,3 +1589,104 @@ A red run on a pull request that did not touch upstream code means upstream move
 same workflow for the same event and ref cancels an older drift job that is still running, and the older build then
 does not run. A release stays a draft, with no assets and no image tag, until Publish Release has passed every gate on
 its tag; the Releasing section of `README.md` describes the steps.
+
+### State on 2026-11-10 (later): the 2026-11-21 cliff cleared
+
+The cliff recorded in [State on 2026-11-10](#state-on-2026-11-10-node-v057-and-the-waiver-cliff-on-2026-11-21) was
+cleared the same day. The run that proved it red was repeated after the work: `UPSTREAM_FETCH=1
+DRIFT_TODAY=2026-11-21 bash scripts/upstream_drift.sh` now exits 0 with `0 unported items across [node xray sing-box
+sing-quic]`, and the run with the real date still exits 0. Every one of the 16 items is accounted for below, and
+`git diff --quiet HEAD -- scripts/upstream_drift.sh` was clean before each verdict, so no run was taken on a modified
+checker.
+
+**The two node items are settled by code.**
+
+- `e03754dec4fc` (#64) is **ported**, together with `bd745b540bd5` (#118), which fixes the `SyncUser` path #64 adds,
+and the Xray WireGuard parts of `33ab5fb3` (#58). The port was possible because the Xray pin had already moved to
+`676eaf66f8f0`, which carries `345c76f` and therefore `proxy/wireguard` `Server.AddUser`/`RemoveUser`, so `go.mod` and
+`go.sum` are unchanged. Upstream's `removeBeforeAdd` optimisation is deliberately **not** taken: the fork's
+`stageAccountLocked` already returns `coreReplace` on any account change, so it revokes before adding in every case
+upstream does and in three more (a changed, added or removed pre-shared key, and changed allowed IPs). What **is**
+taken is #64's retry after a failed removal, adapted: Xray keys WireGuard users by public key while `RemoveUser`
+resolves by email, so a rotated key whose revoke failed would leave the old peer authorised for the life of the core.
+`addLeavesStaleWireguardPeer` holds the add back instead, and the email stays unsettled until the revoke succeeds.
+- `25a8d7405142` (#105) is **ported in part**, with the live-apply half refused; see
+[Ported in part: #105](#ported-in-part-105-routingservice-taken-live-apply-refused). The gate counts the sha as
+ported, so that section is the only record of what was refused and why.
+
+**A security hole the #64 port opened, found and closed in the same pass.** Putting WireGuard peers through the
+inbound `UserManager` routes a `*api.WireguardAccount` into `credentialClaim` (`syncUserLocked` calls `admitUser` for
+every inbound, and `isActiveInbound` returns the WireGuard account for a WireGuard inbound). `credentialClaim` had no
+WireGuard case, so it returned no claim and two peers sharing a public key were both admitted, where VLESS, VMess and
+Trojan would have had one refused and queued. That matters because Xray stores WireGuard users keyed by public key
+and `RemoveUser` resolves an email by scanning for an arbitrary match, so removing one of two colliding users can
+remove the peer the other is using. `credentialClaim` now claims the public key and `credentialConflictReason` names
+it. Allowed IPs are deliberately **not** claimed: they are routing, not an authentication credential, an overlapping
+prefix is legitimate, and a refused claim queues the user, so claiming them would take correct configurations offline
+to prevent a lesser fault. `backend/xray/credential_wireguard_test.go` pins all four behaviours.
+
+**The 14 third-party items are settled by decision, not by a pin move, because no legal pin move exists.**
+`git ls-remote --tags` shows `v1.13.21` (`628cb31ffa79`) is the newest `v1.13.x` release upstream, and it is exactly
+the pin, so there is no release-only-legal move inside the oldstable 1.13 line; the only move available is onto 1.14.
+
+Five of the seven sing-box commits became permanent `not-applicable` rows, each on a proof that the code cannot run in
+this build rather than on a statement about the production config:
+
+- `42cae14c` — `common/tls/apple_client_platform.go` and its Objective-C half do not exist at the pin, and the node
+builds `CGO_ENABLED=0` for linux.
+- `6a7f11fc` — the fix bounds `skipJSONString` in `sagernet/sing`; the pinned `sing v0.8.14` has no such function and
+filters comments with a state machine that does no slicing.
+- `474aa5b5` — the bbolt database is opened only under `experimental.cache_file.enabled`, which `backend/singbox`
+never sets.
+- `f90999708232` — `JudgeFlow`, `PreMatchResult`, `PreMatchBypass`, `tun.FlowVerdict` and `tun.Port` exist neither at
+the pin nor in the fork build; the 1.14 flow-verdict architecture postdates the pin.
+- `288411b0` — this row's **reason was wrong and was rewritten**. It cited interface-bound rules and DHCP DNS and
+omitted `protocol/direct/outbound.go`, which is the path that actually makes the unguarded call and is exactly what
+the node runs. The verdict survives on a different fact: `sing-tun v0.8.15` `NewNetworkUpdateMonitor` fails only under
+`runtime.GOOS == "android"`, so `InterfaceMonitor()` can never be nil on linux.
+
+Two sing-box commits stayed `pending`, with their reasons corrected from an impossibility claim to a configuration
+claim. `bea01fe8` and `18b03170` were both waived as "production runs only Hysteria2", but the build tags
+`with_quic,with_utls,with_clash_api,with_v2ray_api,http2legacy` exclude only `dns/transport/dhcp`,
+`protocol/tailscale` and `service/derp`: `protocol/http`, `protocol/mixed`, `protocol/socks`, `transport/v2rayhttp`
+and `transport/v2raygrpclite` are all in the shipped binary, `backend/singbox` passes any other inbound through
+untouched, and for `18b03170` the pre-fix code demonstrably still ships. Those are reachability arguments about the
+panel's config, not build-level impossibilities, so they are held rather than called `not-applicable`. Each names its
+own cheaper closure: refusing `http` and `mixed` inbounds, or refusing a v2ray `http` or `grpc` transport, would make
+them provably inapplicable without the 1.14 move.
+
+The five sing-box releases and both sing-quic releases stayed `pending` with dated reasons. The sing-quic pin is not
+independently movable: the fork's sing-box requires `sing-quic v0.6.5` only as a label and `replace`s it with the
+in-tree `third_party/sing-quic`, and requiring `v0.7.1` in a copy of `v1.13.21` fails to compile because MVS drags
+`sing` forward and `sing-tun v0.8.15` breaks. Of the five 1.14 releases **only `v1.14.1` keeps both components on real
+releases** — v1.14.0 wants `sing-quic v0.7.0-beta.4` and v1.14.2 to v1.14.4 want unreleased sing-quic commits — so
+v1.14.1 is named as the target. It cannot be taken today: the fork's socket-buffer work does not apply to the 0.7
+tree, sing-quic 0.7.0 deletes `congestion_bbr1` and `congestion_bbr2` and changes `NewBrutalSender`'s signature, and
+upstream 0.7.x sizes the UDP buffers itself at 8 MiB without the kernel-grant check the fork added at 16 MiB.
+Hysteria2 upload on Iranian consumer lines has to be re-measured before that rollout.
+
+**14 further expired rows were removed as satisfied, not as inconvenient.** Every row whose reason was the xray
+"breaking" project (`d7fa207` and the REALITY minimum-client changes) was checked against the current xray pin with
+the GitHub compare API: `14e8ecfa`, `1bdb488c`, `228f1e13`, `45cf2898`, `50231eaf`, `52a412d9`, `5ca6f4b7`,
+`7da5dae6`, `94ffd500`, `b26a91de`, `b4650360`, `b4f08981`, `b99c3e56` and `c5edc122` all report `behind` against
+`676eaf66f8f0`, meaning the pin already contains them. The pin move took the work those rows were deferring, so they
+waive nothing and are gone. The waiver file went from 128 rows to 111.
+
+#### A security item the gate structurally cannot see
+
+`GHSA-vvgj-x9jq-8cj9`, "quic-go: HTTP/3 QPACK Trailer Expansion Memory Exhaustion", medium, published 2026-06-03,
+affects `github.com/quic-go/quic-go` up to 0.59.0 and is fixed in 0.59.1. The node's sing-box builds against
+`github.com/sagernet/quic-go v0.59.0-sing-box-mod.4`, inside that range, and the pinned source still has the
+unbounded path: `http3/headers.go` `parseHeaders` takes a `sizeLimit` and accounts for it, but `parseTrailers` takes
+no limit and appends every field, and the `validateHeaderFieldNameAndValue` and `validateRegularHeaderField` helpers
+the fix adds are absent. The node's Hysteria2 service runs an `http3.Server`, whose request path decodes trailers.
+
+This was found by reading the advisory, the 0.59.1 fix and the pinned module's source. **It was not reproduced**, and
+no exploit was attempted against a live endpoint, so the reachability claim is a code reading rather than a
+measurement.
+
+The gate cannot raise it on its own: advisories are keyed to the module path `github.com/quic-go/quic-go`, while the
+build uses `github.com/sagernet/quic-go`, and no advisory is keyed to the sagernet path. `govulncheck` has the same
+blind spot. Moving to sing-box `v1.14.1` would carry the fix in, through quic-go 0.61, which is a further reason to
+prefer that release as the 1.14 target. Teaching the advisory query to follow a fork's upstream module path is a
+separate change and is not made here; it is recorded so it is not lost.

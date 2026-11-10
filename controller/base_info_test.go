@@ -77,7 +77,7 @@ func TestBaseInfoResponseWithoutDegradation(t *testing.T) {
 }
 
 func TestNodeVersionIsPinned(t *testing.T) {
-	if NodeVersion != "0.6.23" {
-		t.Fatalf("NodeVersion = %q, want %q", NodeVersion, "0.6.23")
+	if NodeVersion != "0.6.24" {
+		t.Fatalf("NodeVersion = %q, want %q", NodeVersion, "0.6.24")
 	}
 }
