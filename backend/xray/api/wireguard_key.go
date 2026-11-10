@@ -15,7 +15,7 @@ func WireguardKeyToHex(key string) (string, error) {
 
 	if len(key) == 64 {
 		if _, err := hex.DecodeString(key); err == nil {
-			return key, nil
+			return strings.ToLower(key), nil
 		}
 	}
 

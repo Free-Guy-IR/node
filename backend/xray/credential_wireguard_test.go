@@ -1,11 +1,15 @@
 package xray
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/xray/api"
+	"github.com/pasarguard/node/common"
 )
 
 const (
@@ -130,4 +134,78 @@ func accountEmails(accounts []api.Account) []string {
 		emails = append(emails, account.GetEmail())
 	}
 	return emails
+}
+
+func peerKeyEncodings(t *testing.T) (lower, upper, standardBase64 string) {
+	t.Helper()
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	return hex.EncodeToString(raw), strings.ToUpper(hex.EncodeToString(raw)), base64.StdEncoding.EncodeToString(raw)
+}
+
+func TestEveryEncodingOfOneWireguardKeyNormalisesToTheSamePublicKey(t *testing.T) {
+	lower, upper, b64 := peerKeyEncodings(t)
+
+	for _, encoding := range []struct{ name, key string }{
+		{"lowercase hex", lower},
+		{"uppercase hex", upper},
+		{"base64", b64},
+	} {
+		account, err := api.NewWireguardAccount(wireguardUserWithKey("peer."+encoding.name, encoding.key))
+		if err != nil {
+			t.Fatalf("%s: NewWireguardAccount: %v", encoding.name, err)
+		}
+		if account.PublicKey != lower {
+			t.Fatalf("%s produced public key %q, want the canonical %q: one key in two encodings claims two slots",
+				encoding.name, account.PublicKey, lower)
+		}
+	}
+}
+
+func TestOneWireguardKeyInTwoEncodingsIsNotAdmittedTwice(t *testing.T) {
+	lower, upper, _ := peerKeyEncodings(t)
+
+	first, err := api.NewWireguardAccount(wireguardUserWithKey("peer.lower", lower))
+	if err != nil {
+		t.Fatalf("lowercase hex: NewWireguardAccount: %v", err)
+	}
+	second, err := api.NewWireguardAccount(wireguardUserWithKey("peer.upper", upper))
+	if err != nil {
+		t.Fatalf("uppercase hex: NewWireguardAccount: %v", err)
+	}
+
+	inbound := wireguardInbound()
+	rejections := &backend.Rejections{}
+	admitted, leaving := inbound.admit([]api.Account{first, second}, nil, rejections)
+
+	if len(admitted) != 1 {
+		t.Fatalf("one key as lowercase and uppercase hex: %d peers admitted, want 1: %v",
+			len(admitted), accountEmails(admitted))
+	}
+	refused := "peer.upper"
+	if admitted[0].GetEmail() == "peer.upper" {
+		refused = "peer.lower"
+	}
+	if !rejections.Has(refused) {
+		t.Fatalf("peer %s submitted the same key in another encoding but was not rejected", refused)
+	}
+	if !slices.Contains(leaving, refused) {
+		t.Fatalf("rejected peer %s was not reported as leaving: %v", refused, leaving)
+	}
+	if _, waiting := inbound.waiting[refused]; !waiting {
+		t.Fatalf("rejected peer %s was not queued as waiting", refused)
+	}
+}
+
+func wireguardUserWithKey(email, publicKey string) *common.User {
+	return &common.User{
+		Email:    email,
+		Inbounds: []string{"wg"},
+		Proxies: &common.Proxy{Wireguard: &common.Wireguard{
+			PublicKey: publicKey,
+			PeerIps:   []string{"10.0.0.2/32"},
+		}},
+	}
 }
