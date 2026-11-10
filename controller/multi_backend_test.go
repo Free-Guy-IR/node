@@ -151,7 +151,7 @@ func TestQueueUserAllReachesEveryBackend(t *testing.T) {
 	extraPlain := &recordingBackend{}
 	c := controllerWithExtras(primary, common.BackendType_SING_BOX,
 		extraBackend{backendType: common.BackendType_L2TP, backend: extraQueued},
-		extraBackend{backendType: common.BackendType_MTPROTO, backend: extraPlain})
+		extraBackend{backendType: common.BackendType_OPEN_VPN, backend: extraPlain})
 
 	user := &common.User{Email: "a@b"}
 	if err := c.QueueUserAll(context.Background(), user); err != nil {
@@ -443,10 +443,10 @@ func TestAttachDetachCycleLeaksNoBackend(t *testing.T) {
 	const rounds = 25
 	for i := 0; i < rounds; i++ {
 		b := &recordingBackend{name: fmt.Sprintf("round-%d", i)}
-		if err := c.attachBuilt(common.BackendType_MTPROTO, b); err != nil {
+		if err := c.attachBuilt(common.BackendType_OPEN_VPN, b); err != nil {
 			t.Fatalf("round %d attach: %v", i, err)
 		}
-		if err := c.DetachBackend(common.BackendType_MTPROTO); err != nil {
+		if err := c.DetachBackend(common.BackendType_OPEN_VPN); err != nil {
 			t.Fatalf("round %d detach: %v", i, err)
 		}
 		if b.shutdowns != 1 {

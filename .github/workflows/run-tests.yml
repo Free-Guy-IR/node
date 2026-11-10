@@ -99,7 +99,10 @@ jobs:
           TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"
 
       - name: Run the controller and backend tests under the race detector
-        run: TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...
+        run: |
+          TEST_INTEGRATION=true CGO_ENABLED=1 SINGBOX_EXECUTABLE_PATH="$RUNNER_TEMP/sing-box" \
+            go test -race -timeout 20m -v -p 1 ./controller/...
+          TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./backend/...
 
       - name: Check Xray process status races
         run: go test -race ./backend/xray -run '^TestCoreStarted' -count=10 -timeout=120s
@@ -207,70 +210,6 @@ jobs:
         run: |
           "$(go env GOPATH)/bin/govulncheck" -format json ./... > "$RUNNER_TEMP/govulncheck.json"
           python3 scripts/govulncheck_gate.py .github/govulncheck-waivers.txt "$RUNNER_TEMP/govulncheck.json"
-
-  mtproto-fronting:
-    runs-on: ubuntu-latest
-    env:
-      GOTOOLCHAIN: auto
-
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.27.3"
-          check-latest: true
-
-      - name: Get project dependencies
-        run: make deps
-
-      - name: Run the MTProto domain-fronting leg
-        run: |
-          set -o pipefail
-          {
-            echo "## MTProto domain-fronting leg"
-            echo
-            echo "| attempt | result | seconds |"
-            echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          delay=15
-          for attempt in 1 2 3; do
-            log="$RUNNER_TEMP/mtproto-attempt-${attempt}.log"
-            start=$(date +%s)
-            status=0
-            make test-integration-mtproto 2>&1 | tee "$log" || status=$?
-            seconds=$(( $(date +%s) - start ))
-            if [ "$status" = 0 ] && grep -Eq '^--- PASS:[[:space:]]TestLiveSmoke_MTProto' "$log"; then
-              result=pass
-            elif [ "$status" = 0 ]; then
-              result="no test ran"
-            else
-              result="fail (exit ${status})"
-            fi
-            echo "| ${attempt} | ${result} | ${seconds} |" >> "$GITHUB_STEP_SUMMARY"
-            case "$result" in
-              pass)
-                echo "the fronting leg passed on attempt ${attempt} of 3"
-                echo "Passed on attempt ${attempt} of 3." >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-                ;;
-              "no test ran")
-                echo "::error title=MTProto fronting leg ran no test::make test-integration-mtproto passed without a PASS line for TestLiveSmoke_MTProto"
-                exit 1
-                ;;
-            esac
-            echo "::warning title=MTProto fronting attempt ${attempt} failed::${result} after ${seconds}s"
-            if [ "$attempt" != 3 ]; then
-              echo "waiting ${delay}s before attempt $((attempt + 1))"
-              sleep "$delay"
-              delay=$((delay * 3))
-            fi
-          done
-          echo "Failed all 3 attempts." >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=MTProto fronting leg failed::three attempts failed, which is beyond network flake; this blocks every image build and release"
-          exit 1
 
   workflow-policy:
     runs-on: ubuntu-latest

@@ -193,7 +193,7 @@ func ledgerController(t *testing.T, ledger *panelLedger) *Controller {
 
 var shareableTypes = []common.BackendType{
 	common.BackendType_WIREGUARD,
-	common.BackendType_MTPROTO,
+	common.BackendType_OPEN_VPN,
 	common.BackendType_L2TP,
 }
 
@@ -361,7 +361,7 @@ func runLifecycleChaos(t *testing.T, seed uint64) {
 	if err := panelStartsTheNode(c, ledger); err != nil {
 		errs.add(fmt.Errorf("final Start: %w", err))
 	}
-	panelAddsABackend(c, ledger, common.BackendType_MTPROTO)
+	panelAddsABackend(c, ledger, common.BackendType_OPEN_VPN)
 	panelAddsABackend(c, ledger, common.BackendType_L2TP)
 	close(stop)
 	writersDone.Wait()
@@ -498,7 +498,7 @@ func TestAUserSyncSentWhileAddBackendBuildsTheExtraReachesTheExtraToo(t *testing
 	addDone := make(chan struct{})
 	go func() {
 		defer close(addDone)
-		panelAddsABackend(c, ledger, common.BackendType_MTPROTO)
+		panelAddsABackend(c, ledger, common.BackendType_OPEN_VPN)
 	}()
 	select {
 	case <-building:

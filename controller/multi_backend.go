@@ -24,7 +24,6 @@ var multiInstanceBackends = map[common.BackendType]bool{
 	common.BackendType_WIREGUARD: true,
 	common.BackendType_SING_BOX:  true,
 	common.BackendType_OPEN_VPN:  true,
-	common.BackendType_MTPROTO:   true,
 	common.BackendType_L2TP:      true,
 }
 

@@ -8,17 +8,33 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/common"
 )
 
-func mtprotoStartUsers(tag string, n int) []*common.User {
+type statelessBackend struct {
+	backend.Backend
+}
+
+func (statelessBackend) Started() bool   { return true }
+func (statelessBackend) Version() string { return "stateless" }
+func (statelessBackend) Shutdown()       {}
+
+func (statelessBackend) SyncUser(context.Context, *common.User) error { return nil }
+
+func (statelessBackend) SyncUsers(context.Context, []*common.User) error { return nil }
+
+func (statelessBackend) UpdateUsers(context.Context, []*common.User) error { return nil }
+
+func snapshotStartUsers(tag string, n int) []*common.User {
 	users := make([]*common.User, n)
 	for i := range users {
 		name := fmt.Sprintf("snapshot-%d", i)
 		users[i] = &common.User{
 			Email:    name,
-			Proxies:  &common.Proxy{Mtproto: &common.MtprotoUser{Username: name, Secret: randomSecret()}},
+			Proxies:  &common.Proxy{Trojan: &common.Trojan{Password: randomSecret()}},
 			Inbounds: []string{tag},
 		}
 	}
@@ -35,11 +51,17 @@ func TestUserSyncDuringTheStartBuildMustNotBeAcknowledgedWithNoCoreToReceiveIt(t
 	c := newWatchdogController(t)
 
 	const tag = "build"
-	users := mtprotoStartUsers(tag, 2000)
+	users := snapshotStartUsers(tag, 2000)
+	c.mu.Lock()
+	c.newBackend = func(_ context.Context, b *common.Backend, _ int, _ int) (backend.Backend, error) {
+		time.Sleep(time.Duration(len(b.GetUsers())) * time.Microsecond)
+		return statelessBackend{}, nil
+	}
+	c.mu.Unlock()
 	data := func(port int) *common.Backend {
 		return &common.Backend{
-			Type:      common.BackendType_MTPROTO,
-			Config:    fmt.Sprintf(`{"instances":[{"tag":%q,"port":%d,"mode":"plain"}]}`, tag, port),
+			Type:      common.BackendType_XRAY,
+			Config:    fmt.Sprintf(`{"tag":%q,"port":%d}`, tag, port),
 			Users:     users,
 			KeepAlive: 60,
 		}
@@ -50,7 +72,7 @@ func TestUserSyncDuringTheStartBuildMustNotBeAcknowledgedWithNoCoreToReceiveIt(t
 
 	late := &common.User{
 		Email:    "changed-after-the-start-snapshot",
-		Proxies:  &common.Proxy{Mtproto: &common.MtprotoUser{Username: "changed-after-the-start-snapshot", Secret: randomSecret()}},
+		Proxies:  &common.Proxy{Trojan: &common.Trojan{Password: randomSecret()}},
 		Inbounds: []string{tag},
 	}
 

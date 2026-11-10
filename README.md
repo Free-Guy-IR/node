@@ -14,7 +14,7 @@
     </a>
 </p>
 
-> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/Free-Guy-IR/node), extended with sing-box (Hysteria2), OpenVPN, MTProto (Telegram proxy), and L2TP/IPsec backend support.
+> Note: This is the [Free-Guy-IR](https://github.com/Free-Guy-IR) fork of the original [PasarGuard node](https://github.com/Free-Guy-IR/node), extended with sing-box (Hysteria2), OpenVPN, and L2TP/IPsec backend support.
 
 # One-Click Installation (Recommended)
 The easiest way to install PasarGuard Node is using our automated installation script:
@@ -41,7 +41,7 @@ node-eu-1 edit-env
 
 You can run any other subcommand for that same node with the same prefix (`node-eu-1 ...`).
 
-> ⚠️ **Important:** Never reuse ports between nodes. The connection port and every core's inbound/instance ports (Xray, sing-box, OpenVPN, MTProto, ...) attached to each node must be completely unique per node.
+> ⚠️ **Important:** Never reuse ports between nodes. The connection port and every core's inbound/instance ports (Xray, sing-box, OpenVPN, ...) attached to each node must be completely unique per node.
 
 # Moving a Node to Another Panel
 
@@ -82,8 +82,8 @@ docker compose -f docker-compose.yml -f docker-compose.l2tp.yml up -d
 
 Releases are published by CI, never by hand. A release gets its binaries and its image only after every gate passes on
 the release commit: the test suite, the controller and backend tests under the race detector, the Xray patch tests
-under the race detector, the replay of the image build's Xray patch guards, the real-kernel WireGuard tests, the
-MTProto fronting leg, govulncheck, the workflow policy check and the upstream drift check.
+under the race detector, the replay of the image build's Xray patch guards, the real-kernel WireGuard tests,
+govulncheck, the workflow policy check and the upstream drift check.
 
 1. Tag the release commit and push the tag. Never move or reuse a tag that was already released.
 

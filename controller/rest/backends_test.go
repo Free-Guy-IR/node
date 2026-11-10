@@ -2,7 +2,6 @@ package rest
 
 import (
 	"encoding/json"
-	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -10,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pasarguard/node/common"
+	"github.com/pasarguard/node/config"
 )
 
 const (
@@ -40,11 +40,6 @@ func listenPortIsFree(port int) bool {
 	return true
 }
 
-func mtprotoTestConfig(t *testing.T, port int) string {
-	t.Helper()
-	return fmt.Sprintf(`{"instances":[{"tag":"rest-extra","port":%d,"mode":"plain"}]}`, port)
-}
-
 func singBoxTestConfig(t *testing.T, port int) string {
 	t.Helper()
 	cfg := map[string]any{
@@ -69,15 +64,10 @@ func singBoxTestConfig(t *testing.T, port int) string {
 
 func requireSingBoxBinary(t *testing.T) {
 	t.Helper()
-	if p := os.Getenv("SINGBOX_SMOKE_BINARY"); p != "" {
-		if _, err := os.Stat(p); err == nil {
-			return
-		}
+	path := config.GetEnv("SINGBOX_EXECUTABLE_PATH", "/usr/local/bin/sing-box")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("no sing-box binary at %s; set SINGBOX_EXECUTABLE_PATH=/path/to/sing-box to run it", path)
 	}
-	if _, err := os.Stat("/usr/local/bin/sing-box"); err == nil {
-		return
-	}
-	t.Skip("no sing-box binary found; set SINGBOX_SMOKE_BINARY=/path/to/sing-box to run it")
 }
 
 func listBackends(t *testing.T) []common.BackendType {
@@ -110,30 +100,10 @@ func TestREST_ListBackendsReportsThePrimaryAlone(t *testing.T) {
 	}
 }
 
-func TestREST_AddRemoveBackend(t *testing.T) {
-	addExtraBackend(t, common.BackendType_MTPROTO, mtprotoTestConfig(t, restFreeTCPPort(t)))
-
-	types := listBackends(t)
-	if len(types) != 2 {
-		t.Fatalf("expected the primary plus one extra backend, got %v", types)
-	}
-	if types[0] != common.BackendType_XRAY || types[1] != common.BackendType_MTPROTO {
-		t.Fatalf("expected [XRAY MTPROTO] with the primary first, got %v", types)
-	}
-
-	remove := &common.RemoveBackendRequest{Type: common.BackendType_MTPROTO}
-	if err := sharedTestCtx.createAuthenticatedRequest(http.MethodDelete, "/backend", remove, &common.Empty{}); err != nil {
-		t.Fatalf("DELETE /backend: %v", err)
-	}
-
-	types = listBackends(t)
-	if len(types) != 1 || types[0] != common.BackendType_XRAY {
-		t.Fatalf("removing the extra backend must leave the primary alone, got %v", types)
-	}
-}
-
 func TestREST_StatsStillWorkWithTwoBackends(t *testing.T) {
-	addExtraBackend(t, common.BackendType_MTPROTO, mtprotoTestConfig(t, restFreeTCPPort(t)))
+	requireSingBoxBinary(t)
+
+	addExtraBackend(t, common.BackendType_SING_BOX, singBoxTestConfig(t, restFreeTCPPort(t)))
 
 	stats := &common.StatResponse{}
 	if err := sharedTestCtx.createAuthenticatedRequest(http.MethodGet, "/stats?type=Outbounds&reset=false", nil, stats); err != nil {

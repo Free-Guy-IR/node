@@ -36,11 +36,11 @@ func kernelEphemeralPortRange(t *testing.T) (int, int) {
 	return first, last
 }
 
-func TestTheMTProtoTestPortIsNeverOneTheKernelHandsToOtherSockets(t *testing.T) {
+func TestTheBackendTestPortIsNeverOneTheKernelHandsToOtherSockets(t *testing.T) {
 	first, last := kernelEphemeralPortRange(t)
 	for range 50 {
 		if port := unusedPort(t); port >= first && port <= last {
-			t.Fatalf("unusedPort gave %d, inside the kernel ephemeral range %d-%d: whenever no listener holds it, the kernel can hand it to any other socket's connect or bind(0), so the next mtproto Start on it fails with address already in use",
+			t.Fatalf("unusedPort gave %d, inside the kernel ephemeral range %d-%d: whenever no listener holds it, the kernel can hand it to any other socket's connect or bind(0), so the next backend Start on it fails with address already in use",
 				port, first, last)
 		}
 	}

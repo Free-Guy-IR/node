@@ -38,16 +38,6 @@ for arg in "$@"; do
     exit 2
   fi
 done
-if [ -n "${MTP_PLAN:-}" ]; then
-  n=$(( $(cat "$STUB_DIR/mtp_count" 2>/dev/null || echo 0) + 1 ))
-  echo "$n" >"$STUB_DIR/mtp_count"
-  outcome=$(echo "$MTP_PLAN" | cut -d' ' -f"$n")
-  case "$outcome" in
-    pass) echo "=== RUN   TestLiveSmoke_MTProtoStartsAndDomainFronts"; echo "--- PASS: TestLiveSmoke_MTProtoStartsAndDomainFronts (3.10s)"; echo PASS; exit 0 ;;
-    none) echo "testing: warning: no tests to run"; echo PASS; exit 0 ;;
-    *) echo "--- FAIL: TestLiveSmoke_MTProtoStartsAndDomainFronts (30.00s)"; echo FAIL; exit 1 ;;
-  esac
-fi
 cat "$MAKE_OUT"
 exit "${MAKE_RC:-0}"
 SH
@@ -402,24 +392,6 @@ expect wg-otherskip log 'warning title=WireGuard integration test skipped::TestI
 expect wg-otherskip summary '2 passed, 0 failed, 1 skipped'
 run_step wg-required-list "$WF_TESTS" wireguard-integration "$WG_STEP" 1 MAKE_OUT="$F/wg_reqmissing.txt" MAKE_RC=0
 expect wg-required-list log 'TestIntegrationMTUWithoutKeyKeepsTheKernelDefaultAndAHostSetValue: did not run'
-
-MT_STEP="Run the MTProto domain-fronting leg"
-run_step mt-pass1 "$WF_TESTS" mtproto-fronting "$MT_STEP" 0 MTP_PLAN="pass"
-expect mt-pass1 summary '^\| 1 \| pass \|'
-expect mt-pass1 summary 'Passed on attempt 1 of 3'
-reject mt-pass1 stub 'sleep'
-run_step mt-ffp "$WF_TESTS" mtproto-fronting "$MT_STEP" 0 MTP_PLAN="fail fail pass"
-expect mt-ffp summary '^\| 2 \| fail \(exit 1\) \|'
-expect mt-ffp summary 'Passed on attempt 3 of 3'
-expect mt-ffp stub '^sleep 15$'
-expect mt-ffp stub '^sleep 45$'
-run_step mt-fff "$WF_TESTS" mtproto-fronting "$MT_STEP" 1 MTP_PLAN="fail fail fail"
-expect mt-fff summary 'Failed all 3 attempts'
-expect mt-fff log 'MTProto fronting leg failed'
-reject mt-fff stub 'sleep 135'
-run_step mt-none "$WF_TESTS" mtproto-fronting "$MT_STEP" 1 MTP_PLAN="none"
-expect mt-none log 'ran no test'
-reject mt-none stub 'sleep'
 
 GL='github.com/pasarguard/node/backend\ngithub.com/pasarguard/node/backend/xray\ngithub.com/pasarguard/node/backend/wireguard\ngithub.com/pasarguard/node/cmd/node\ngithub.com/pasarguard/node/common\ngithub.com/pasarguard/node/controller\ngithub.com/pasarguard/node/controller/rpc\ngithub.com/pasarguard/node/pkg/stats\n'
 guard_caught=0

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -169,8 +168,6 @@ func randomToken(n int) string {
 }
 
 func panelUser(id int, tags []string) *common.User {
-	secret := make([]byte, 16)
-	_, _ = rand.Read(secret)
 	wgKey := make([]byte, 32)
 	_, _ = rand.Read(wgKey)
 	name := strconv.Itoa(id)
@@ -185,7 +182,6 @@ func panelUser(id int, tags []string) *common.User {
 			Hysteria:    &common.Hysteria{Auth: randomToken(32)},
 			Hysteria2:   &common.Hysteria2{Password: randomToken(32)},
 			OpenVpn:     &common.OpenVpnUser{Username: name, Password: randomToken(32), MaxConcurrentConnections: 3},
-			Mtproto:     &common.MtprotoUser{Username: name, Secret: hex.EncodeToString(secret)},
 			Tuic:        &common.Tuic{Uuid: uuid.NewString(), Password: randomToken(32)},
 			L2Tp:        &common.L2TpUser{Username: name, Password: randomToken(24)},
 		},
@@ -268,8 +264,8 @@ func TestChunkedSyncOfTheLargestPanelPassesTheApiKeyCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(withKey(key.String()), 60*time.Second)
 	defer cancel()
 	if _, err := client.Start(ctx, &common.Backend{
-		Type:      common.BackendType_MTPROTO,
-		Config:    fmt.Sprintf(`{"instances":[{"tag":"preauth","port":%d,"mode":"plain"}]}`, port),
+		Type:      common.BackendType_XRAY,
+		Config:    fmt.Sprintf(`{"log":{"loglevel":"warning"},"inbounds":[{"tag":"preauth","listen":"127.0.0.1","port":%d,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"none"}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}`, port),
 		KeepAlive: 60,
 	}); err != nil {
 		t.Fatalf("Start: %v", err)

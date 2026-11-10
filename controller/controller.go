@@ -11,7 +11,6 @@ import (
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/l2tp"
-	"github.com/pasarguard/node/backend/mtproto"
 	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
@@ -22,11 +21,11 @@ import (
 	"github.com/pasarguard/node/pkg/sysstats"
 )
 
-const NodeVersion = "0.6.22"
+const NodeVersion = "0.6.23"
 
 const keepAliveGrace = 5 * time.Second
 
-var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "mtproto", "l2tp"}
+var supportedBackends = []string{"xray", "wireguard", "sing_box", "open_vpn", "l2tp"}
 
 type Service interface {
 	Disconnect()
@@ -207,13 +206,6 @@ func (c *Controller) buildBackend(ctx context.Context, b *common.Backend, apiPor
 			return nil, err
 		}
 		return openvpn.New(ctx, config, b.GetUsers(), c.cfg)
-
-	case common.BackendType_MTPROTO:
-		config, err := mtproto.NewConfig(b.GetConfig())
-		if err != nil {
-			return nil, err
-		}
-		return mtproto.New(ctx, config, b.GetUsers(), c.cfg)
 
 	case common.BackendType_L2TP:
 		if err := l2tp.CheckDeps(); err != nil {

@@ -72,13 +72,17 @@ func listenPortIsFree(port int) bool {
 	return true
 }
 
+func singleInboundXrayConfig(tag string, port int) string {
+	return fmt.Sprintf(`{"log":{"loglevel":"warning"},"inbounds":[{"tag":%q,"listen":"127.0.0.1","port":%d,"protocol":"trojan","settings":{"clients":[]},"streamSettings":{"network":"tcp","security":"none"}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}`, tag, port)
+}
+
 func TestSyncUserStreamRefusesAMessageThatArrivesAfterTheCoreIsGone(t *testing.T) {
 	s := New(config.NewTestConfig(t.TempDir(), uuid.New()))
 	t.Cleanup(s.Disconnect)
 
 	data := &common.Backend{
-		Type:   common.BackendType_MTPROTO,
-		Config: fmt.Sprintf(`{"instances":[{"tag":"stream","port":%d,"mode":"plain"}]}`, unusedListenPort(t)),
+		Type:   common.BackendType_XRAY,
+		Config: singleInboundXrayConfig("stream", unusedListenPort(t)),
 	}
 	if err := s.StartBackend(context.Background(), data); err != nil {
 		t.Fatalf("StartBackend: %v", err)

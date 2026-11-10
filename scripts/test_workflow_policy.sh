@@ -140,8 +140,6 @@ must_refuse "release image built without tests" "$WF_RELEASE" \
   $'  image:\n    needs: [tests, drift]\n' $'  image:\n    needs: [resolve]\n'
 must_refuse "manual image built without tests" "$WF_MANUAL" \
   $'    needs: [tags, tests, drift]\n' $'    needs: [tags]\n'
-must_refuse "MTProto fronting leg allowed to fail" run-tests.yml \
-  $'  mtproto-fronting:\n    runs-on: ubuntu-latest\n' $'  mtproto-fronting:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n'
 must_refuse "drift check allowed to fail" upstream-drift.yml \
   $'        id: drift\n' $'        id: drift\n        continue-on-error: true\n'
 must_refuse "workflow policy job switched off by a condition" run-tests.yml \
@@ -169,11 +167,15 @@ must_refuse "test suite narrowed to one package tree" run-tests.yml \
 must_refuse "regular test suite replaced by a no-op" run-tests.yml \
   $'          TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"\n' $'          echo skipped\n'
 must_refuse "race detector step removed" run-tests.yml \
-  $'      - name: Run the controller and backend tests under the race detector\n        run: TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...\n' ''
-must_refuse "race detector dropped from the controller and backend run" run-tests.yml \
-  $'go test -race -timeout 20m -v -p 1 ./controller/... ./backend/...\n' $'go test -timeout 20m -v -p 1 ./controller/... ./backend/...\n'
+  $'      - name: Run the controller and backend tests under the race detector\n        run: |\n          TEST_INTEGRATION=true CGO_ENABLED=1 SINGBOX_EXECUTABLE_PATH="$RUNNER_TEMP/sing-box" \\\n            go test -race -timeout 20m -v -p 1 ./controller/...\n          TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./backend/...\n' ''
+must_refuse "race detector dropped from the controller run" run-tests.yml \
+  $'            go test -race -timeout 20m -v -p 1 ./controller/...\n' $'            go test -timeout 20m -v -p 1 ./controller/...\n'
+must_refuse "race detector dropped from the backend run" run-tests.yml \
+  $'          TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./backend/...\n' $'          TEST_INTEGRATION=true CGO_ENABLED=1 go test -timeout 20m -v -p 1 ./backend/...\n'
 must_refuse "backend dropped from the race run" run-tests.yml \
-  $' ./controller/... ./backend/...\n' $' ./controller/...\n'
+  $'          TEST_INTEGRATION=true CGO_ENABLED=1 go test -race -timeout 20m -v -p 1 ./backend/...\n' ''
+must_refuse "sing-box binary dropped from the controller race run" run-tests.yml \
+  $' SINGBOX_EXECUTABLE_PATH="$RUNNER_TEMP/sing-box" \\\n' $' \\\n'
 must_refuse "Xray patch tests run without the race detector" run-tests.yml \
   $'          CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches\n' $'          make test_xray_patches\n'
 must_refuse "Xray patch guard replay removed" run-tests.yml \

@@ -6,8 +6,8 @@ upstream_url=${UPSTREAM_URL:-https://github.com/PasarGuard/node.git}
 upstream_slug=${UPSTREAM_SLUG:-PasarGuard/node}
 target=${DRIFT_TARGET:-HEAD}
 fetch=${UPSTREAM_FETCH:-1}
-components=${DRIFT_COMPONENTS:-node xray sing-box sing-quic mtg}
-all_components='node xray sing-box sing-quic mtg'
+components=${DRIFT_COMPONENTS:-node xray sing-box sing-quic}
+all_components='node xray sing-box sing-quic'
 api_url=${GITHUB_API_URL:-https://api.github.com}
 max_api_pages=${DRIFT_MAX_API_PAGES:-50}
 categories='rejected|superseded|pending|not-applicable|allowed-merge'
@@ -1225,21 +1225,6 @@ if enabled sing-quic; then
   [ -n "$singquic_version" ] || die "the sing-box fork go.mod does not require github.com/sagernet/sing-quic"
   check_thirdparty sing-quic SagerNet/sing-quic github.com/sagernet/sing-quic main \
     "$(module_rev "$singquic_version")" "sing-box fork go.mod requires $singquic_version" "" ""
-fi
-
-if enabled mtg; then
-  node_gomod=$(git show "$target_sha:go.mod")
-  mtg_version=$(printf '%s\n' "$node_gomod" | gomod_version github.com/9seconds/mtg/v2)
-  [ -n "$mtg_version" ] || die "go.mod does not require github.com/9seconds/mtg/v2"
-  mtg_replace=$(printf '%s\n' "$node_gomod" | gomod_replace github.com/9seconds/mtg/v2)
-  mtg_fork_rev=""
-  mtg_fork_url=""
-  if [ -n "$mtg_replace" ]; then
-    mtg_fork_url=$(module_git_url "${mtg_replace%% *}")
-    mtg_fork_rev=$(module_rev "${mtg_replace#* }")
-  fi
-  check_thirdparty mtg 9seconds/mtg github.com/9seconds/mtg/v2 master \
-    "$(module_rev "$mtg_version")" "go.mod requires $mtg_version" "$mtg_fork_rev" "$mtg_fork_url"
 fi
 
 if [ "$components" = "$all_components" ]; then

@@ -56,6 +56,32 @@ func (g *gatedBackend) Shutdown() {
 	g.started.Store(false)
 }
 
+type listeningBackend struct {
+	*gatedBackend
+	listener  net.Listener
+	closeOnce sync.Once
+}
+
+func newListeningBackend(t *testing.T, port int) *listeningBackend {
+	t.Helper()
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("the test backend could not bind 127.0.0.1:%d: %v", port, err)
+	}
+	b := &listeningBackend{gatedBackend: newGatedBackend(nil), listener: listener}
+	t.Cleanup(b.closeListener)
+	return b
+}
+
+func (b *listeningBackend) closeListener() {
+	b.closeOnce.Do(func() { _ = b.listener.Close() })
+}
+
+func (b *listeningBackend) Shutdown() {
+	b.closeListener()
+	b.gatedBackend.Shutdown()
+}
+
 const (
 	firstTestPort = 20000
 	testPortSpan  = 10000
@@ -142,11 +168,15 @@ func TestLateKeepAliveWatchdogMustNotTearDownACoreAConcurrentStartCreated(t *tes
 
 	old := newGatedBackend(nil)
 	slowExtra := newGatedBackend(make(chan struct{}))
+	freshPort := unusedPort(t)
 
 	c.mu.Lock()
 	c.backend = old
 	c.primaryType = common.BackendType_XRAY
 	c.extras = []extraBackend{{backendType: common.BackendType_WIREGUARD, backend: slowExtra}}
+	c.newBackend = func(context.Context, *common.Backend, int, int) (backend.Backend, error) {
+		return newListeningBackend(t, freshPort), nil
+	}
 	c.mu.Unlock()
 
 	c.Connect(panelIP, 1)
@@ -158,10 +188,8 @@ func TestLateKeepAliveWatchdogMustNotTearDownACoreAConcurrentStartCreated(t *tes
 		t.Fatal("the keep-alive watchdog never fired")
 	}
 
-	freshPort := unusedPort(t)
 	data := &common.Backend{
-		Type:      common.BackendType_MTPROTO,
-		Config:    fmt.Sprintf(`{"instances":[{"tag":"watchdog","port":%d,"mode":"plain"}]}`, freshPort),
+		Type:      common.BackendType_XRAY,
 		Users:     []*common.User{},
 		KeepAlive: 60,
 	}

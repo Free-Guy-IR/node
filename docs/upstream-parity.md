@@ -1,14 +1,14 @@
 # Upstream parity
 
-This fork tracks [PasarGuard/node](https://github.com/PasarGuard/node), and the node image builds four third-party
-upstreams: Xray-core, sing-box, sing-quic and mtg. This page records which upstream changes the fork has taken, which it
-has refused and why, and which upstream work is still pending. The daily drift check (`scripts/upstream_drift.sh`, run
+This fork tracks [PasarGuard/node](https://github.com/PasarGuard/node), and the node image builds three third-party
+upstreams: Xray-core, sing-box and sing-quic. It built mtg too until the MTProto backend was removed on 2026-11-10.
+This page records which upstream changes the fork has taken, which it has refused and why, and which upstream work is still pending. The daily drift check (`scripts/upstream_drift.sh`, run
 by `.github/workflows/upstream-drift.yml`) keeps it honest. It fails when an item is neither ported nor waived with a
 reason. An item is any of these:
 
 - a commit on any PasarGuard/node branch or tag;
-- a published security advisory of any of the five repositories;
-- a security-looking commit on any active branch of the four third-party upstreams;
+- a published security advisory of any of the four repositories;
+- a security-looking commit on any active branch of the three third-party upstreams;
 - a third-party release published after our pin.
 
 State as of 2026-09-24, release 0.6.21. The PasarGuard/node section was re-checked on 2026-10-07 (see
@@ -55,7 +55,7 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `bd745b540bd52e0300718bb294fd9f06b55f96e1` | `SyncUser` for Xray WireGuard accounts (#118) | not applicable, waived, until #64 (`e03754de`) is ported: it fixes code that #64 adds |
 | `d30948378d7831827f56f174333b3f254a228d45` | refresh keep-alive on every authenticated call (#115) | released in v0.5.5; ported on 2026-11-03 by `c2e15f29`, which carries its `Upstream:` line |
 | `1549c96621837b3fd7391697adc09b2c6278fac8` | a core start outlives the Start request (#116) | released in v0.5.5; ported on 2026-11-03 by `58a47bd8` (RED `d4c5c83c`), which carries its `Upstream:` line, with `7788ee80`, which pins `AddBackend` to its request's context, and `cae06171`, an abandoned Start racing a second Start and a Disconnect. The `StartOrAttach` attach half does not apply |
-| `8ad52fed26401566dea3e7fd99295ccdcb4fb506` | WireGuard canonical keys, IPv6 `NODE_HOST`, counter resets (#112) | released in v0.5.5; ported on 2026-11-03 by `74e9aaa4` (keys and `NODE_HOST`, RED `9575025f`) and `ee73b4f7` (the counter rule), which carry its `Upstream:` line; `3515bf38` pins the counter resets the fork already handled. The counter rule is ported by design as a hybrid: upstream's rule (an unmarked dip in either direction restarts both counters from zero, pending delta kept) applies to the WireGuard tracker only, through `stats.NewRestartingOnAnyDip` (`ee73b4f7`, RED A `b2fe914c`; `c740d9c4` adds the Detach, hand-over and interleaving tests). OpenVPN, L2TP and MTProto keep the fork's per-direction rebase of `17dfdf5` (`stats.New()`). Measured on the real tracker: A, a WireGuard peer re-created without a mark, true traffic 500/300: the per-direction rebase reported 200/100, upstream's rule 500/300. B, an OpenVPN management socket reconnect, whose `resetVolatileState` drops open sessions without settling them into `closedTotals`: true traffic at most 53 MB / 6 MB, upstream's rule reported 10293 MB / 1030 MB (it re-bills the closed history), the per-direction rebase exactly 53 MB / 6 MB; RED B `4bb90af6` holds the OpenVPN tracker to that |
+| `8ad52fed26401566dea3e7fd99295ccdcb4fb506` | WireGuard canonical keys, IPv6 `NODE_HOST`, counter resets (#112) | released in v0.5.5; ported on 2026-11-03 by `74e9aaa4` (keys and `NODE_HOST`, RED `9575025f`) and `ee73b4f7` (the counter rule), which carry its `Upstream:` line; `3515bf38` pins the counter resets the fork already handled. The counter rule is ported by design as a hybrid: upstream's rule (an unmarked dip in either direction restarts both counters from zero, pending delta kept) applies to the WireGuard tracker only, through `stats.NewRestartingOnAnyDip` (`ee73b4f7`, RED A `b2fe914c`; `c740d9c4` adds the Detach, hand-over and interleaving tests). OpenVPN and L2TP keep the fork's per-direction rebase of `17dfdf5` (`stats.New()`); MTProto did too until it was removed on 2026-11-10. Measured on the real tracker: A, a WireGuard peer re-created without a mark, true traffic 500/300: the per-direction rebase reported 200/100, upstream's rule 500/300. B, an OpenVPN management socket reconnect, whose `resetVolatileState` drops open sessions without settling them into `closedTotals`: true traffic at most 53 MB / 6 MB, upstream's rule reported 10293 MB / 1030 MB (it re-bills the closed history), the per-direction rebase exactly 53 MB / 6 MB; RED B `4bb90af6` holds the OpenVPN tracker to that |
 | `4b0bc4f6940cfb8c6ac3bf339f52f98b661df381` | ci: docker/login-action 4.6.0 to 4.7.0 (#119) | released in v0.5.5; ported on 2026-11-03 by `3f9afdfb`, which carries its `Upstream:` line |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
@@ -223,9 +223,11 @@ Of the 44 upstream tags on 2026-11-02, the 42 from `v0.0.1` to `v0.5.4` are in t
 are not merged; their commits are ported or waived one by one.
 
 PR #61, "add MTProto proxy backend via telemt", is open and not merged. It adds `MTPROTO = 2` to `BackendType` and a
-telemt-based backend. The fork already ships its own MTProto backend on its mtg fork as `MTPROTO = 4`
-(`backend/mtproto`): multi-secret, live `UpdateSecrets`, and plain mode. Porting #61 would collide on the enum value and
-replace a working backend, so it is rejected. Revisit it if upstream merges it.
+telemt-based backend. The fork ran its own mtg-based MTProto backend as `MTPROTO = 4` until 2026-11-10, when the owner
+had the feature removed; `MTPROTO = 4` and `Proxy mtproto = 9` are now `reserved` in `common/service.proto` so no later
+field reuses them and a node on the previous image stays wire-compatible. The collision that blocks #61 is therefore no
+longer a competing backend but the numbers themselves: upstream's `MTPROTO = 2` is the fork's `SING_BOX = 2` and
+upstream's `Proxy mtproto = 8` is the fork's `open_vpn = 8`. It stays rejected. Revisit it if upstream merges it.
 
 Open upstream pull requests whose heads live on contributors' forks are not branches of PasarGuard/node, so the check
 does not see them. On 2026-09-24 they were:
@@ -243,7 +245,7 @@ until they are ported or waived.
 
 ## Third-party upstreams
 
-The node image also builds four third-party upstreams. U6 (2026-09-24) found two HIGH Xray fixes that had shipped
+The node image also builds three third-party upstreams. U6 (2026-09-24) found two HIGH Xray fixes that had shipped
 upstream months after our pin, and nothing had noticed them. The drift check therefore watches these upstreams too.
 
 ### Pins
@@ -255,18 +257,19 @@ The script reads every pin from the checked commit, never from a hardcoded value
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
 | `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `dbd00be874a0` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
-| `mtg` | 9seconds/mtg | the node `go.mod` `require` of `github.com/9seconds/mtg/v2` (a pseudo-version commit); the `replace` commit on Free-Guy-IR/mtg must contain it | `d095108334de` (fork `7d0f004a01dd`) | `master` |
 
-Three rules keep the pins honest:
+Retired on 2026-11-10: `mtg` (9seconds/mtg) was read from the node `go.mod` `require` of
+`github.com/9seconds/mtg/v2`. The MTProto backend was removed that day, `go mod tidy` dropped the `require` and the
+`replace` of Free-Guy-IR/mtg with it, and `mtg` was removed from the drift check's components, so the node no longer
+links or pins mtg.
+
+Two rules keep the pins honest:
 
 - **sing-box.** The fork is a squashed import, so reachability cannot tell which upstream release it is based on.
   `SINGBOX_VERSION` must always name the upstream release the fork's tree is based on.
 - **sing-quic.** The sing-box fork `replace`s sing-quic with its `third_party` copy, which makes the `require` line
   inert, so nothing else keeps it honest. When the vendored copy is upgraded, the `require` line must be bumped to the
   same version.
-- **mtg.** The upstream commits that the fork has merged are excluded as well. The check refuses to run if the fork
-  commit does not contain the required upstream commit.
-
 ### Rules
 
 For each component the script fetches every upstream branch and tag. It fetches commit objects only
@@ -365,7 +368,7 @@ Why the rules look like this:
     awk of Ubuntu 22.04) reads one as plain text and would refuse every digest-pinned builder. A test runs the check
     under an awk that rejects any program with an interval.
   It then counts only for the xray component. A header in a patch that nothing applies, or one that names a node,
-  sing-box, sing-quic or mtg commit, ports nothing; those components are ported by commit trailers.
+  sing-box or sing-quic commit, ports nothing; those components are ported by commit trailers.
 - **Carried in 0.6.21.** The Xray patch files and commits of 0.6.21 carry `Upstream:` lines for:
   - `e5a9fb752e0dcc127dd1740316c853571c16052f` and `8f15190c230fe6975c9b18e31316c6bc494f3863`, the QUIC sniffer;
   - `711aea4e34b0a00073d2fea6577f28a5d7c9b5eb`, trusted X-Forwarded-For;
@@ -719,7 +722,10 @@ The same run found the new mtg release `v2.3.0`, which is recorded in its own co
 
 ### mtg v2.3.0 commits in the pin
 
-The node takes mtg through the `replace` of `github.com/9seconds/mtg/v2` to Free-Guy-IR/mtg main
+Historical, as of 2026-11-03. The MTProto backend and the mtg dependency were removed on 2026-11-10; the paths under
+`backend/mtproto` named below no longer exist and the node no longer links or pins mtg.
+
+The node took mtg through the `replace` of `github.com/9seconds/mtg/v2` to Free-Guy-IR/mtg main
 `1563871b36dd518970490c8d018bdd2325d75e31`. `950d39a9` moved the pin to `7f8c04762e3b` (upstream release `v2.3.0`
 merged with the fork's fixes); `1563871b36dd` is its one child on Free-Guy-IR/mtg main, which rejects a connection whose
 remote address has no TCP IP instead of panicking. Every upstream
@@ -1267,7 +1273,7 @@ and `TestConcurrentRuleWritersLoseNoUpdateWhileRoutesArePicked`.
 
 ## The drift check
 
-`scripts/upstream_drift.sh` runs five sections: `node`, `xray`, `sing-box`, `sing-quic` and `mtg`. The node section
+`scripts/upstream_drift.sh` runs four sections: `node`, `xray`, `sing-box` and `sing-quic`. The node section
 fetches every PasarGuard/node branch and tag, pruning deleted ones, into `refs/upstream-drift/node/heads/*` and
 `refs/upstream-drift/node/tags/*`. It then lists every non-merge upstream commit that is reachable from any of them and
 not from the checked commit. The label on each line names the branches that contain the commit, or its tags when no
@@ -1434,8 +1440,8 @@ same read-only token, so the check needs no secret.
 
 `upstream-drift.yml` and `run-tests.yml` are also reusable workflows (`workflow_call`). `run-tests.yml` holds the test
 suite, the controller and backend tests under the race detector, the Xray patch tests under the race detector, the
-replay of the image build's Xray patch guards (`make test_xray_guards`), the real-kernel WireGuard tests, the MTProto
-fronting leg, govulncheck and the workflow policy check. Every
+replay of the image build's Xray patch guards (`make test_xray_guards`), the real-kernel WireGuard tests,
+govulncheck and the workflow policy check. Every
 workflow that publishes something calls both of them first, on the same commit, and its publishing jobs `needs:` both:
 
 | workflow | trigger | gated jobs | what it publishes |
