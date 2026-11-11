@@ -90,6 +90,17 @@ v1.8.0 in binary mode reports GO-2026-6859 in it (found in net/http@go1.26.10, f
 uses the same `golang:1.27.4-alpine` index as `Dockerfile`: the probe builds it with go1.27.4, and govulncheck
 reports no GO-2026-6859 there (run 43008794147 lists only GO-2026-5932, the unmaintained x/crypto/openpgp, which
 `go list -deps ./cmd/node` does not reach and the source-mode gate reports as module-level only).
+On 2026-11-11 `scripts/toolchain_floor.sh` raised its floor to Go 1.27.4 and stopped floor-checking the `go.mod` go
+line, which stays at upstream's language minimum, `go 1.27.3`. A `toolchain` line, when `go.mod` has one, is still
+floor-checked. The guard now also refuses a golang builder stage whose Go version is below the higher of the go line
+and the `toolchain` line. It reads the files whose names start with `Dockerfile` or end in `.Dockerfile`, in any
+letter case: in a git work tree the tracked files and the untracked files git does not ignore, skipping nested
+repositories, and elsewhere every such file under the root outside `.git`, symlinks included. It joins instructions
+with the continuation, comment, blank-line and byte-order-mark rules of the BuildKit v0.25.1 Dockerfile parser, and it
+still reads every physical line that starts with `FROM`, as the old guard did. A golang image from any registry or
+namespace counts, a golang image without a tag is refused, and so is an escape or syntax parser directive in any of
+these files. Run on `d2fb3d4c`, it reports the `Dockerfile.wireguard` builder twice: below the floor 1.27.4, and below
+the go line 1.27.3. The guard it replaces passed that tree with 13 pins checked.
 
 Notes on the ported commits:
 

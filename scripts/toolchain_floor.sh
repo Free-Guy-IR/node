@@ -3,7 +3,7 @@ set -eu
 set -o pipefail
 export LC_ALL=C
 
-go_floor=1.26.10
+go_floor=1.27.4
 xnet_floor=0.60.0
 
 if [ "$#" -gt 0 ]; then
@@ -14,9 +14,11 @@ fi
 cd "$root"
 
 release_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+go_line_re='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 module_release_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
 digest_re='@sha256:[0-9a-f]{64}$'
-golang_image_re='^(docker\.io/)?(library/)?golang:([^@]+)@'
+golang_name_re='^([^/@]+/)*golang([:@]|$)'
+golang_image_re='^([^/@]+/)*golang:([^@/]+)@'
 
 checked=0
 problems=0
@@ -64,18 +66,33 @@ require_xnet() {
   fi
 }
 
+module_min=
+module_line=
 if [ ! -f go.mod ]; then
   refuse "go.mod is missing"
 else
   toolchain=$(awk '$1 == "toolchain" { print $2 }' go.mod)
-  goline=$(awk '$1 == "go" && NF == 2 { print $2 }' go.mod)
+  goline=$(awk '{ sub(/\/\/.*/, "") } $1 == "go" { $1 = ""; sub(/^ +/, ""); print }' go.mod)
+  if [ "$(lines "$goline")" -gt 1 ]; then
+    refuse "go.mod has more than one go line"
+  elif [ -n "$goline" ]; then
+    if [[ $goline =~ $go_line_re ]]; then
+      module_min=$goline
+      module_line="go line"
+    else
+      refuse "go.mod go line names Go '$goline', which is not a Go version (X.Y or X.Y.Z) the golang images can be compared against"
+    fi
+  fi
   if [ "$(lines "$toolchain")" -gt 1 ]; then
     refuse "go.mod has more than one toolchain line"
   elif [ -n "$toolchain" ]; then
     require_go "go.mod toolchain" "${toolchain#go}"
-  elif [ -n "$goline" ]; then
-    require_go "go.mod go line (no toolchain line)" "$goline"
-  else
+    if [[ ${toolchain#go} =~ $release_re ]] && { [ -z "$module_min" ] || at_least "${toolchain#go}" "$module_min"; }; then
+      module_min=${toolchain#go}
+      module_line="toolchain line"
+    fi
+  fi
+  if [ -z "$goline" ] && [ -z "$toolchain" ]; then
     refuse "go.mod has neither a toolchain line nor a go line"
   fi
   xnet=$(awk '
@@ -98,7 +115,6 @@ fi
 
 shopt -s nullglob
 workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
-dockerfiles=(Dockerfile Dockerfile.*)
 glob_patches=(patches/xray-*.patch)
 shopt -u nullglob
 
@@ -121,20 +137,65 @@ $versions
 EOF
 done
 
+unicode_space='[ \t\v\f\r]|\302\205|\302\240|\341\232\200|\342\200\200|\342\200\201|\342\200\202|\342\200\203|\342\200\204|\342\200\205|\342\200\206|\342\200\207|\342\200\210|\342\200\211|\342\200\212|\342\200\250|\342\200\251|\342\200\257|\342\201\237|\343\200\200'
+
+has_parser_directive() {
+  awk -v ws="$unicode_space" '
+    NR == 1 { sub(/^\357\273\277/, "") }
+    { line = $0; sub("^(" ws ")+", "", line) }
+    tolower(line) ~ /^#[[:space:]]*(escape|syntax)[[:space:]]*=/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' <"$1"
+}
+
+from_images() {
+  awk -v ws="$unicode_space" '
+    function strip(s) { sub("^(" ws ")+", "", s); sub("(" ws ")+$", "", s); return s }
+    function continues(s) { return s ~ /[^\\]\\[ \t]*$/ || s ~ /^\\[ \t]*$/ }
+    function unwrap(s) { sub(/\\[ \t]*$/, "", s); return s }
+    function emit(start, text,   n, f, i) {
+      n = split(strip(text), f, "[ \t\v\f\r]+")
+      if (n < 2 || toupper(f[1]) != "FROM") return
+      for (i = 2; i <= n; i++) if (f[i] !~ /^--/) {
+        if (!((start, f[i]) in seen)) { seen[start, f[i]] = 1; print f[i] }
+        return
+      }
+    }
+    NR == 1 { sub(/^\357\273\277/, "") }
+    { sub(/\r+$/, ""); emit(NR, $0); line = $0; sub("^(" ws ")+", "", line) }
+    !cont {
+      if (line !~ /^#/ && continues(line)) { start = NR; buffer = unwrap(line); cont = 1 }
+      next
+    }
+    line ~ /^#/ || line == "" { next }
+    continues($0) { buffer = buffer unwrap($0); next }
+    { emit(start, buffer $0); buffer = ""; cont = 0 }
+    END { if (cont) emit(start, buffer) }
+  ' <"$1"
+}
+
+if [ "$(git rev-parse --is-inside-work-tree 2>/dev/null || true)" = true ]; then
+  dockerfile_list=$(git ls-files -z --cached --others --exclude-standard | tr '\0' '\n' | awk -F/ '{ name = tolower($NF) } name ~ /^dockerfile/ || name ~ /\.dockerfile$/' | LC_ALL=C sort -u)
+else
+  dockerfile_list=$(find . -name .git -prune -o \( -type f -o -type l \) \( -iname 'dockerfile*' -o -iname '*.dockerfile' \) -print | sed 's|^\./||' | LC_ALL=C sort)
+fi
 golang_stages=0
-for dockerfile in "${dockerfiles[@]}"; do
-  [ -f "$dockerfile" ] || continue
+while IFS= read -r dockerfile; do
+  [ -n "$dockerfile" ] && [ -f "$dockerfile" ] || continue
+  if [ "$dockerfile" != Dockerfile ] && has_parser_directive "$dockerfile"; then
+    checked=$((checked + 1))
+    refuse "$dockerfile sets an escape or syntax parser directive, so BuildKit need not split it into the instructions the guard reads"
+  fi
   while IFS= read -r image; do
     [ -n "$image" ] || continue
     case "$image" in
-      golang:* | library/golang:* | docker.io/library/golang:* | docker.io/golang:*) ;;
       \$*)
         refuse "$dockerfile builds from $image, an image chosen by a build argument, so its Go version cannot be checked"
         checked=$((checked + 1))
         continue
         ;;
-      *) continue ;;
     esac
+    [[ $image =~ $golang_name_re ]] || continue
     golang_stages=$((golang_stages + 1))
     if ! [[ $image =~ $digest_re ]]; then
       checked=$((checked + 1))
@@ -143,15 +204,21 @@ for dockerfile in "${dockerfiles[@]}"; do
     fi
     if ! [[ $image =~ $golang_image_re ]]; then
       checked=$((checked + 1))
-      refuse "$dockerfile builds from $image, which is not a golang:<version> image"
+      refuse "$dockerfile builds from $image, which names no golang:<version> tag, so its Go version cannot be checked"
       continue
     fi
-    tag=${BASH_REMATCH[3]}
-    require_go "$dockerfile image golang:$tag" "${tag%%-*}"
+    tag=${BASH_REMATCH[2]}
+    image_go=${tag%%-*}
+    require_go "$dockerfile image golang:$tag" "$image_go"
+    if [ -n "$module_min" ] && [[ $image_go =~ $release_re ]] && ! at_least "$image_go" "$module_min"; then
+      refuse "$dockerfile image golang:$tag names Go $image_go, below the go.mod $module_line $module_min"
+    fi
   done <<EOF
-$(awk 'toupper($1) == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break } }' "$dockerfile")
+$(from_images "$dockerfile")
 EOF
-done
+done <<EOF
+$dockerfile_list
+EOF
 if [ "$golang_stages" = 0 ]; then
   refuse "no Dockerfile builds from a golang image, so the toolchain the image ships cannot be checked"
 fi
@@ -520,11 +587,7 @@ final_stage_inst_allowed() {
   esac
 }
 
-if [ -f Dockerfile ] && awk '
-  NR == 1 { sub(/^\357\273\277/, "") }
-  tolower($0) ~ /^[[:space:]]*#[[:space:]]*(escape|syntax)[[:space:]]*=/ { found = 1 }
-  END { exit found ? 0 : 1 }
-' Dockerfile; then
+if [ -f Dockerfile ] && has_parser_directive Dockerfile; then
   checked=$((checked + 1))
   refuse "the Dockerfile sets an escape or syntax parser directive, so BuildKit need not split it into the instructions the guard reads"
 fi
@@ -791,4 +854,4 @@ if [ "$problems" -gt 0 ]; then
   printf 'toolchain-floor: %d problems in %d pins; the floor is Go %s and golang.org/x/net v%s\n' "$problems" "$checked" "$go_floor" "$xnet_floor" >&2
   exit 1
 fi
-printf 'toolchain-floor: %d pins checked, all at or above Go %s and golang.org/x/net v%s\n' "$checked" "$go_floor" "$xnet_floor"
+printf 'toolchain-floor: %d pins checked, all at or above Go %s and golang.org/x/net v%s, and every golang image at or above the go.mod %s %s\n' "$checked" "$go_floor" "$xnet_floor" "$module_line" "$module_min"

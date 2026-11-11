@@ -12,7 +12,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 pass=0
 failed=0
-digest=sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba
+digest=sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf
 alpine=sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 gomod_patch() {
@@ -22,7 +22,7 @@ gomod_patch() {
 fixture() {
   r=$tmp/$1
   mkdir -p "$r/.github/workflows" "$r/patches"
-  printf 'module example.com/node\n\ngo 1.26.3\n\ntoolchain go1.26.10\n\nrequire (\n\tgolang.org/x/sys v0.48.0\n)\n\nrequire (\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n)\n' >"$r/go.mod"
+  printf 'module example.com/node\n\ngo 1.27.3\n\ntoolchain go1.27.4\n\nrequire (\n\tgolang.org/x/sys v0.48.0\n)\n\nrequire (\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n)\n' >"$r/go.mod"
   cat >"$r/.github/workflows/run-tests.yml" <<'EOF'
 name: Test
 on: push
@@ -34,7 +34,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version: "1.27.4"
           check-latest: true
   govulncheck:
     runs-on: ubuntu-latest
@@ -42,7 +42,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version: "1.27.4"
 EOF
   cat >"$r/.github/workflows/publish-release.yml" <<'EOF'
 name: Release
@@ -54,19 +54,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.10"
+          go-version: "1.27.4"
 EOF
   printf 'name: Image\non: push\njobs:\n  image:\n    runs-on: ubuntu-latest\n    steps:\n      - run: docker build .\n' >"$r/.github/workflows/image.yml"
   cat >"$r/Dockerfile" <<EOF
 ARG XRAY_VERSION=v26.3.27
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS builder
 RUN make build
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS singbox-builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS singbox-builder
 RUN go build ./cmd/sing-box
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS xray-builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS xray-builder
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
@@ -83,10 +83,15 @@ COPY --from=builder /src/main /app/main
 COPY --from=xray-builder /out/xray /usr/local/bin/xray
 COPY --from=singbox-builder /out/sing-box /usr/local/bin/sing-box
 EOF
-  printf "FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@%s AS builder\nRUN go build ./...\n\nFROM alpine:3.24.2@%s\n" "$digest" "$alpine" >"$r/Dockerfile.wireguard"
+  printf "FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@%s AS builder\nRUN go build ./...\n\nFROM alpine:3.24.2@%s\n" "$digest" "$alpine" >"$r/Dockerfile.wireguard"
   gomod_patch v0.52.0 v0.58.0 >"$r/patches/xray-grpc-1.83.2.patch"
   printf 'Revoke sessions\n\ndiff --git a/app/x.go b/app/x.go\n--- a/app/x.go\n+++ b/app/x.go\n@@ -1 +1 @@\n-a\n+b\n' >"$r/patches/xray-session-revoke.patch"
   gomod_patch v0.58.0 v0.60.0 >"$r/patches/xray-x-net-0.60.0.patch"
+}
+
+raise_images() {
+  edit Dockerfile "s/golang:1.27.4-alpine/golang:$1-alpine/g"
+  edit Dockerfile.wireguard "s/golang:1.27.4-alpine/golang:$1-alpine/"
 }
 
 edit() {
@@ -117,43 +122,84 @@ check() {
 }
 
 fixture clean
-check clean 0 "11 pins checked, all at or above Go 1.26.10 and golang.org/x/net v0.60.0"
+check clean 0 "11 pins checked, all at or above Go 1.27.4 and golang.org/x/net v0.60.0, and every golang image at or above the go.mod toolchain line 1.27.4"
 
 fixture toolchain-below
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.9/'
-check toolchain-below 1 "go.mod toolchain names Go 1.26.9, below the security floor 1.26.10"
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.27.3/'
+check toolchain-below 1 "go.mod toolchain names Go 1.27.3, below the security floor 1.27.4"
 
 fixture toolchain-old-release
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/'
-check toolchain-old-release 1 "go.mod toolchain names Go 1.26.6"
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.26.10/'
+check toolchain-old-release 1 "go.mod toolchain names Go 1.26.10"
 
 fixture toolchain-two-digit-patch
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.11/'
-check toolchain-two-digit-patch 0
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.27.10/'
+raise_images 1.27.10
+check toolchain-two-digit-patch 0 "every golang image at or above the go.mod toolchain line 1.27.10"
 
 fixture toolchain-three-digit-patch
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.100/'
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.27.100/'
+raise_images 1.27.100
 check toolchain-three-digit-patch 0
 
 fixture toolchain-next-minor
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.27.0/'
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.28.0/'
+raise_images 1.28.0
 check toolchain-next-minor 0
 
 fixture toolchain-release-candidate
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.27rc1/'
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.28rc1/'
 check toolchain-release-candidate 1 "which is not an exact release"
 
 fixture toolchain-dropped
 edit go.mod '/^toolchain /d'
-check toolchain-dropped 1 "go.mod go line (no toolchain line) names Go 1.26.3, below the security floor 1.26.10"
+check toolchain-dropped 0 "10 pins checked, all at or above Go 1.27.4 and golang.org/x/net v0.60.0, and every golang image at or above the go.mod go line 1.27.3"
 
 fixture toolchain-dropped-go-line-raised
-edit go.mod '/^toolchain /d; s/^go 1.26.3$/go 1.26.10/'
-check toolchain-dropped-go-line-raised 0
+edit go.mod '/^toolchain /d; s/^go 1.27.3$/go 1.27.4/'
+check toolchain-dropped-go-line-raised 0 "every golang image at or above the go.mod go line 1.27.4"
 
 fixture toolchain-twice
-printf 'toolchain go1.26.6\n' >>"$tmp/toolchain-twice/go.mod"
+printf 'toolchain go1.26.10\n' >>"$tmp/toolchain-twice/go.mod"
 check toolchain-twice 1 "more than one toolchain line"
+
+fixture toolchain-above-images
+edit go.mod 's/^toolchain go1.27.4$/toolchain go1.27.5/'
+check toolchain-above-images 1 "Dockerfile.wireguard image golang:1.27.4-alpine names Go 1.27.4, below the go.mod toolchain line 1.27.5"
+check toolchain-above-images 1 "4 problems in 11 pins"
+
+fixture go-line-above-images
+edit go.mod '/^toolchain /d; s/^go 1.27.3$/go 1.27.5/'
+check go-line-above-images 1 "Dockerfile image golang:1.27.4-alpine names Go 1.27.4, below the go.mod go line 1.27.5"
+check go-line-above-images 1 "4 problems in 10 pins"
+
+fixture go-line-above-toolchain
+edit go.mod 's/^go 1.27.3$/go 1.27.5/'
+check go-line-above-toolchain 1 "Dockerfile.wireguard image golang:1.27.4-alpine names Go 1.27.4, below the go.mod go line 1.27.5"
+
+fixture go-line-language-version
+edit go.mod '/^toolchain /d; s/^go 1.27.3$/go 1.27/'
+check go-line-language-version 0 "every golang image at or above the go.mod go line 1.27"
+
+fixture go-line-next-language-version
+edit go.mod '/^toolchain /d; s/^go 1.27.3$/go 1.28/'
+check go-line-next-language-version 1 "names Go 1.27.4, below the go.mod go line 1.28"
+
+fixture go-line-trailing-comment
+edit go.mod '/^toolchain /d; s@^go 1.27.3$@go 1.28.0 // raised@'
+check go-line-trailing-comment 1 "names Go 1.27.4, below the go.mod go line 1.28.0"
+
+fixture go-line-release-candidate
+edit go.mod 's/^go 1.27.3$/go 1.28rc1/'
+check go-line-release-candidate 1 "go.mod go line names Go '1.28rc1', which is not a Go version (X.Y or X.Y.Z)"
+
+fixture go-line-twice
+printf 'go 1.28.0\n' >>"$tmp/go-line-twice/go.mod"
+check go-line-twice 1 "go.mod has more than one go line"
+
+fixture go-line-and-toolchain-dropped
+edit go.mod '/^toolchain /d; /^go /d'
+check go-line-and-toolchain-dropped 1 "go.mod has neither a toolchain line nor a go line"
 
 fixture xnet-below
 edit go.mod 's/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.59.0/'
@@ -189,76 +235,252 @@ printf '\nreplace (\n\tgolang.org/x/net v0.60.0 => ../net\n)\n' >>"$tmp/xnet-rep
 check xnet-replaced-in-block 1 "go.mod replaces golang.org/x/net"
 
 fixture ci-one-job-below
-edit .github/workflows/run-tests.yml "/^  govulncheck:/,\$s/go-version: \"1.26.10\"/go-version: \"1.26.6\"/"
-check ci-one-job-below 1 "run-tests.yml go-version names Go 1.26.6, below the security floor 1.26.10"
+edit .github/workflows/run-tests.yml "/^  govulncheck:/,\$s/go-version: \"1.27.4\"/go-version: \"1.27.3\"/"
+check ci-one-job-below 1 "run-tests.yml go-version names Go 1.27.3, below the security floor 1.27.4"
 
 fixture ci-unquoted
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: 1.26.10/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.27.4"/go-version: 1.27.4/'
 check ci-unquoted 0
 
 fixture ci-single-quoted-below
-edit .github/workflows/run-tests.yml "s/go-version: \"1.26.10\"/go-version: '1.26.8'/"
-check ci-single-quoted-below 1 "run-tests.yml go-version names Go 1.26.8"
+edit .github/workflows/run-tests.yml "s/go-version: \"1.27.4\"/go-version: '1.27.2'/"
+check ci-single-quoted-below 1 "run-tests.yml go-version names Go 1.27.2"
 
 fixture ci-floating-minor
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: "1.26"/'
-check ci-floating-minor 1 "run-tests.yml go-version names Go '1.26', which is not an exact release"
+edit .github/workflows/run-tests.yml 's/go-version: "1.27.4"/go-version: "1.27"/'
+check ci-floating-minor 1 "run-tests.yml go-version names Go '1.27', which is not an exact release"
 
 fixture ci-floating-alias
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version: stable/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.27.4"/go-version: stable/'
 check ci-floating-alias 1 "which is not an exact release"
 
 fixture ci-version-file
-edit .github/workflows/run-tests.yml 's/go-version: "1.26.10"/go-version-file: go.mod/'
+edit .github/workflows/run-tests.yml 's/go-version: "1.27.4"/go-version-file: go.mod/'
 check ci-version-file 1 "run-tests.yml sets up Go from go-version-file"
 
 fixture ci-setup-without-version
-edit .github/workflows/run-tests.yml '/go-version: "1.26.10"/d'
+edit .github/workflows/run-tests.yml '/go-version: "1.27.4"/d'
 check ci-setup-without-version 1 "run-tests.yml has 2 actions/setup-go steps but 0 go-version pins"
 
 fixture release-below
-edit .github/workflows/publish-release.yml 's/go-version: "1.26.10"/go-version: "1.26.9"/'
-check release-below 1 "publish-release.yml go-version names Go 1.26.9, below the security floor 1.26.10"
+edit .github/workflows/publish-release.yml 's/go-version: "1.27.4"/go-version: "1.27.3"/'
+check release-below 1 "publish-release.yml go-version names Go 1.27.3, below the security floor 1.27.4"
 
 fixture yaml-extension-below
-sed 's/1.26.10/1.26.6/' "$tmp/yaml-extension-below/.github/workflows/publish-release.yml" >"$tmp/yaml-extension-below/.github/workflows/extra.yaml"
-check yaml-extension-below 1 "extra.yaml go-version names Go 1.26.6"
+sed 's/1.27.4/1.26.10/' "$tmp/yaml-extension-below/.github/workflows/publish-release.yml" >"$tmp/yaml-extension-below/.github/workflows/extra.yaml"
+check yaml-extension-below 1 "extra.yaml go-version names Go 1.26.10"
 
 fixture image-one-stage-below
-edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS xray-builder/golang:1.26.9-alpine\1 AS xray-builder/'
-check image-one-stage-below 1 "Dockerfile image golang:1.26.9-alpine names Go 1.26.9, below the security floor 1.26.10"
+edit Dockerfile 's/golang:1.27.4-alpine(@[^ ]+) AS xray-builder/golang:1.27.3-alpine\1 AS xray-builder/'
+check image-one-stage-below 1 "Dockerfile image golang:1.27.3-alpine names Go 1.27.3, below the security floor 1.27.4"
 
 fixture image-without-digest
-edit Dockerfile 's/golang:1.26.10-alpine@[^ ]+ AS singbox-builder/golang:1.26.10-alpine AS singbox-builder/'
-check image-without-digest 1 "Dockerfile builds from golang:1.26.10-alpine without an @sha256 digest"
+edit Dockerfile 's/golang:1.27.4-alpine@[^ ]+ AS singbox-builder/golang:1.27.4-alpine AS singbox-builder/'
+check image-without-digest 1 "Dockerfile builds from golang:1.27.4-alpine without an @sha256 digest"
 
 fixture image-floating-tag
-edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS builder/golang:1.26-alpine\1 AS builder/'
-check image-floating-tag 1 "names Go '1.26', which is not an exact release"
+edit Dockerfile 's/golang:1.27.4-alpine(@[^ ]+) AS builder/golang:1.27-alpine\1 AS builder/'
+check image-floating-tag 1 "names Go '1.27', which is not an exact release"
 
 fixture image-registry-prefix-below
-edit Dockerfile 's/golang:1.26.10-alpine(@[^ ]+) AS builder/docker.io\/library\/golang:1.26.6-alpine\1 AS builder/'
-check image-registry-prefix-below 1 "Dockerfile image golang:1.26.6-alpine names Go 1.26.6"
+edit Dockerfile 's/golang:1.27.4-alpine(@[^ ]+) AS builder/docker.io\/library\/golang:1.26.10-alpine\1 AS builder/'
+check image-registry-prefix-below 1 "Dockerfile image golang:1.26.10-alpine names Go 1.26.10"
 
 fixture image-from-build-arg
-edit Dockerfile "s/golang:1.26.10-alpine@[^ ]+ AS builder/\${GO_IMAGE} AS builder/"
+edit Dockerfile "s/golang:1.27.4-alpine@[^ ]+ AS builder/\${GO_IMAGE} AS builder/"
 check image-from-build-arg 1 "an image chosen by a build argument"
 
 fixture image-lowercase-from
-edit Dockerfile "s/^FROM --platform=\\\$BUILDPLATFORM golang:1.26.10-alpine(@[^ ]+) AS builder/from --platform=\$BUILDPLATFORM golang:1.26.6-alpine\\1 AS builder/"
-check image-lowercase-from 1 "Dockerfile image golang:1.26.6-alpine names Go 1.26.6"
+edit Dockerfile "s/^FROM --platform=\\\$BUILDPLATFORM golang:1.27.4-alpine(@[^ ]+) AS builder/from --platform=\$BUILDPLATFORM golang:1.26.10-alpine\\1 AS builder/"
+check image-lowercase-from 1 "Dockerfile image golang:1.26.10-alpine names Go 1.26.10"
 
 fixture image-two-digit-patch
-edit Dockerfile 's/golang:1.26.10-alpine/golang:1.26.11-alpine/g'
+edit Dockerfile 's/golang:1.27.4-alpine/golang:1.27.10-alpine/g'
 check image-two-digit-patch 0
 
 fixture wireguard-image-below
-edit Dockerfile.wireguard 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
-check wireguard-image-below 1 "Dockerfile.wireguard image golang:1.26.6-alpine names Go 1.26.6"
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine/golang:1.26.10-alpine/'
+check wireguard-image-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10"
+
+fixture wireguard-image-below-go-line
+edit go.mod '/^toolchain /d'
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine/golang:1.26.10-alpine/'
+check wireguard-image-below-go-line 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the go.mod go line 1.27.3"
+
+fixture image-at-go-line-below-floor
+edit go.mod '/^toolchain /d'
+edit Dockerfile 's/golang:1.27.4-alpine(@[^ ]+) AS xray-builder/golang:1.27.3-alpine\1 AS xray-builder/'
+check image-at-go-line-below-floor 1 "Dockerfile image golang:1.27.3-alpine names Go 1.27.3, below the security floor 1.27.4"
+check image-at-go-line-below-floor 1 "1 problems in 10 pins"
+
+fixture image-dash-name-below
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-dash-name-below/Dockerfile-dev"
+check image-dash-name-below 1 "Dockerfile-dev image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-subdirectory-below
+mkdir -p "$tmp/image-subdirectory-below/docker"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-subdirectory-below/docker/Dockerfile"
+check image-subdirectory-below 1 "docker/Dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-suffix-name-below
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-suffix-name-below/tools.Dockerfile"
+check image-suffix-name-below 1 "tools.Dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-symlinked-name-below
+mkdir -p "$tmp/image-symlinked-name-below/build"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-symlinked-name-below/build/base"
+ln -s base "$tmp/image-symlinked-name-below/build/Dockerfile"
+check image-symlinked-name-below 1 "build/Dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-git-dir-ignored
+mkdir -p "$tmp/image-git-dir-ignored/.git"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-git-dir-ignored/.git/Dockerfile"
+check image-git-dir-ignored 0 "11 pins checked"
+
+fixture image-continued-from-below
+printf 'FROM --platform=$BUILDPLATFORM \\\n    golang:1.26.10-alpine@%s AS builder\nRUN go build ./...\n' "$digest" >"$tmp/image-continued-from-below/Dockerfile.wireguard"
+check image-continued-from-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-comment-blank-below
+printf 'FROM --platform=$BUILDPLATFORM \\\n#x\n\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-continued-comment-blank-below/Dockerfile.wireguard"
+check image-continued-comment-blank-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-bom-below
+printf '\357\273\277FROM golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-bom-below/Dockerfile.wireguard"
+check image-bom-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-mirror-registry-below
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine/mirror.gcr.io\/library\/golang:1.26.10-alpine/'
+check image-mirror-registry-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-registry-port-below
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine/localhost:5000\/golang:1.26.10-alpine/'
+check image-registry-port-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-index-docker-io-below
+edit Dockerfile 's/golang:1.27.4-alpine(@[^ ]+) AS builder/index.docker.io\/library\/golang:1.26.10-alpine\1 AS builder/'
+check image-index-docker-io-below 1 "Dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-digest-without-tag
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine@/golang@/'
+check image-digest-without-tag 1 "Dockerfile.wireguard builds from golang@$digest, which names no golang:<version> tag"
+
+fixture image-bare-name
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine@[^ ]+/golang/'
+check image-bare-name 1 "Dockerfile.wireguard builds from golang without an @sha256 digest"
+
+fixture image-lookalike-ignored
+printf 'FROM golang-tools:1.0@%s AS tools\nFROM example.com/golang/tools:1.0@%s AS more\n' "$digest" "$digest" >"$tmp/image-lookalike-ignored/Dockerfile.tools"
+check image-lookalike-ignored 0 "11 pins checked"
+
+fixture escape-directive-other-dockerfile
+printf '# escape=`\nFROM --platform=$BUILDPLATFORM `\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/escape-directive-other-dockerfile/Dockerfile.wireguard"
+check escape-directive-other-dockerfile 1 "Dockerfile.wireguard sets an escape or syntax parser directive"
+
+fixture syntax-directive-other-dockerfile
+{ printf '# syntax=docker/dockerfile:1\n'; cat "$r/Dockerfile.wireguard"; } >"$r/Dockerfile.wireguard.new"
+mv "$r/Dockerfile.wireguard.new" "$r/Dockerfile.wireguard"
+check syntax-directive-other-dockerfile 1 "Dockerfile.wireguard sets an escape or syntax parser directive"
+
+fixture image-lowercase-name-below
+mkdir -p "$tmp/image-lowercase-name-below/build"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-lowercase-name-below/build/dockerfile"
+check image-lowercase-name-below 1 "build/dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-lowercase-suffix-below
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-lowercase-suffix-below/tools.dockerfile"
+check image-lowercase-suffix-below 1 "tools.dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-assignment-like-name
+printf 'FROM alpine:3.24.2@%s\n' "$alpine" >"$tmp/image-assignment-like-name/DockerfileA=1"
+mkdir -p "$tmp/image-assignment-like-name/docker"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-assignment-like-name/docker/Dockerfile"
+check image-assignment-like-name 1 "docker/Dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture git-tree-ignored-dir
+mkdir -p "$tmp/git-tree-ignored-dir/xray-core"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/git-tree-ignored-dir/xray-core/Dockerfile"
+printf 'xray-core/\n' >"$tmp/git-tree-ignored-dir/.gitignore"
+git -C "$tmp/git-tree-ignored-dir" init -q
+check git-tree-ignored-dir 0 "11 pins checked"
+
+fixture git-tree-nested-repo
+mkdir -p "$tmp/git-tree-nested-repo/nested"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/git-tree-nested-repo/nested/Dockerfile"
+git -C "$tmp/git-tree-nested-repo/nested" init -q
+git -C "$tmp/git-tree-nested-repo" init -q
+check git-tree-nested-repo 0 "11 pins checked"
+
+fixture git-tree-untracked-below
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/git-tree-untracked-below/Dockerfile-dev"
+git -C "$tmp/git-tree-untracked-below" init -q
+check git-tree-untracked-below 1 "Dockerfile-dev image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-after-escaped-backslash-below
+printf 'FROM alpine:3.24.2@%s\nRUN echo done \\\\\nFROM golang:1.26.10-alpine@%s AS dev\n' "$alpine" "$digest" >"$tmp/image-after-escaped-backslash-below/Dockerfile.extra"
+check image-after-escaped-backslash-below 1 "Dockerfile.extra image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-after-nbsp-comment-below
+printf '\302\240#x \\\nFROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/image-after-nbsp-comment-below/Dockerfile.extra"
+check image-after-nbsp-comment-below 1 "Dockerfile.extra image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-past-backslash-comment-below
+printf 'FROM --platform=$BUILDPLATFORM \\\n#x \\\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-continued-past-backslash-comment-below/Dockerfile.wireguard"
+check image-continued-past-backslash-comment-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-to-eof-below
+printf 'FROM --platform=$BUILDPLATFORM \\\n    golang:1.26.10-alpine@%s AS builder \\\n' "$digest" >"$tmp/image-continued-to-eof-below/Dockerfile.wireguard"
+check image-continued-to-eof-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-trailing-blanks-below
+printf 'FROM --platform=$BUILDPLATFORM \\ \t \n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-continued-trailing-blanks-below/Dockerfile.wireguard"
+check image-continued-trailing-blanks-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-crlf-below
+printf 'FROM --platform=$BUILDPLATFORM \\\r\n    golang:1.26.10-alpine@%s AS builder\r\n' "$digest" >"$tmp/image-continued-crlf-below/Dockerfile.wireguard"
+check image-continued-crlf-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-nbsp-blank-below
+printf 'FROM --platform=$BUILDPLATFORM \\\n\302\240\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-continued-nbsp-blank-below/Dockerfile.wireguard"
+check image-continued-nbsp-blank-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-nbsp-before-from-below
+printf '\302\240FROM golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-nbsp-before-from-below/Dockerfile.wireguard"
+check image-nbsp-before-from-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-vertical-tab-after-from-below
+printf 'FROM\vgolang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-vertical-tab-after-from-below/Dockerfile.wireguard"
+check image-vertical-tab-after-from-below 1 "Dockerfile.wireguard image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture git-tree-lowercase-below
+mkdir -p "$tmp/git-tree-lowercase-below/build"
+printf 'FROM golang:1.26.10-alpine@%s AS dev\n' "$digest" >"$tmp/git-tree-lowercase-below/build/dockerfile"
+git -C "$tmp/git-tree-lowercase-below" init -q
+check git-tree-lowercase-below 1 "build/dockerfile image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-after-escaped-backslash-below
+printf 'FROM alpine:3.24.2@%s\nRUN echo done \\\\\nFROM --platform=$BUILDPLATFORM \\\n    golang:1.26.10-alpine@%s AS builder\n' "$alpine" "$digest" >"$tmp/image-continued-after-escaped-backslash-below/Dockerfile.extra"
+check image-continued-after-escaped-backslash-below 1 "Dockerfile.extra image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture image-continued-after-backslash-comment-below
+printf '#x \\\nFROM --platform=$BUILDPLATFORM \\\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/image-continued-after-backslash-comment-below/Dockerfile.extra"
+check image-continued-after-backslash-comment-below 1 "Dockerfile.extra image golang:1.26.10-alpine names Go 1.26.10, below the security floor 1.27.4"
+
+fixture nbsp-directive-other-dockerfile
+printf '\302\240# escape=`\nFROM --platform=$BUILDPLATFORM `\n    golang:1.26.10-alpine@%s AS builder\n' "$digest" >"$tmp/nbsp-directive-other-dockerfile/Dockerfile.wireguard"
+check nbsp-directive-other-dockerfile 1 "Dockerfile.wireguard sets an escape or syntax parser directive"
+
+fixture image-continued-after-tag-counted-once
+printf 'FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@%s \\\n    AS builder\n' "$digest" >"$tmp/image-continued-after-tag-counted-once/Dockerfile.wireguard"
+check image-continued-after-tag-counted-once 1 "2 problems in 11 pins"
+
+fixture go-line-extra-field
+edit go.mod 's/^go 1.27.3$/go 1.27.3 extra/'
+check go-line-extra-field 1 "go.mod go line names Go '1.27.3 extra', which is not a Go version (X.Y or X.Y.Z)"
 
 fixture no-golang-stage
-edit Dockerfile 's/golang:1.26.10-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
-edit Dockerfile.wireguard 's/golang:1.26.10-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
+edit Dockerfile 's/golang:1.27.4-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine@[^ ]+/alpine:3.24.2@'"$alpine"'/'
 check no-golang-stage 1 "no Dockerfile builds from a golang image"
 
 fixture xray-patch-below
@@ -338,13 +560,13 @@ upstream_fixture() {
   cat >"$r/Dockerfile" <<EOF
 ARG XRAY_VERSION=v26.10.31
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS builder
 RUN make build
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS singbox-builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS singbox-builder
 RUN go build ./cmd/sing-box
 
-FROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@$digest AS xray-builder
+FROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@$digest AS xray-builder
 ARG XRAY_COMMIT=556767e40baa142641838158d6cba743c879e5c3
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 RUN git init -q . \\
@@ -365,7 +587,7 @@ EOF
 }
 
 upstream_fixture upstream-gomod-meets-floor
-check upstream-gomod-meets-floor 0 "11 pins checked, all at or above Go 1.26.10 and golang.org/x/net v0.60.0"
+check upstream-gomod-meets-floor 0 "11 pins checked, all at or above Go 1.27.4 and golang.org/x/net v0.60.0"
 
 upstream_fixture upstream-gomod-meets-floor-indirect
 edit Dockerfile 's/golang.org\/x\/net v0.62.0\$" go.mod/golang.org\/x\/net v0.62.0 \/\/ indirect$" go.mod/g'
@@ -606,7 +828,7 @@ edit Dockerfile 's@^RUN go build -o /out/xray ./main$@ENV GOTOOLCHAIN=local\nRUN
 check gotoolchain-local-accepted 0 "11 pins checked"
 
 fixture stage-xray-builder-twice
-printf "\nFROM --platform=\$BUILDPLATFORM golang:1.26.10-alpine@%s AS Xray-Builder\nRUN go build -o /out/xray ./main\n" "$digest" >>"$tmp/stage-xray-builder-twice/Dockerfile"
+printf "\nFROM --platform=\$BUILDPLATFORM golang:1.27.4-alpine@%s AS Xray-Builder\nRUN go build -o /out/xray ./main\n" "$digest" >>"$tmp/stage-xray-builder-twice/Dockerfile"
 check stage-xray-builder-twice 1 "the Dockerfile has 2 xray-builder stages, so the one the image copies from cannot be told apart"
 
 fixture xray-copied-from-other-stage
@@ -1029,11 +1251,11 @@ inject_before early-go-env-read 'RUN git init -q . \' 'RUN go env GOMODCACHE GOP
 check early-go-env-read 0 "pins checked"
 
 fixture base-tree-shape
-edit go.mod 's/^toolchain go1.26.10$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
-edit .github/workflows/run-tests.yml 's/1.26.10/1.26.6/'
-edit .github/workflows/publish-release.yml 's/1.26.10/1.26.6/'
-edit Dockerfile 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
-edit Dockerfile.wireguard 's/golang:1.26.10-alpine/golang:1.26.6-alpine/'
+edit go.mod 's/^go 1.27.3$/go 1.26.3/; s/^toolchain go1.27.4$/toolchain go1.26.6/; s/golang.org\/x\/net v0.60.0/golang.org\/x\/net v0.58.0/'
+edit .github/workflows/run-tests.yml 's/1.27.4/1.26.6/'
+edit .github/workflows/publish-release.yml 's/1.27.4/1.26.6/'
+edit Dockerfile 's/golang:1.27.4-alpine/golang:1.26.6-alpine/'
+edit Dockerfile.wireguard 's/golang:1.27.4-alpine/golang:1.26.6-alpine/'
 gomod_patch v0.58.0 v0.59.0 >"$tmp/base-tree-shape/patches/xray-x-net-0.60.0.patch"
 check base-tree-shape 1 "12 problems in 12 pins"
 
