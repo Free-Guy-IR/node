@@ -340,3 +340,119 @@ func TestStatsTracker_UpdateStatsBatchEmptyNoop(t *testing.T) {
 		t.Fatalf("expected 0 stats after empty batch updates, got %d", len(resp.Stats))
 	}
 }
+
+func pullTotals(tracker *Tracker) (rx, tx int64) {
+	for _, s := range tracker.GetUsersStats(context.Background(), true).Stats {
+		switch s.Type {
+		case "uplink":
+			rx += s.Value
+		case "downlink":
+			tx += s.Value
+		}
+	}
+	return rx, tx
+}
+
+func TestStatsTracker_RemoveStatsKeepsPendingDelta(t *testing.T) {
+	tracker := New()
+	updateSample(tracker, "key1", "user1@example.com", 1000, 2000, "1.2.3.4")
+	tracker.RemoveStats("key1")
+
+	if rx, tx := pullTotals(tracker); rx != 1000 || tx != 2000 {
+		t.Fatalf("expected pending 1000/2000 after RemoveStats, got %d/%d", rx, tx)
+	}
+}
+
+func TestStatsTracker_ReaddAfterReportedDeleteCountsNewTraffic(t *testing.T) {
+	tracker := New()
+
+	updateSample(tracker, "key1", "user1@example.com", 1000, 1000, "1.2.3.4")
+	pullTotals(tracker)
+	tracker.RemoveStats("key1")
+
+	updateSample(tracker, "key1", "user1@example.com", 300, 400, "1.2.3.4")
+	if rx, tx := pullTotals(tracker); rx != 300 || tx != 400 {
+		t.Fatalf("expected the re-added peer's 300/400 to be reported, got %d/%d", rx, tx)
+	}
+}
+
+func TestStatsTracker_CounterRollbackKeepsPendingAndNewTraffic(t *testing.T) {
+	tracker := NewRestartingOnAnyDip()
+
+	updateSample(tracker, "key1", "user1@example.com", 1000, 1000, "1.2.3.4")
+	pullTotals(tracker)
+	updateSample(tracker, "key1", "user1@example.com", 1500, 1600, "1.2.3.4")
+	updateSample(tracker, "key1", "user1@example.com", 200, 300, "1.2.3.4")
+
+	if rx, tx := pullTotals(tracker); rx != 700 || tx != 900 {
+		t.Fatalf("expected pending 500/600 plus new 200/300, got %d/%d", rx, tx)
+	}
+}
+
+func TestStatsTracker_RestartCountersCountsNewCounterPastOldValue(t *testing.T) {
+	tracker := New()
+
+	updateSample(tracker, "key1", "user1@example.com", 1000, 1000, "1.2.3.4")
+	pullTotals(tracker)
+	updateSample(tracker, "key1", "user1@example.com", 1500, 1500, "1.2.3.4")
+
+	tracker.RestartCounters([]string{"key1", "unknown"})
+	if entries := tracker.GetStatsEntries([]string{"unknown"}); len(entries) != 0 {
+		t.Fatal("RestartCounters must not create entries for unknown keys")
+	}
+
+	updateSample(tracker, "key1", "user1@example.com", 5000, 5000, "1.2.3.4")
+	if rx, tx := pullTotals(tracker); rx != 5500 || tx != 5500 {
+		t.Fatalf("expected pending 500 plus new 5000, got %d/%d", rx, tx)
+	}
+}
+
+func TestStatsTracker_CounterResetsReportEachByteOnce(t *testing.T) {
+	tracker := NewRestartingOnAnyDip()
+	var counter, moved, reported int64
+
+	sample := func(add int64) {
+		counter += add
+		moved += add
+		updateSample(tracker, "key1", "user1@example.com", counter, counter, "1.2.3.4")
+	}
+	pull := func() {
+		rx, tx := pullTotals(tracker)
+		if rx != tx {
+			t.Fatalf("rx %d and tx %d diverged", rx, tx)
+		}
+		reported += rx
+	}
+	reset := func() { counter = 0 }
+
+	sample(1000)
+	pull()
+	sample(500)
+	reset()
+	tracker.RestartCounters([]string{"key1"})
+	pull()
+	sample(200)
+	sample(0)
+	pull()
+	pull()
+	sample(250)
+	reset()
+	tracker.RestartCounters([]string{"key1"})
+	tracker.RestartCounters([]string{"key1"})
+	sample(4000)
+	sample(10)
+	reset()
+	sample(30)
+	tracker.RemoveStats("key1")
+	reset()
+	sample(70)
+	pull()
+	tracker.RemoveStats("key1")
+	reset()
+	sample(5)
+	pull()
+
+	if reported != moved {
+		t.Fatalf("reported %d bytes, peer moved %d", reported, moved)
+	}
+}
