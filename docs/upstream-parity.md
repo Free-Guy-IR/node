@@ -47,7 +47,8 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `1ae411b76c376aed89b54673a66b7615568f45f4` | deps: golang.org/x/sys 0.48.0 to 0.49.0 (#104) | released in v0.5.5; ported on 2026-10-27 by `d82517b`, which carries its `Upstream:` line. Same `go.mod` and `go.sum` hunks as upstream |
 | `f58fce8fc8358315fb1f31eee4871fdbb0147a3d` | deps: go-chi/chi 5.3.2 to 5.4.0 (#106) | released in v0.5.5; ported on 2026-10-27 by `a074e52`, which carries its `Upstream:` line. Same hunks as upstream; the one behaviour change, the wrap writer writing the implicit 200 on Flush, does not change what the node logs or counts |
 | `5cbcb5fdc16a82c819e2c095637e807c5665ea3d` | deps: go-chi/chi 5.4.0 to 5.5.0 (#108) | released in v0.5.5; ported on 2026-10-27 by `bb210c9`, which carries its `Upstream:` line. Same hunks as upstream; it only touches middleware the node does not use |
-| `946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd` | fix(xray): keep Shadowsocks 2022 inbounds multi-user when they start empty (#114) | released in v0.5.5; ported on 2026-11-02 by `3d18e70` (the fix) and `fb11076` (the tests, committed first and failing on main), which both carry its `Upstream:` line. The tests are upstream's with the user key literal renamed to `example-user-one-key`, because the pre-push secret guard refuses a `Password:` literal without an example marker. The placeholder code is upstream's. Since `797adcf0`, the fork's port of #58's snapshot serialiser, rebased onto this port, it sits in the empty-client case of `(*Inbound).wireClientsLocked` in `backend/xray/config.go`, where upstream has it in `snapshotInboundForSerialization`: `ToBytes` marshals a snapshot, so an empty `2022-blake3-aes` Shadowsocks inbound is serialised with one `pasarguard-placeholder` client, whose key is drawn once per process, and the live inbound is never written. `TestTheSnapshotSerialisesExactlyWhatTheMutatingSerialiserDid` compares the snapshot byte for byte with the pre-#58 serialiser, placeholder included (`config_wire_test.go`), and the #114 tests in `shadowsocks2022_tobytes_test.go` pass on it (go1.26.10, 2026-11-03). chacha20 is left alone, as upstream does |
+| `3be63e13189097d8098fd73bf2e64860803552c9` | fix(config): refuse to start without a valid API_KEY (#100) | released in v0.5.5. The fork closed the same hole first, in `88162e2` (2026-09-23). On 2026-11-11 it took upstream's own form: `9f89151e` carries upstream's three `config_test.go` tests, whose two rejection tests failed on main because the fork's `Load` returned no config on error and worded the unset case differently, and `4675fbcf` carries upstream's `API_KEY` block and its return of the config together with the error. Both keep upstream's author and date and carry its cherry-pick line, so the check counts the commit as ported and its waiver row is gone. `cmd/node/main.go` still exits on the error before it reads the config, and both transports still refuse `uuid.Nil`. See [State on 2026-11-11](#state-on-2026-11-11-upstream-100-and-114-carried-in-upstreams-own-form) |
+| `946ab6a5eb9d04076212cf0409bc9b4e0d5a74fd` | fix(xray): keep Shadowsocks 2022 inbounds multi-user when they start empty (#114) | released in v0.5.5; ported on 2026-11-02 by `3d18e70` (the fix) and `fb11076` (the tests, committed first and failing on main), which both carry its `Upstream:` line. Its real-core test, `shadowsocks2022_test.go`, is upstream's with the user key literal renamed to `example-user-one-key`, because the pre-push secret guard refuses a `Password:` literal without an example marker; `fb11076` carried the two ToBytes tests as copies rewritten with fork helpers in `shadowsocks2022_tobytes_test.go`. The placeholder code is upstream's. Since `797adcf0`, the fork's port of #58's snapshot serialiser, rebased onto this port, it sits in the empty-client case of `(*Inbound).wireClientsLocked` in `backend/xray/config.go`, where upstream has it in `snapshotInboundForSerialization`: `ToBytes` marshals a snapshot, so an empty `2022-blake3-aes` Shadowsocks inbound is serialised with one `pasarguard-placeholder` client, whose key is drawn once per process, and the live inbound is never written. `TestTheSnapshotSerialisesExactlyWhatTheMutatingSerialiserDid` compares the snapshot byte for byte with the pre-#58 serialiser, placeholder included (`config_wire_test.go`), and the #114 ToBytes tests pass on it. Since 2026-11-11 those tests are upstream's own, in upstream's file `config_tobytes_test.go`: `c936200a` carries upstream's two import lines, fixture, `buildShadowsocksInbound` and `TestToBytesStartsEmptyShadowsocks2022InboundsMultiUser` as upstream wrote them, with upstream's author, date and cherry-pick line, and `f02a59ac` adds `TestToBytesWritesOnlyRealShadowsocks2022Users` with the same literal rename; the rewritten copies are gone (see [State on 2026-11-11](#state-on-2026-11-11-upstream-100-and-114-carried-in-upstreams-own-form)). chacha20 is left alone, as upstream does |
 | `71466f2a82c6c5e92d9a3c9e41944491c38abb76` | fix(xray): close restart races that drop removals or leave a stray core (#113) | released in v0.5.5; ported on 2026-11-03 by the fork's health-restart and sync-hold series pushed in `26bba5a8`; `c2ed9854` carries its `Upstream:` line, NODE-VERIFY-R3 passed the unit (verdicts/node-58-113.md). Its `canHoldUsers` hunk in `backend/xray/config.go` and its two tests `TestCanHoldUsersOnlyExcludesProtocolsWithoutUsers` and `TestUserSyncsSkipInboundsThatCannotHoldUsers` are superseded, not ported: the fork sends a delta-sync removal to an inbound only when that inbound held the user or a call to it for that user is unsettled (`stageRemovalLocked`), so an inbound that never holds users gets none of the remove calls upstream skips, whatever its protocol. `TestNodeVerifyUserSyncsSendNothingToInboundsThatCannotHoldUsers` (`backend/xray/cannot_hold_users_nodeverify_test.go`, written by NODE-VERIFY, adopted in `921eb1db`) is the evidence: `UpdateUsers` and `SyncUser` on a config with socks, mixed, http and dokodemo-door inbounds plus `API_INBOUND` send calls to the vless inbound only (finding F-R4-3) |
 | `47857d43fe777f30f9ecc5f2ffe4ca0b037507cb` | v0.5.5 release: `NodeVersion` to 0.5.5 | not applicable, waived: the fork pins and versions its own `NodeVersion` |
 | `bb40094ba11bfa81ae917ab22f986e90ad9bb052` | full geo files instead of the release zip's lite ones (#111) | ported: the geo-assets stage and `make install_geofiles` take Loyalsoldier/v2ray-rules-dat `202610202206` checked by sha256, and `make check_geofiles` runs `xray run -test` on `testdata/geofiles-check.json`. Not taken: upstream's three `.env.example` lines, which describe a `pg-node geofiles` command the fork does not carry, and its `Dockerfile` and `Dockerfile.xray` comment lines (the fork adds no code comments and has no `Dockerfile.xray`) |
@@ -59,10 +60,10 @@ upstream heads listed in [State on 2026-11-02](#state-on-2026-11-02); the older 
 | `4b0bc4f6940cfb8c6ac3bf339f52f98b661df381` | ci: docker/login-action 4.6.0 to 4.7.0 (#119) | released in v0.5.5; ported on 2026-11-03 by `3f9afdfb`, which carries its `Upstream:` line |
 | `7be885ff5410ac7fdb92fa21cf7901a416be5f05` | xray: synchronize process status checks (#86) | new on upstream `dev` on 2026-10-04. The `core.go` change is superseded, waived: upstream makes `Started()` take `c.mu`, which the fork refuses (see [Superseded: #86](#superseded-86-started-under-the-core-mutex)). Upstream's tests (`backend/xray/core_started_test.go`, adapted to the fork's state snapshot) and its `-race` CI step are ported in 0.6.21 |
 | `f72ac0efacdbbfa155a1d491cceb8ce4908eab13` | fix(wireguard): remove the peer when a user loses WireGuard access (#99) | new on upstream `dev` on 2026-10-09, and the `dev` head on 2026-10-10. Ported in 0.6.21 by `cbb63a0` (the fix) and `bbc488e` (upstream's two tests, committed first and failing), which both carry `Upstream: f72ac0efacdbbfa155a1d491cceb8ce4908eab13`. The code and the tests are upstream's; upstream's explanatory comments are not carried, per the fork's no-comments rule. `4f0bbc5` adds the fork's interleaving test. See [Node state on 2026-10-10](#node-state-on-2026-10-10) |
-| `03f66e9b4817a961d3085134b3e1d532fd57862d` | deps: grpc 1.84.0 to 1.85.0 (#122) | on upstream `dev` only, in no tag (2026-11-02). Held under the release-only rule and waived as `pending` until 2026-11-30; the waiver says `dev-only`, so the check turns it `UNPORTED` the day an upstream tag contains it. See [State on 2026-11-02](#state-on-2026-11-02) |
-| `68e84193ace5216cbe8faf572fa3533402005cb2` | deps: gopsutil 4.26.9 to 4.26.10 (#121) | on upstream `dev` only, in no tag (2026-11-02). Held and waived like #122 |
+| `03f66e9b4817a961d3085134b3e1d532fd57862d` | deps: grpc 1.84.0 to 1.85.0 (#122) | released in v0.5.7 (`739eab9`, 2026-11-03); ported the same day, after the release, by `bdd91efe`, which carries its `Upstream:` line; `go.mod` requires grpc v1.85.0. Before the release it was on upstream `dev` only and held under the release-only rule; see [State on 2026-11-02](#state-on-2026-11-02) |
+| `68e84193ace5216cbe8faf572fa3533402005cb2` | deps: gopsutil 4.26.9 to 4.26.10 (#121) | released in v0.5.7 (`739eab9`, 2026-11-03); ported the same day, after the release, by `62059d0a`, which carries its `Upstream:` line; `go.mod` requires gopsutil v4.26.10 and purego v0.11.2. Held like #122 until then |
 | `ebb0d02944bdf4f7166819d31466a224f0daf7e2` | fix(wireguard): fix apparmor permission denied in e2e tests | on upstream `dev` only, in no tag (2026-11-02). Superseded, waived: the fork fixed the same failure in `b8679894` four days earlier; the AppArmor-unloading half is not taken. See [State on 2026-11-02](#state-on-2026-11-02) |
-| `25a8d740514256a1e109b10360fbc53cb80e9148` | feat: apply routing and outbound changes without restarting xray (#105) | released in v0.5.6. Ported in part on 2026-11-10: the "always enable the routing API service" half is taken (`RoutingService` joins `requiredAPIServices` in `backend/xray/config.go`), because the fork already ships RoutingService RPCs that were failing without it. The live-apply half is refused. See [Ported in part: #105](#ported-in-part-105-routingservice-taken-live-apply-refused) |
+| `25a8d740514256a1e109b10360fbc53cb80e9148` | feat: apply routing and outbound changes without restarting xray (#105) | released in v0.5.5, v0.5.6 and v0.5.7. Ported in part on 2026-11-10: the "always enable the routing API service" half is taken (`RoutingService` joins `requiredAPIServices` in `backend/xray/config.go`), because the fork already ships RoutingService RPCs that were failing without it. The live-apply half is refused. See [Ported in part: #105](#ported-in-part-105-routingservice-taken-live-apply-refused) |
 
 The fork commits that carry the 0.6.21 ports are `f53ffa2` (the three dependency bumps), `40248f2` (the watchdog) and
 `af180e2` (the rest of `a69d7ed` apart from `StartOrAttach`).
@@ -135,7 +136,7 @@ lands in the panel and the bridge with a guaranteed full snapshot on every recon
 
 ## Ported in part: #105, RoutingService taken, live apply refused
 
-Upstream `25a8d740` (#105, released in `v0.5.6`) makes a changed panel config apply to the running Xray through its
+Upstream `25a8d740` (#105, released in `v0.5.5`, `v0.5.6` and `v0.5.7`) makes a changed panel config apply to the running Xray through its
 API instead of restarting it. It bundles two independent changes. The fork takes the first and refuses the second.
 
 **Taken: the routing API service is always enabled.** `RoutingService` joins `requiredAPIServices` in
@@ -1690,3 +1691,53 @@ build uses `github.com/sagernet/quic-go`, and no advisory is keyed to the sagern
 blind spot. Moving to sing-box `v1.14.1` would carry the fix in, through quic-go 0.61, which is a further reason to
 prefer that release as the 1.14 target. Teaching the advisory query to follow a fork's upstream module path is a
 separate change and is not made here; it is recorded so it is not lost.
+
+### State on 2026-11-11: upstream #100 and #114 carried in upstream's own form
+
+Upstream node heads checked with `git ls-remote` on 2026-11-11: `main` `739eab94a9343d9f0035baf7162796844109f4c4`
+(`v0.5.7`, still the newest tag), `dev` `9ccd2638c7feb65e62c5350fba38b94809554b50`.
+
+The panel's fork tracker counts a security fix as ported by design only if a fork commit it names carries at least one
+of upstream's changed blocks as upstream wrote them. #100 was on main only in the fork's own form, and #114's two
+`config_tobytes_test.go` tests only as copies rewritten with fork helpers in another file; both relied on an owner
+decision that ends on 2026-11-20. Both now carry upstream's code.
+
+- **#100** (`3be63e131890`, released in v0.5.5). `9f89151e` carries upstream's three `config/config_test.go` tests and
+`4675fbcf` upstream's `API_KEY` block, both with upstream's author and date and its cherry-pick line. `Load` again
+returns the config together with the error, as upstream does, and the fork's `fromEnv` split is gone. That contract was
+checked against every caller of `config.Load`: `cmd/node/main.go` calls `log.Fatal` on the error before it reads the
+config, `controller/rpc/preauth/apikey_test.go` returns on it, and `NewTestConfig` never looked at the error. In every
+error case `ApiKey` is `uuid.Nil`, which both transports still refuse. With comment lines left out,
+`config/config.go` now differs from upstream `v0.5.7` only by the fork's sing-box, OpenVPN and gRPC stream settings.
+Evidence on go1.27.3, darwin/arm64: upstream's two rejection tests fail on `c807ed05`, the fork before `88162e2`
+(`Load` accepts an unset, empty, malformed and all-zero key), and on main `7b1e62ba` only on the contract (no config
+returned, a different message); all three pass on `4675fbcf`, and `TestLoadAcceptsValidAPIKey` passes on all three
+commits. Removing the all-zero check makes `TestLoadRejectsInvalidAPIKey/all_zero` fail again. The node binary built at
+`c807ed05` gets past `config.Load` with each bad key and stops only at the missing TLS certificate; built with this
+change it exits 1 with `invalid API_KEY: API_KEY is not set`, `invalid API_KEY: invalid UUID length: 10` or
+`invalid API_KEY: must not be the all-zero UUID`. The drift check reports `3be63e131890` as ported by its cherry-pick
+line and said its waiver was no longer needed, so the row is gone.
+- **#114** (`946ab6a5eb9d`, released in v0.5.5). `e49cbbae` renames `config_tobytes_race_test.go`, which held
+`TestToBytesConcurrentCalls` and `TestToBytesWhileCloning`, to upstream's `config_tobytes_test.go`. `c936200a`
+carries upstream's hunks of that file as upstream wrote them, with upstream's author, date and cherry-pick line: the
+two import lines, the Shadowsocks 2022 fixture, `buildShadowsocksInbound` and
+`TestToBytesStartsEmptyShadowsocks2022InboundsMultiUser`. `f02a59ac` adds `TestToBytesWritesOnlyRealShadowsocks2022Users`
+with its key literal written `example-user-one-key`, because the pre-push secret guard refuses upstream's line,
+whose key literal is user-one-password with no example marker (probed on 2026-11-11: `PASSWORD-LIKE`). The fork's
+rewritten copies in `shadowsocks2022_tobytes_test.go` are gone; that file keeps the fork's placeholder lifecycle test.
+With upstream's literal put back for one local run, the block from the fixture to the end of the file equals
+upstream's #114 text line for line, comment and blank lines aside, and both tests pass. Removing the placeholder from
+`wireClientsLocked` makes `TestToBytesStartsEmptyShadowsocks2022InboundsMultiUser` fail (`built as
+*shadowsocks_2022.ServerConfig, want a multi-user server`) and makes the real-core
+`TestShadowsocks2022InboundStartedWithoutUsers` fail: against the pinned, patched Xray 26.11.9 built for darwin/arm64
+with `make build_xray`, the bare server key opened a connection and received data (2029865124 bytes in that run) and
+the first `AddUser` failed. Restored, all three pass.
+
+Three stale records were corrected in the same pass:
+
+- The `36dc7a4` waiver said the fork had not taken #64. `c755202a` ported #64 on 2026-11-10 without upstream's
+`.gitlab-ci.yml`, and no commit on main has added one.
+- #105 (`25a8d7405142`) was written as released in `v0.5.6`. `git for-each-ref --contains` on the upstream tags lists
+`v0.5.5`, `v0.5.6` and `v0.5.7`.
+- The #121 and #122 rows still said `dev-only`. `v0.5.7` (`739eab9`, 2026-11-03) contains both, and `62059d0a` and
+`bdd91efe` ported them the same day, after the release, with their `Upstream:` lines.
