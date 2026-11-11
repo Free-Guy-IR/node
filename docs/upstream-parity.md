@@ -76,6 +76,12 @@ Go 1.26.9 or x/net 0.60.0.
 On 2026-10-26 it moved to Go 1.26.10 in `410815f`, which fixes GO-2026-6809 (CVE-2026-111943, crypto/x509), and
 `5f9706b` raised the floor guard to 1.26.10. `4189871` makes the guard find the xray-builder stage case-insensitively
 and read the Xray patch order only from that stage (F-SEC1026-V1).
+On 2026-11-04 `5464902a` moved it to Go 1.27.3 together with the Xray pin. On 2026-11-11 the five setup-go pins
+(four in run-tests.yml, one in publish-release.yml) and the three golang builder stages of
+`Dockerfile` moved to Go 1.27.4 (`golang:1.27.4-alpine`, OCI index
+`sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf`), because the govulncheck job reported
+GO-2026-6859 in the 1.27.3 standard library as called (74 call paths, "HTTP/1 server crash due to MaxBytesReader
+header race in net/http", fixed in 1.27.4). `go.mod` keeps `go 1.27.3` as the minimum version.
 
 Notes on the ported commits:
 
