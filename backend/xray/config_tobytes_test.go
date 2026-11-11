@@ -160,3 +160,22 @@ func TestToBytesStartsEmptyShadowsocks2022InboundsMultiUser(t *testing.T) {
 		}
 	}
 }
+
+func TestToBytesWritesOnlyRealShadowsocks2022Users(t *testing.T) {
+	cfg, err := NewConfig(shadowsocks2022Config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.syncUsers([]*common.User{{
+		Email:    "1",
+		Inbounds: []string{"aes128", "aes256"},
+		Proxies:  &common.Proxy{Shadowsocks: &common.Shadowsocks{Password: "example-user-one-key"}},
+	}})
+	out := serializeConfig(t, cfg)
+
+	for _, tag := range []string{"aes128", "aes256"} {
+		if got := emails(t, out.settings(t, tag), "clients"); len(got) != 1 || got[0] != "1" {
+			t.Fatalf("%s clients = %v, want [1]", tag, got)
+		}
+	}
+}

@@ -44,25 +44,6 @@ func serializedClientEmails(t *testing.T, settings map[string]any) []string {
 	return emails
 }
 
-func TestToBytesWritesOnlyRealShadowsocks2022Users(t *testing.T) {
-	cfg, err := NewConfig(shadowsocks2022Config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.syncUsers([]*common.User{{
-		Email:    "1",
-		Inbounds: []string{"aes128", "aes256"},
-		Proxies:  &common.Proxy{Shadowsocks: &common.Shadowsocks{Password: "example-user-one-key"}},
-	}})
-	out := serializedInboundSettings(t, cfg)
-
-	for _, tag := range []string{"aes128", "aes256"} {
-		if got := serializedClientEmails(t, out[tag]); len(got) != 1 || got[0] != "1" {
-			t.Fatalf("%s clients = %v, want [1]", tag, got)
-		}
-	}
-}
-
 func TestThePlaceholderLeavesOnceAShadowsocks2022InboundGetsAUserAndIsNeverAUser(t *testing.T) {
 	cfg, err := NewConfig(shadowsocks2022Config, nil)
 	if err != nil {
