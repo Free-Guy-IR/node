@@ -283,6 +283,7 @@ func (o *L2TP) renderSwanctlConnection(b *strings.Builder, name string, relay *R
 	fmt.Fprintf(b, "                local_ts = dynamic[udp/1701]\n")
 	fmt.Fprintf(b, "                remote_ts = dynamic[udp]\n")
 	fmt.Fprintf(b, "                mode = transport\n")
+	fmt.Fprintf(b, "                rekey_time = 0s\n")
 	fmt.Fprintf(b, "                dpd_action = clear\n")
 	fmt.Fprintf(b, "            }\n")
 	fmt.Fprintf(b, "        }\n")
