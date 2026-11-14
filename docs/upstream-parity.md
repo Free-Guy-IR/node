@@ -337,7 +337,7 @@ The script reads every pin from the checked commit, never from a hardcoded value
 | component | upstream | pin read from | pin on 2026-11-03 | line branch |
 |---|---|---|---|---|
 | `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
-| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `dbd00be874a0` | `oldstable` |
+| `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `f92b2cdb67bc` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
 
 Retired on 2026-11-10: `mtg` (9seconds/mtg) was read from the node `go.mod` `require` of
@@ -995,6 +995,31 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   drift check matches only Xray's own advisories, not dependency advisories. A GO- id in the waiver file would be
   refused or reported as matching nothing.
 - The final gate re-runs govulncheck and prints this list.
+
+### State on 2026-11-15: the sing-box pin moves to `f92b2cdb67bc`
+
+`SINGBOX_COMMIT` moves from `dbd00be874a06d9870b2602dd92885367384c779` to
+`f92b2cdb67bcb5e14b3b404f6fc5e43286c2688d`: 5 commits ahead of the old pin and 0 behind it (GitHub compare).
+`SINGBOX_VERSION` stays `v1.13.21`, and the fork's `go.mod` keeps sing-quic `v0.6.5`.
+
+- Outside the separate `test` module and `.github`, the 5 commits change only the root `go.mod`, `go.sum` and the
+  test file `protocol/tuic/hotreload_attribution_test.go`. The `go.mod` change is two lines:
+  `github.com/andybalholm/brotli` `v1.1.0` to `v1.2.7` (GO-2026-6888, fixed in `v1.2.7`) and
+  `github.com/klauspost/compress` `v1.18.0` to `v1.20.2` (GO-2026-6865, fixed in `v1.20.2`).
+- govulncheck `v1.8.0` built with go1.27.4, source mode on `./cmd/sing-box` with `GOOS=linux GOARCH=amd64
+  CGO_ENABLED=0` and the image's tags `with_quic,with_utls,with_clash_api,with_v2ray_api,http2legacy`: at
+  `dbd00be874a0` it reports GO-2026-6888 (brotli `v1.1.0`) and GO-2026-6865 (klauspost/compress `v1.18.0`) as called
+  and exits 3; at `f92b2cdb67bc` it reports no vulnerabilities and exits 0.
+- `scripts/singbox_http2_guard.sh` with the same tags and go1.27.4 passes on `f92b2cdb67bc`: x/net `v0.60.0` compiles
+  its own `server.go`, `transport.go` and `frame.go`, and the three early-reset and CONTINUATION tests pass.
+- CI on the fork for `f92b2cdb67bc`: Fork Verify run `43626442978` and Fork Vulncheck run `43626442903`, both
+  `completed`/`success`. The fork's `main` is now `97f04d3843c9`, one commit later, which changes only
+  `.github/workflows/fork-vulncheck.yml`: a matrix entry that scans the node image's build (Go 1.27.4, the tags above).
+  Its run `43628221391` passed all three jobs, including that entry.
+- `transport/v2raygrpclite/conn.go` and `transport/v2rayhttp/conn.go` are identical at both pins, so the reason of the
+  `18b0317` waiver still holds and now names `f92b2cdb67bc`.
+- F-VSB-1 is not touched by this move: the fork's `go.mod` at `f92b2cdb67bc` still takes sing `v0.8.14`, sing-mux
+  `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`.
 
 ### Not covered
 
