@@ -60,3 +60,28 @@ func TestExplicitESPProposalsAreKeptAsGiven(t *testing.T) {
 		t.Fatalf("explicit esp_proposals = %v, want [aes256-sha256]", got)
 	}
 }
+
+func TestLegacyClientsLeaveAnExplicitProposalListAsGiven(t *testing.T) {
+	defaulted, err := NewConfig(legacyProposalsConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = `{"inbound_tag":"l2tp-custom","pool":"10.33.0.0/24","psk":"correct-horse-battery","legacy_clients":true`
+	cases := []struct {
+		raw      string
+		ike, esp []string
+	}{
+		{prefix + `,"esp_proposals":["aes256-sha256"]}`, defaulted.IKEProposals, []string{"aes256-sha256"}},
+		{prefix + `,"ike_proposals":["aes256-sha256-modp2048"]}`, []string{"aes256-sha256-modp2048"}, defaulted.ESPProposals},
+		{prefix + `,"ike_proposals":["aes256-sha256-modp2048"],"esp_proposals":["aes256-sha256"]}`, []string{"aes256-sha256-modp2048"}, []string{"aes256-sha256"}},
+	}
+	for _, c := range cases {
+		cfg, err := NewConfig(c.raw)
+		if err != nil {
+			t.Fatalf("NewConfig(%s): %v", c.raw, err)
+		}
+		if !slices.Equal(cfg.IKEProposals, c.ike) || !slices.Equal(cfg.ESPProposals, c.esp) {
+			t.Fatalf("%s: ike_proposals = %v, esp_proposals = %v; want %v and %v, since legacy_clients adds 3DES only to a list left to the defaults", c.raw, cfg.IKEProposals, cfg.ESPProposals, c.ike, c.esp)
+		}
+	}
+}
