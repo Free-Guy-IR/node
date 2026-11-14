@@ -18,6 +18,7 @@ connections {
                 remote_ts = dynamic[udp]
                 mode = transport
                 rekey_time = 0s
+                life_time = 24h
                 dpd_action = clear
             }
         }

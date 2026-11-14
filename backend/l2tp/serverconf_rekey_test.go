@@ -72,3 +72,30 @@ func TestSwanctlEveryChildLeavesRekeyingToTheClient(t *testing.T) {
 		}
 	}
 }
+
+func TestSwanctlEveryChildEndsAnSAItsClientNeverRekeysAfterADay(t *testing.T) {
+	relays := `[{"local_addr":"10.0.0.2","id":"198.51.100.10"},{"local_addr":"2001:db8::2","id":"relay.example.com"}]`
+	for _, c := range swanctlGoldenConfigs {
+		for _, raw := range []string{c.raw, withRelayIdentities(c.raw, relays)} {
+			o := swanctlTestInstance(t, raw)
+			conf := o.swanctlConfig()
+			connections, children := swanctlConnectionsAndChildren(t, conf)
+			if want := 1 + len(o.config.RelayIdentities); len(connections) != want || len(children) != want {
+				t.Fatalf("%s: %d connections and %d children, want %d of each\n%s", raw, len(connections), len(children), want, conf)
+			}
+			for _, child := range children {
+				if got := child.settings["rekey_time"]; len(got) != 1 || got[0] != "0s" {
+					t.Fatalf("%s: child %s has rekey_time %q, want exactly one rekey_time = 0s\n%s", raw, child.name, got, conf)
+				}
+				if got := child.settings["life_time"]; len(got) != 1 || got[0] != "24h" {
+					t.Fatalf("%s: child %s has life_time %q, want exactly one life_time = 24h, so that charon ends a CHILD_SA whose client never rekeys\n%s", raw, child.name, got, conf)
+				}
+			}
+			for _, key := range []string{"rekey_time", "life_time"} {
+				if got := strings.Count(conf, key); got != len(children) {
+					t.Fatalf("%s: %s appears %d times for %d children; it belongs in the children only\n%s", raw, key, got, len(children), conf)
+				}
+			}
+		}
+	}
+}
