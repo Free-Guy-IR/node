@@ -70,6 +70,7 @@ const relayConnectionTemplate = `    NAME {
                 local_ts = dynamic[udp/1701]
                 remote_ts = dynamic[udp]
                 mode = transport
+                rekey_time = 0s
                 dpd_action = clear
             }
         }
@@ -117,6 +118,7 @@ func TestSwanctlEmitsARelayConnectionThatPresentsTheRelayIdentity(t *testing.T) 
                 local_ts = dynamic[udp/1701]
                 remote_ts = dynamic[udp]
                 mode = transport
+                rekey_time = 0s
                 dpd_action = clear
             }
         }
