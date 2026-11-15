@@ -83,10 +83,10 @@ index 0000000..24aa775
 +	}
 +}
 diff --git a/app/proxyman/inbound/worker.go b/app/proxyman/inbound/worker.go
-index 02404cf..8278da7 100644
+index bd1bce5..835b441 100644
 --- a/app/proxyman/inbound/worker.go
 +++ b/app/proxyman/inbound/worker.go
-@@ -333,7 +333,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
+@@ -342,7 +342,7 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
  
  		go func() {
  			ctx, cancel := context.WithCancel(w.ctx)
@@ -95,7 +95,7 @@ index 02404cf..8278da7 100644
  			sid := session.NewID()
  			ctx = c.ContextWithID(ctx, sid)
  
-@@ -372,6 +372,12 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
+@@ -387,6 +387,12 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
  	}
  }
  

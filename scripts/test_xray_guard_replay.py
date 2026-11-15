@@ -71,18 +71,22 @@ class Targets(unittest.TestCase):
             self.write(directory, "xray-fixture.patch", [changed("a.go"), changed("b.go")])
             self.assertEqual(replay.replay_targets(directory, {"xray-fixture.patch:b.go"}), [("xray-fixture.patch", "b.go")])
 
-    def test_the_shipped_patches_park_test_files_and_none_of_them_is_a_target(self):
+    def test_the_shipped_patches_park_no_test_file_and_none_of_their_test_files_is_a_target(self):
         parked = []
+        tests = []
         for name in sorted(os.listdir(patches)):
             if name.startswith("xray-") and name.endswith(".patch"):
                 for section in replay.split_patch(os.path.join(patches, name))[1]:
                     old, new = replay.section_paths(section)
                     if old != new and old.endswith("_test.go") and not new.endswith(".go"):
                         parked.append((name, new))
-        self.assertIn(("xray-xff-trusted-header.patch", "common/protocol/http/headers_test.go.upstream"), parked)
-        self.assertIn(("xray-xff-trusted-header.patch", "transport/internet/grpc/encoding/remoteaddr_test.go.upstream"), parked)
+                    if replay.test_only(section):
+                        tests.append((name, new))
+        self.assertEqual(parked, [])
+        self.assertIn(("xray-xff-trusted-header.patch", "transport/internet/grpc/encoding/remoteaddr_test.go"), tests)
+        self.assertIn(("xray-xff-trusted-header.patch", "testing/trustedheader/trustedheader.go"), tests)
         targets = replay.replay_targets(patches, None)
-        self.assertEqual([entry for entry in parked if entry in targets], [])
+        self.assertEqual([entry for entry in tests if entry in targets], [])
         self.assertIn(("xray-xff-trusted-header.patch", "common/protocol/http/headers.go"), targets)
         self.assertIn(("xray-xff-trusted-header.patch", "transport/internet/grpc/encoding/remoteaddr.go"), targets)
 

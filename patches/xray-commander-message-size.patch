@@ -1,8 +1,8 @@
 diff --git a/app/commander/commander.go b/app/commander/commander.go
-index ac7bd83..65acede 100644
+index 9ea71e6..6f97a1e 100644
 --- a/app/commander/commander.go
 +++ b/app/commander/commander.go
-@@ -15,6 +15,8 @@ import (
+@@ -13,6 +13,8 @@ import (
  	"google.golang.org/grpc"
  )
  
@@ -11,7 +11,7 @@ index ac7bd83..65acede 100644
  // Commander is a Xray feature that provides gRPC methods to external clients.
  type Commander struct {
  	sync.Mutex
-@@ -63,7 +65,9 @@ func (c *Commander) Type() interface{} {
+@@ -61,7 +63,9 @@ func (c *Commander) Type() interface{} {
  // Start implements common.Runnable.
  func (c *Commander) Start() error {
  	c.Lock()

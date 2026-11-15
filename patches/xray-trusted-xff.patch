@@ -1,3 +1,497 @@
+diff --git a/common/protocol/http/headers.go b/common/protocol/http/headers.go
+index db3aa67..448bd1a 100644
+--- a/common/protocol/http/headers.go
++++ b/common/protocol/http/headers.go
+@@ -1,10 +1,12 @@
+ package http
+ 
+ import (
++	"context"
+ 	"net/http"
+ 	"strconv"
+ 	"strings"
+ 
++	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/common/net"
+ )
+ 
+@@ -22,6 +24,34 @@ func ParseXForwardedFor(header http.Header) []net.Address {
+ 	return addrs
+ }
+ 
++// ApplyTrustedXForwardedFor returns remoteAddr overridden by X-Forwarded-For only when a configured trusted header is present.
++func ApplyTrustedXForwardedFor(header http.Header, trusted []string, remoteAddr net.Addr) net.Addr {
++	value := header.Get("X-Forwarded-For")
++	if value == "" {
++		return remoteAddr
++	}
++	for _, t := range trusted {
++		if len(header.Values(t)) > 0 {
++			if idx := strings.IndexByte(value, ','); idx >= 0 {
++				value = value[:idx]
++			}
++			if addr := net.ParseAddress(value); addr.Family().IsIP() {
++				return &net.TCPAddr{
++					IP:   addr.IP(),
++					Port: 0,
++				}
++			}
++			return remoteAddr
++		}
++	}
++	if len(trusted) == 0 {
++		errors.LogWarning(context.Background(), `received "X-Forwarded-For" from `, remoteAddr, ` but "sockopt.trustedXForwardedFor" is not configured; ignoring it and using the real remote address`)
++	} else {
++		errors.LogError(context.Background(), `ignored potentially forged "X-Forwarded-For" from `, remoteAddr, `: `, value)
++	}
++	return remoteAddr
++}
++
+ // RemoveHopByHopHeaders removes hop by hop headers in http header list.
+ func RemoveHopByHopHeaders(header http.Header) {
+ 	// Strip hop-by-hop header based on RFC:
+diff --git a/common/protocol/http/trusted_xff_test.go b/common/protocol/http/trusted_xff_test.go
+new file mode 100644
+index 0000000..4f2c821
+--- /dev/null
++++ b/common/protocol/http/trusted_xff_test.go
+@@ -0,0 +1,43 @@
++package http_test
++
++import (
++	gonet "net"
++	"net/http"
++	"testing"
++
++	. "github.com/xtls/xray-core/common/protocol/http"
++)
++
++func TestApplyTrustedXForwardedFor(t *testing.T) {
++	remoteAddr := &gonet.TCPAddr{IP: gonet.ParseIP("127.0.0.1"), Port: 12345}
++
++	t.Run("ignore X-Forwarded-For without trusted header", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "fd00::1, fd00::2")
++
++		if addr := ApplyTrustedXForwardedFor(header, nil, remoteAddr); addr != remoteAddr {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++
++	t.Run("trust X-Forwarded-For", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "fd00::1, fd00::2")
++		header.Add("X-Trusted-CDN", "")
++
++		addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr)
++		if addr.String() != "[fd00::1]:0" {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++
++	t.Run("ignore non-IP X-Forwarded-For", func(t *testing.T) {
++		header := http.Header{}
++		header.Add("X-Forwarded-For", "example.com")
++		header.Add("X-Trusted-CDN", "")
++
++		if addr := ApplyTrustedXForwardedFor(header, []string{"X-Trusted-CDN"}, remoteAddr); addr != remoteAddr {
++			t.Fatalf("unexpected remote address: %v", addr)
++		}
++	})
++}
+diff --git a/transport/internet/grpc/dial.go b/transport/internet/grpc/dial.go
+index c8b8423..d4156c4 100644
+--- a/transport/internet/grpc/dial.go
++++ b/transport/internet/grpc/dial.go
+@@ -62,7 +62,7 @@ func dialgRPC(ctx context.Context, dest net.Destination, streamSettings *interne
+ 		if err != nil {
+ 			return nil, errors.New("Cannot dial gRPC").Base(err)
+ 		}
+-		return encoding.NewMultiHunkConn(grpcService, nil), nil
++		return encoding.NewMultiHunkConn(grpcService, nil, nil), nil
+ 	}
+ 
+ 	errors.LogDebug(ctx, "using gRPC tun mode service name: `"+grpcSettings.getServiceName()+"` stream name: `"+grpcSettings.getTunStreamName()+"`")
+@@ -71,7 +71,7 @@ func dialgRPC(ctx context.Context, dest net.Destination, streamSettings *interne
+ 		return nil, errors.New("Cannot dial gRPC").Base(err)
+ 	}
+ 
+-	return encoding.NewHunkConn(grpcService, nil), nil
++	return encoding.NewHunkConn(grpcService, nil, nil), nil
+ }
+ 
+ func getGrpcClient(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (*grpc.ClientConn, error) {
+diff --git a/transport/internet/grpc/encoding/hunkconn.go b/transport/internet/grpc/encoding/hunkconn.go
+index f1155de..9276906 100644
+--- a/transport/internet/grpc/encoding/hunkconn.go
++++ b/transport/internet/grpc/encoding/hunkconn.go
+@@ -9,8 +9,6 @@ import (
+ 	"github.com/xtls/xray-core/common/net"
+ 	"github.com/xtls/xray-core/common/net/cnc"
+ 	"github.com/xtls/xray-core/common/signal/done"
+-	"google.golang.org/grpc/metadata"
+-	"google.golang.org/grpc/peer"
+ )
+ 
+ type HunkConn interface {
+@@ -38,31 +36,8 @@ func NewHunkReadWriter(hc HunkConn, cancel context.CancelFunc) *HunkReaderWriter
+ 	return &HunkReaderWriter{hc, cancel, done.New(), nil, 0}
+ }
+ 
+-func NewHunkConn(hc HunkConn, cancel context.CancelFunc) net.Conn {
+-	var rAddr net.Addr
+-	pr, ok := peer.FromContext(hc.Context())
+-	if ok {
+-		rAddr = pr.Addr
+-	} else {
+-		rAddr = &net.TCPAddr{
+-			IP:   []byte{0, 0, 0, 0},
+-			Port: 0,
+-		}
+-	}
+-
+-	md, ok := metadata.FromIncomingContext(hc.Context())
+-	if ok {
+-		header := md.Get("x-real-ip")
+-		if len(header) > 0 {
+-			realip := net.ParseAddress(header[0])
+-			if realip.Family().IsIP() {
+-				rAddr = &net.TCPAddr{
+-					IP:   realip.IP(),
+-					Port: 0,
+-				}
+-			}
+-		}
+-	}
++func NewHunkConn(hc HunkConn, cancel context.CancelFunc, trustedXForwardedFor []string) net.Conn {
++	rAddr := remoteAddrFromContext(hc.Context(), trustedXForwardedFor)
+ 	wrc := NewHunkReadWriter(hc, cancel)
+ 	return cnc.NewConnection(
+ 		cnc.ConnectionInput(wrc),
+diff --git a/transport/internet/grpc/encoding/multiconn.go b/transport/internet/grpc/encoding/multiconn.go
+index fa95cba..f27a1c3 100644
+--- a/transport/internet/grpc/encoding/multiconn.go
++++ b/transport/internet/grpc/encoding/multiconn.go
+@@ -3,15 +3,12 @@ package encoding
+ import (
+ 	"context"
+ 	"io"
+-	"net"
+ 
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/common/errors"
+-	xnet "github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/net"
+ 	"github.com/xtls/xray-core/common/net/cnc"
+ 	"github.com/xtls/xray-core/common/signal/done"
+-	"google.golang.org/grpc/metadata"
+-	"google.golang.org/grpc/peer"
+ )
+ 
+ type MultiHunkConn interface {
+@@ -34,31 +31,8 @@ func NewMultiHunkReadWriter(hc MultiHunkConn, cancel context.CancelFunc) *MultiH
+ 	return &MultiHunkReaderWriter{hc, cancel, done.New(), nil}
+ }
+ 
+-func NewMultiHunkConn(hc MultiHunkConn, cancel context.CancelFunc) net.Conn {
+-	var rAddr net.Addr
+-	pr, ok := peer.FromContext(hc.Context())
+-	if ok {
+-		rAddr = pr.Addr
+-	} else {
+-		rAddr = &net.TCPAddr{
+-			IP:   []byte{0, 0, 0, 0},
+-			Port: 0,
+-		}
+-	}
+-
+-	md, ok := metadata.FromIncomingContext(hc.Context())
+-	if ok {
+-		header := md.Get("x-real-ip")
+-		if len(header) > 0 {
+-			realip := xnet.ParseAddress(header[0])
+-			if realip.Family().IsIP() {
+-				rAddr = &net.TCPAddr{
+-					IP:   realip.IP(),
+-					Port: 0,
+-				}
+-			}
+-		}
+-	}
++func NewMultiHunkConn(hc MultiHunkConn, cancel context.CancelFunc, trustedXForwardedFor []string) net.Conn {
++	rAddr := remoteAddrFromContext(hc.Context(), trustedXForwardedFor)
+ 	wrc := NewMultiHunkReadWriter(hc, cancel)
+ 	return cnc.NewConnection(
+ 		cnc.ConnectionInputMulti(wrc),
+diff --git a/transport/internet/grpc/encoding/remoteaddr.go b/transport/internet/grpc/encoding/remoteaddr.go
+new file mode 100644
+index 0000000..a28d919
+--- /dev/null
++++ b/transport/internet/grpc/encoding/remoteaddr.go
+@@ -0,0 +1,58 @@
++package encoding
++
++import (
++	"context"
++	"strings"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"google.golang.org/grpc/metadata"
++	"google.golang.org/grpc/peer"
++)
++
++func remoteAddrFromContext(ctx context.Context, trusted []string) net.Addr {
++	var remoteAddr net.Addr
++	if pr, ok := peer.FromContext(ctx); ok {
++		remoteAddr = pr.Addr
++	} else {
++		remoteAddr = &net.TCPAddr{
++			IP:   []byte{0, 0, 0, 0},
++			Port: 0,
++		}
++	}
++
++	md, ok := metadata.FromIncomingContext(ctx)
++	if !ok {
++		return remoteAddr
++	}
++
++	if forwardedAddr := parseTrustedXForwardedFor(md, trusted, remoteAddr); forwardedAddr != nil && forwardedAddr.Family().IsIP() {
++		remoteAddr = &net.TCPAddr{
++			IP:   forwardedAddr.IP(),
++			Port: 0,
++		}
++	}
++	return remoteAddr
++}
++
++func parseTrustedXForwardedFor(md metadata.MD, trusted []string, remoteAddr net.Addr) net.Address {
++	values := md.Get("X-Forwarded-For")
++	if len(values) == 0 || values[0] == "" {
++		return nil
++	}
++	value := values[0]
++	for _, t := range trusted {
++		if len(md.Get(t)) > 0 {
++			if idx := strings.IndexByte(value, ','); idx >= 0 {
++				value = value[:idx]
++			}
++			return net.ParseAddress(value)
++		}
++	}
++	if len(trusted) == 0 {
++		errors.LogWarning(context.Background(), `received "X-Forwarded-For" from `, remoteAddr, ` but "sockopt.trustedXForwardedFor" is not configured; ignoring it and using the real remote address`)
++	} else {
++		errors.LogError(context.Background(), `ignored potentially forged "X-Forwarded-For" from `, remoteAddr, `: `, value)
++	}
++	return nil
++}
+diff --git a/transport/internet/grpc/encoding/remoteaddr_test.go b/transport/internet/grpc/encoding/remoteaddr_test.go
+new file mode 100644
+index 0000000..a016c6f
+--- /dev/null
++++ b/transport/internet/grpc/encoding/remoteaddr_test.go
+@@ -0,0 +1,53 @@
++package encoding
++
++import (
++	"context"
++	"net"
++	"testing"
++
++	"google.golang.org/grpc/metadata"
++	"google.golang.org/grpc/peer"
++)
++
++func TestRemoteAddrFromContext(t *testing.T) {
++	tests := []struct {
++		name                  string
++		metadata              metadata.MD
++		trustedXForwardedFor  []string
++		expectedRemoteAddress string
++	}{
++		{
++			name:                  "trust X-Forwarded-For when configured",
++			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::2, fd00::3"),
++			trustedXForwardedFor:  []string{"X-Forwarded-For"},
++			expectedRemoteAddress: "[fd00::2]:0",
++		},
++		{
++			name:                  "trust X-Forwarded-For with trusted marker",
++			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::4", "X-Trusted-CDN", "1"),
++			trustedXForwardedFor:  []string{"X-Trusted-CDN"},
++			expectedRemoteAddress: "[fd00::4]:0",
++		},
++		{
++			name:                  "ignore X-Forwarded-For without trusted marker",
++			metadata:              metadata.Pairs("X-Forwarded-For", "fd00::5"),
++			trustedXForwardedFor:  []string{"X-Trusted-CDN"},
++			expectedRemoteAddress: "127.0.0.1:12345",
++		},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			ctx := peer.NewContext(metadata.NewIncomingContext(context.Background(), test.metadata), &peer.Peer{
++				Addr: &net.TCPAddr{
++					IP:   net.ParseIP("127.0.0.1"),
++					Port: 12345,
++				},
++			})
++			remoteAddr := remoteAddrFromContext(ctx, test.trustedXForwardedFor)
++			if remoteAddr.String() != test.expectedRemoteAddress {
++				t.Fatalf("unexpected remote address: %s", remoteAddr.String())
++			}
++		})
++	}
++}
+diff --git a/transport/internet/grpc/hub.go b/transport/internet/grpc/hub.go
+index 34f8f1c..91bd2ab 100644
+--- a/transport/internet/grpc/hub.go
++++ b/transport/internet/grpc/hub.go
+@@ -19,24 +19,25 @@ import (
+ 
+ type Listener struct {
+ 	encoding.UnimplementedGRPCServiceServer
+-	ctx     context.Context
+-	handler internet.ConnHandler
+-	local   net.Addr
+-	config  *Config
++	ctx                  context.Context
++	handler              internet.ConnHandler
++	local                net.Addr
++	config               *Config
++	trustedXForwardedFor []string
+ 
+ 	s *grpc.Server
+ }
+ 
+ func (l Listener) Tun(server encoding.GRPCService_TunServer) error {
+ 	tunCtx, cancel := context.WithCancel(l.ctx)
+-	l.handler(encoding.NewHunkConn(server, cancel))
++	l.handler(encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor))
+ 	<-tunCtx.Done()
+ 	return nil
+ }
+ 
+ func (l Listener) TunMulti(server encoding.GRPCService_TunMultiServer) error {
+ 	tunCtx, cancel := context.WithCancel(l.ctx)
+-	l.handler(encoding.NewMultiHunkConn(server, cancel))
++	l.handler(encoding.NewMultiHunkConn(server, cancel, l.trustedXForwardedFor))
+ 	<-tunCtx.Done()
+ 	return nil
+ }
+@@ -74,6 +75,9 @@ func Listen(ctx context.Context, address net.Address, port net.Port, settings *i
+ 	}
+ 
+ 	listener.ctx = ctx
++	if settings.SocketSettings != nil {
++		listener.trustedXForwardedFor = settings.SocketSettings.TrustedXForwardedFor
++	}
+ 
+ 	config := tls.ConfigFromStreamSettings(settings)
+ 
+diff --git a/transport/internet/httpupgrade/httpupgrade_test.go b/transport/internet/httpupgrade/httpupgrade_test.go
+index c0310b9..5b420ed 100644
+--- a/transport/internet/httpupgrade/httpupgrade_test.go
++++ b/transport/internet/httpupgrade/httpupgrade_test.go
+@@ -138,6 +138,9 @@ func TestDialWithRemoteAddr(t *testing.T) {
+ 		ProtocolSettings: &Config{
+ 			Path: "httpupgrade",
+ 		},
++		SocketSettings: &internet.SocketConfig{
++			TrustedXForwardedFor: []string{"X-Forwarded-For"},
++		},
+ 	}, func(conn stat.Connection) {
+ 		go func(c stat.Connection) {
+ 			defer c.Close()
+diff --git a/transport/internet/httpupgrade/hub.go b/transport/internet/httpupgrade/hub.go
+index 8e70ad0..cb9a79d 100644
+--- a/transport/internet/httpupgrade/hub.go
++++ b/transport/internet/httpupgrade/hub.go
+@@ -80,24 +80,12 @@ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
+ 		return nil, err
+ 	}
+ 
+-	var forwardedAddrs []net.Address
+-	if s.socketSettings != nil && len(s.socketSettings.TrustedXForwardedFor) > 0 {
+-		for _, key := range s.socketSettings.TrustedXForwardedFor {
+-			if len(req.Header.Values(key)) > 0 {
+-				forwardedAddrs = http_proto.ParseXForwardedFor(req.Header)
+-				break
+-			}
+-		}
+-	} else {
+-		forwardedAddrs = http_proto.ParseXForwardedFor(req.Header)
+-	}
+ 	remoteAddr := conn.RemoteAddr()
+-	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+-		remoteAddr = &net.TCPAddr{
+-			IP:   forwardedAddrs[0].IP(),
+-			Port: int(0),
+-		}
++	var trustedXFF []string
++	if s.socketSettings != nil {
++		trustedXFF = s.socketSettings.TrustedXForwardedFor
+ 	}
++	remoteAddr = http_proto.ApplyTrustedXForwardedFor(req.Header, trustedXFF, remoteAddr)
+ 
+ 	return stat.Connection(newConnection(conn, remoteAddr)), nil
+ }
+diff --git a/transport/internet/splithttp/hub.go b/transport/internet/splithttp/hub.go
+index 1ffdf6f..763bf92 100644
+--- a/transport/internet/splithttp/hub.go
++++ b/transport/internet/splithttp/hub.go
+@@ -153,17 +153,6 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
+ 		return
+ 	}
+ 
+-	var forwardedAddrs []net.Address
+-	if h.socketSettings != nil && len(h.socketSettings.TrustedXForwardedFor) > 0 {
+-		for _, key := range h.socketSettings.TrustedXForwardedFor {
+-			if len(request.Header.Values(key)) > 0 {
+-				forwardedAddrs = http_proto.ParseXForwardedFor(request.Header)
+-				break
+-			}
+-		}
+-	} else {
+-		forwardedAddrs = http_proto.ParseXForwardedFor(request.Header)
+-	}
+ 	var remoteAddr net.Addr
+ 	var err error
+ 	remoteAddr, err = net.ResolveTCPAddr("tcp", request.RemoteAddr)
+@@ -179,12 +168,11 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
+ 			Port: remoteAddr.(*net.TCPAddr).Port,
+ 		}
+ 	}
+-	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+-		remoteAddr = &net.TCPAddr{
+-			IP:   forwardedAddrs[0].IP(),
+-			Port: 0,
+-		}
++	var trustedXFF []string
++	if h.socketSettings != nil {
++		trustedXFF = h.socketSettings.TrustedXForwardedFor
+ 	}
++	remoteAddr = http_proto.ApplyTrustedXForwardedFor(request.Header, trustedXFF, remoteAddr)
+ 
+ 	var currentSession *httpSession
+ 	if sessionId != "" {
+diff --git a/transport/internet/splithttp/splithttp_test.go b/transport/internet/splithttp/splithttp_test.go
+index ab02b61..62ca858 100644
+--- a/transport/internet/splithttp/splithttp_test.go
++++ b/transport/internet/splithttp/splithttp_test.go
+@@ -88,6 +88,9 @@ func TestDialWithRemoteAddr(t *testing.T) {
+ 		ProtocolSettings: &Config{
+ 			Path: "sh",
+ 		},
++		SocketSettings: &internet.SocketConfig{
++			TrustedXForwardedFor: []string{"X-Forwarded-For"},
++		},
+ 	}, func(conn stat.Connection) {
+ 		go func(c stat.Connection) {
+ 			defer c.Close()
 diff --git a/transport/internet/websocket/forged_xff_test.go b/transport/internet/websocket/forged_xff_test.go
 new file mode 100644
 index 0000000..2596768
@@ -60,3 +554,50 @@ index 0000000..2596768
 +		t.Fatal("no connection accepted")
 +	}
 +}
+diff --git a/transport/internet/websocket/hub.go b/transport/internet/websocket/hub.go
+index 7379917..42dba88 100644
+--- a/transport/internet/websocket/hub.go
++++ b/transport/internet/websocket/hub.go
+@@ -65,24 +65,12 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
+ 		return
+ 	}
+ 
+-	var forwardedAddrs []net.Address
+-	if h.socketSettings != nil && len(h.socketSettings.TrustedXForwardedFor) > 0 {
+-		for _, key := range h.socketSettings.TrustedXForwardedFor {
+-			if len(request.Header.Values(key)) > 0 {
+-				forwardedAddrs = http_proto.ParseXForwardedFor(request.Header)
+-				break
+-			}
+-		}
+-	} else {
+-		forwardedAddrs = http_proto.ParseXForwardedFor(request.Header)
+-	}
+ 	remoteAddr := conn.RemoteAddr()
+-	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+-		remoteAddr = &net.TCPAddr{
+-			IP:   forwardedAddrs[0].IP(),
+-			Port: int(0),
+-		}
++	var trustedXFF []string
++	if h.socketSettings != nil {
++		trustedXFF = h.socketSettings.TrustedXForwardedFor
+ 	}
++	remoteAddr = http_proto.ApplyTrustedXForwardedFor(request.Header, trustedXFF, remoteAddr)
+ 
+ 	h.ln.addConn(NewConnection(conn, remoteAddr, extraReader, h.ln.config.HeartbeatPeriod))
+ }
+diff --git a/transport/internet/websocket/ws_test.go b/transport/internet/websocket/ws_test.go
+index aab28af..08cd275 100644
+--- a/transport/internet/websocket/ws_test.go
++++ b/transport/internet/websocket/ws_test.go
+@@ -79,6 +79,9 @@ func TestDialWithRemoteAddr(t *testing.T) {
+ 		ProtocolSettings: &Config{
+ 			Path: "ws",
+ 		},
++		SocketSettings: &internet.SocketConfig{
++			TrustedXForwardedFor: []string{"X-Forwarded-For"},
++		},
+ 	}, func(conn stat.Connection) {
+ 		go func(c stat.Connection) {
+ 			defer c.Close()

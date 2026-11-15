@@ -1,3 +1,67 @@
+Stats: fix the GetOrRegister races, backported to the pin
+
+Upstream: 0bafca94868a4ec38cd3dba0f2ba7ec6f44bbf18
+
+Backport: the Manager methods, the interface and the call sites are upstream code. Hunks for code
+that does not exist at the pin are left out (the trackOnlineIP helper, TUN inbound stats, the
+restructured WireGuard client and server), and the pin names the online map field onlineMap.
+
+diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
+index e6f8965..5441ff3 100644
+--- a/app/dispatcher/default.go
++++ b/app/dispatcher/default.go
+@@ -163,7 +163,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 		p := d.policy.ForLevel(user.Level)
+ 		if p.Stats.UserUplink {
+ 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
++			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
+ 				inboundLink.Writer = &SizeStatWriter{
+ 					Counter: c,
+ 					Writer:  inboundLink.Writer,
+@@ -172,7 +172,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 		}
+ 		if p.Stats.UserDownlink {
+ 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
++			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
+ 				outboundLink.Writer = &SizeStatWriter{
+ 					Counter: c,
+ 					Writer:  outboundLink.Writer,
+@@ -182,7 +182,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
+ 
+ 		if p.Stats.UserOnline {
+ 			name := "user>>>" + user.Email + ">>>online"
+-			if om, _ := stats.GetOrRegisterOnlineMap(d.stats, name); om != nil {
++			if om, _ := d.stats.GetOrRegisterOnlineMap(name); om != nil {
+ 				userIP := sessionInbound.Source.Address.String()
+ 				om.AddIP(userIP)
+ 				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
+@@ -206,13 +206,13 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+ 		p := policyManager.ForLevel(user.Level)
+ 		if p.Stats.UserUplink {
+ 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+-			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
++			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
+ 				link.Reader.(*buf.TimeoutWrapperReader).Counter = c
+ 			}
+ 		}
+ 		if p.Stats.UserDownlink {
+ 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+-			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
++			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
+ 				link.Writer = &SizeStatWriter{
+ 					Counter: c,
+ 					Writer:  link.Writer,
+@@ -221,7 +221,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
+ 		}
+ 		if p.Stats.UserOnline {
+ 			name := "user>>>" + user.Email + ">>>online"
+-			if om, _ := stats.GetOrRegisterOnlineMap(statsManager, name); om != nil {
++			if om, _ := statsManager.GetOrRegisterOnlineMap(name); om != nil {
+ 				userIP := sessionInbound.Source.Address.String()
+ 				om.AddIP(userIP)
+ 				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
 diff --git a/app/dispatcher/stats_registration_race_test.go b/app/dispatcher/stats_registration_race_test.go
 new file mode 100644
 index 0000000..ea0cafa
@@ -132,3 +196,224 @@ index 0000000..ea0cafa
 +		}
 +	}
 +}
+diff --git a/app/proxyman/inbound/always.go b/app/proxyman/inbound/always.go
+index a1cb7b7..07efb06 100644
+--- a/app/proxyman/inbound/always.go
++++ b/app/proxyman/inbound/always.go
+@@ -26,7 +26,7 @@ func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter)
+ 	if len(tag) > 0 && policy.ForSystem().Stats.InboundUplink {
+ 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
+ 		name := "inbound>>>" + tag + ">>>traffic>>>uplink"
+-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
++		c, _ := statsManager.GetOrRegisterCounter(name)
+ 		if c != nil {
+ 			uplinkCounter = c
+ 		}
+@@ -34,7 +34,7 @@ func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter)
+ 	if len(tag) > 0 && policy.ForSystem().Stats.InboundDownlink {
+ 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
+ 		name := "inbound>>>" + tag + ">>>traffic>>>downlink"
+-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
++		c, _ := statsManager.GetOrRegisterCounter(name)
+ 		if c != nil {
+ 			downlinkCounter = c
+ 		}
+diff --git a/app/proxyman/outbound/handler.go b/app/proxyman/outbound/handler.go
+index 62902c6..27bb6e4 100644
+--- a/app/proxyman/outbound/handler.go
++++ b/app/proxyman/outbound/handler.go
+@@ -40,7 +40,7 @@ func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter)
+ 	if len(tag) > 0 && policy.ForSystem().Stats.OutboundUplink {
+ 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
+ 		name := "outbound>>>" + tag + ">>>traffic>>>uplink"
+-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
++		c, _ := statsManager.GetOrRegisterCounter(name)
+ 		if c != nil {
+ 			uplinkCounter = c
+ 		}
+@@ -48,7 +48,7 @@ func getStatCounter(v *core.Instance, tag string) (stats.Counter, stats.Counter)
+ 	if len(tag) > 0 && policy.ForSystem().Stats.OutboundDownlink {
+ 		statsManager := v.GetFeature(stats.ManagerType()).(stats.Manager)
+ 		name := "outbound>>>" + tag + ">>>traffic>>>downlink"
+-		c, _ := stats.GetOrRegisterCounter(statsManager, name)
++		c, _ := statsManager.GetOrRegisterCounter(name)
+ 		if c != nil {
+ 			downlinkCounter = c
+ 		}
+diff --git a/app/stats/stats.go b/app/stats/stats.go
+index fc12fa2..a47100b 100644
+--- a/app/stats/stats.go
++++ b/app/stats/stats.go
+@@ -48,6 +48,20 @@ func (m *Manager) RegisterCounter(name string) (stats.Counter, error) {
+ 	return c, nil
+ }
+ 
++// GetOrRegisterCounter implements stats.Manager.
++func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {
++	m.access.Lock()
++	defer m.access.Unlock()
++
++	if c, found := m.counters[name]; found {
++		return c, nil
++	}
++	errors.LogDebug(context.Background(), "create new counter ", name)
++	c := new(Counter)
++	m.counters[name] = c
++	return c, nil
++}
++
+ // UnregisterCounter implements stats.Manager.
+ func (m *Manager) UnregisterCounter(name string) error {
+ 	m.access.Lock()
+@@ -97,6 +111,20 @@ func (m *Manager) RegisterOnlineMap(name string) (stats.OnlineMap, error) {
+ 	return om, nil
+ }
+ 
++// GetOrRegisterOnlineMap implements stats.Manager.
++func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {
++	m.access.Lock()
++	defer m.access.Unlock()
++
++	if om, found := m.onlineMap[name]; found {
++		return om, nil
++	}
++	errors.LogDebug(context.Background(), "create new OnlineMap ", name)
++	om := NewOnlineMap()
++	m.onlineMap[name] = om
++	return om, nil
++}
++
+ // UnregisterOnlineMap implements stats.Manager.
+ func (m *Manager) UnregisterOnlineMap(name string) error {
+ 	m.access.Lock()
+@@ -137,6 +165,26 @@ func (m *Manager) RegisterChannel(name string) (stats.Channel, error) {
+ 	return c, nil
+ }
+ 
++// GetOrRegisterChannel implements stats.Manager.
++func (m *Manager) GetOrRegisterChannel(name string) (stats.Channel, error) {
++	m.access.Lock()
++	defer m.access.Unlock()
++
++	if c, found := m.channels[name]; found {
++		return c, nil
++	}
++	errors.LogDebug(context.Background(), "create new channel ", name)
++	c := NewChannel(&ChannelConfig{BufferSize: 64, Blocking: false})
++	if m.running {
++		// Start before publishing so no goroutine can observe an unstarted channel.
++		if err := c.Start(); err != nil {
++			return nil, err
++		}
++	}
++	m.channels[name] = c
++	return c, nil
++}
++
+ // UnregisterChannel implements stats.Manager.
+ func (m *Manager) UnregisterChannel(name string) error {
+ 	m.access.Lock()
+diff --git a/features/stats/stats.go b/features/stats/stats.go
+index abea745..b0fb7c9 100644
+--- a/features/stats/stats.go
++++ b/features/stats/stats.go
+@@ -82,6 +82,8 @@ type Manager interface {
+ 
+ 	// RegisterCounter registers a new counter to the manager. The identifier string must not be empty, and unique among other counters.
+ 	RegisterCounter(string) (Counter, error)
++	// GetOrRegisterCounter returns the counter by its identifier, atomically creating and registering it if absent.
++	GetOrRegisterCounter(string) (Counter, error)
+ 	// UnregisterCounter unregisters a counter from the manager by its identifier.
+ 	UnregisterCounter(string) error
+ 	// GetCounter returns a counter by its identifier.
+@@ -89,6 +91,8 @@ type Manager interface {
+ 
+ 	// RegisterOnlineMap registers a new onlinemap to the manager. The identifier string must not be empty, and unique among other onlinemaps.
+ 	RegisterOnlineMap(string) (OnlineMap, error)
++	// GetOrRegisterOnlineMap returns the OnlineMap by its identifier, atomically creating and registering it if absent.
++	GetOrRegisterOnlineMap(string) (OnlineMap, error)
+ 	// UnregisterOnlineMap unregisters a onlinemap from the manager by its identifier.
+ 	UnregisterOnlineMap(string) error
+ 	// GetOnlineMap returns a onlinemap by its identifier.
+@@ -96,6 +100,8 @@ type Manager interface {
+ 
+ 	// RegisterChannel registers a new channel to the manager. The identifier string must not be empty, and unique among other channels.
+ 	RegisterChannel(string) (Channel, error)
++	// GetOrRegisterChannel returns the channel by its identifier, atomically creating and registering it if absent.
++	GetOrRegisterChannel(string) (Channel, error)
+ 	// UnregisterChannel unregisters a channel from the manager by its identifier.
+ 	UnregisterChannel(string) error
+ 	// GetChannel returns a channel by its identifier.
+@@ -105,36 +111,6 @@ type Manager interface {
+ 	GetAllOnlineUsers() []string
+ }
+ 
+-// GetOrRegisterCounter tries to get the StatCounter first. If not exist, it then tries to create a new counter.
+-func GetOrRegisterCounter(m Manager, name string) (Counter, error) {
+-	counter := m.GetCounter(name)
+-	if counter != nil {
+-		return counter, nil
+-	}
+-
+-	return m.RegisterCounter(name)
+-}
+-
+-// GetOrRegisterOnlineMap tries to get the OnlineMap first. If not exist, it then tries to create a new onlinemap.
+-func GetOrRegisterOnlineMap(m Manager, name string) (OnlineMap, error) {
+-	onlineMap := m.GetOnlineMap(name)
+-	if onlineMap != nil {
+-		return onlineMap, nil
+-	}
+-
+-	return m.RegisterOnlineMap(name)
+-}
+-
+-// GetOrRegisterChannel tries to get the StatChannel first. If not exist, it then tries to create a new channel.
+-func GetOrRegisterChannel(m Manager, name string) (Channel, error) {
+-	channel := m.GetChannel(name)
+-	if channel != nil {
+-		return channel, nil
+-	}
+-
+-	return m.RegisterChannel(name)
+-}
+-
+ // ManagerType returns the type of Manager interface. Can be used to implement common.HasType.
+ //
+ // xray:api:stable
+@@ -155,6 +131,11 @@ func (NoopManager) RegisterCounter(string) (Counter, error) {
+ 	return nil, errors.New("not implemented")
+ }
+ 
++// GetOrRegisterCounter implements Manager.
++func (NoopManager) GetOrRegisterCounter(string) (Counter, error) {
++	return nil, errors.New("not implemented")
++}
++
+ // UnregisterCounter implements Manager.
+ func (NoopManager) UnregisterCounter(string) error {
+ 	return nil
+@@ -170,6 +151,11 @@ func (NoopManager) RegisterOnlineMap(string) (OnlineMap, error) {
+ 	return nil, errors.New("not implemented")
+ }
+ 
++// GetOrRegisterOnlineMap implements Manager.
++func (NoopManager) GetOrRegisterOnlineMap(string) (OnlineMap, error) {
++	return nil, errors.New("not implemented")
++}
++
+ // UnregisterOnlineMap implements Manager.
+ func (NoopManager) UnregisterOnlineMap(string) error {
+ 	return nil
+@@ -185,6 +171,11 @@ func (NoopManager) RegisterChannel(string) (Channel, error) {
+ 	return nil, errors.New("not implemented")
+ }
+ 
++// GetOrRegisterChannel implements Manager.
++func (NoopManager) GetOrRegisterChannel(string) (Channel, error) {
++	return nil, errors.New("not implemented")
++}
++
+ // UnregisterChannel implements Manager.
+ func (NoopManager) UnregisterChannel(string) error {
+ 	return nil

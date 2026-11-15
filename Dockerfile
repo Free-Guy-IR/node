@@ -1,4 +1,4 @@
-ARG XRAY_VERSION=v26.11.9
+ARG XRAY_VERSION=v26.3.27
 
 FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS builder
 
@@ -65,7 +65,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605
 ARG TARGETOS
 ARG TARGETARCH
 ARG XRAY_VERSION
-ARG XRAY_COMMIT=676eaf66f8f05d4d558ee7a74b4736623d3feeb9
+ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
 
 RUN apk update && apk add --no-cache git
 
@@ -73,17 +73,21 @@ WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
 COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
+COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
+COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-pinned-ca-servername.patch /patches/xray-pinned-ca-servername.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-router-race.patch /patches/xray-router-race.patch
 COPY patches/xray-session-revoke.patch /patches/xray-session-revoke.patch
 COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
+COPY patches/xray-ss2022-singbridge-close-race.patch /patches/xray-ss2022-singbridge-close-race.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
 COPY patches/xray-validator-credential-owner.patch /patches/xray-validator-credential-owner.patch
 COPY patches/xray-websocket-early-data.patch /patches/xray-websocket-early-data.patch
 COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-close.patch
 COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.patch
+COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
 COPY patches/xray-udp-conn-cancel-race.patch /patches/xray-udp-conn-cancel-race.patch
@@ -100,9 +104,11 @@ RUN git init -q . \
  && ! grep -q "MustNewName" app/dns/dnscommon.go \
  && git apply --verbose /patches/xray-dokodemo-unix-socket.patch \
  && grep -qF "if dest.Port == 0 && port != \"\" {" proxy/dokodemo/dokodemo.go \
- && grep -q "google.golang.org/grpc v1.85.0$" go.mod \
- && grep -q "golang.org/x/net v0.62.0$" go.mod \
- && grep -q "golang.org/x/text v0.43.0 // indirect$" go.mod \
+ && git apply --verbose /patches/xray-grpc-1.83.2.patch \
+ && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
+ && grep -q "golang.org/x/net v0.58.0$" go.mod \
+ && grep -q "golang.org/x/text v0.41.0 // indirect$" go.mod \
+ && git apply --verbose /patches/xray-http-100-continue.patch \
  && grep -qF "len(ResponseHeader1xx) >= 4 && bytes.Equal" proxy/http/server.go \
  && git apply --verbose /patches/xray-pinned-ca-servername.patch \
  && grep -qF 'return errors.New("Pinning CA needs a valid ServerName")' transport/internet/tls/config.go \
@@ -110,17 +116,16 @@ RUN git init -q . \
  && ! grep -qF "config.ServerName = address.Domain()" transport/internet/grpc/dial.go \
  && grep -qE "tlsConfig:[[:space:]]+tlsConfig.GetTLSConfig\(tls.WithDestination\(dest\)\)," transport/internet/hysteria/dialer.go \
  && git apply --verbose /patches/xray-quic-sniff.patch \
- && grep -q "func readShortQUICVarint" common/protocol/quic/sniff.go \
+ && grep -q "func readShortQuicVarint" common/protocol/quic/sniff.go \
  && grep -qF "len(b) < hdrLen+4+block.BlockSize()" common/protocol/quic/sniff.go \
  && git apply --verbose /patches/xray-router-race.patch \
- && grep -qF "rules          atomic.Pointer[[]*Rule]" app/router/router.go \
- && grep -qF "balancers      atomic.Pointer[map[string]*Balancer]" app/router/router.go \
- && test "$(grep -cF 'rules := *r.rules.Load()' app/router/router.go)" = "2" \
- && grep -qF "r.balancers.Store(&newBalancers)" app/router/router.go \
- && grep -qF "closeWebhooks(removed)" app/router/router.go \
- && test "$(grep -cF '(*r.balancers.Load())[tag]' app/router/balancing.go)" = "3" \
- && ! grep -hE "(^|[^[:alnum:]_])r[.](rules|balancers)" app/router/router.go app/router/balancing.go app/router/balancing_override.go | grep -qvE "r[.](rules|balancers)[.](Load|Store)[(]" \
- && test -f app/router/router_writers_race_test.go \
+ && grep -qF "table          atomic.Pointer[routeTable]" app/router/router.go \
+ && grep -qF "rules := r.snapshot().rules" app/router/router.go \
+ && grep -qF "next, err := r.extend(base, config)" app/router/router.go \
+ && grep -qF "closeRuleWebhooks(removed)" app/router/router.go \
+ && grep -qF "func (r *Router) balancer(tag string) (*Balancer, bool) {" app/router/router.go \
+ && ! grep -qE "(^|[^[:alnum:]_])r[.](rules|balancers)([^[:alnum:]_]|$)" app/router/router.go app/router/balancing.go app/router/balancing_override.go \
+ && grep -qF "b, ok := r.balancer(balancer)" app/router/balancing_override.go \
  && git apply --verbose /patches/xray-session-revoke.patch \
  && test "$(grep -c 'revocable.Wrap(w.dispatcher)' app/proxyman/inbound/worker.go)" = "3" \
  && test "$(grep -c 'revocable.Release()' app/proxyman/inbound/worker.go)" = "3" \
@@ -139,8 +144,17 @@ RUN git init -q . \
  && grep -qF "s.released = true" app/proxyman/sessionrevoke/session.go \
  && grep -qF "if s.released {" app/proxyman/sessionrevoke/session.go \
  && git apply --verbose /patches/xray-ss2022-dispatch.patch \
- && test ! -d common/singbridge \
- && ! grep -rqF "sagernet/sing-shadowsocks" proxy/shadowsocks_2022 \
+ && grep -qF "func ToDestination(socksaddr M.Socksaddr, network net.Network) (net.Destination, error)" common/singbridge/destination.go \
+ && grep -q "destination, err := singbridge.ToDestination(metadata.Destination, net.Network_UDP)" proxy/shadowsocks_2022/inbound_relay.go \
+ && grep -qF "conn.T = signal.CancelAfterInactivity(ctx, cancel, 300*time.Second)" common/singbridge/pipe.go \
+ && ! grep -qF "time.After(300 * time.Second)" common/singbridge/pipe.go \
+ && grep -qF "T: signal.CancelAfterInactivity(ctx, func() {" proxy/shadowsocks_2022/outbound.go \
+ && git apply --verbose /patches/xray-ss2022-singbridge-close-race.patch \
+ && grep -qF "w.cached, _ = buf.MergeMulti(w.cached, nb)" common/singbridge/packet.go \
+ && ! grep -qF "w.cached = nb" common/singbridge/packet.go \
+ && test "$(grep -c 'return M.Socksaddr{}, io.ErrClosedPipe' common/singbridge/packet.go)" = "2" \
+ && test "$(grep -c 'w.access.Lock()' common/singbridge/packet.go)" = "3" \
+ && grep -qF "w.closed = true" common/singbridge/packet.go \
  && git apply --verbose /patches/xray-stats-register-race.patch \
  && grep -qF "func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {" app/stats/stats.go \
  && grep -qF "func (m *Manager) GetOrRegisterOnlineMap(name string) (stats.OnlineMap, error) {" app/stats/stats.go \
@@ -173,14 +187,17 @@ RUN git init -q . \
  && grep -qF "func (d *delayDialConn) LocalAddr() net.Addr {" transport/internet/websocket/dialer.go \
  && grep -qF "func (d *delayDialConn) RemoteAddr() net.Addr {" transport/internet/websocket/dialer.go \
  && git apply --verbose /patches/xray-wireguard-client-close.patch \
- && grep -qF "if h.dev == nil {" proxy/wireguard/client.go \
- && grep -qF "if b.PacketConn != nil {" proxy/wireguard/bind.go \
+ && grep -qF "tunnel, err := h.processWireGuard(ctx, dialer)" proxy/wireguard/client.go \
+ && grep -qF "if h.closed {" proxy/wireguard/client.go \
+ && ! grep -qE "h[.]net[.]Dial" proxy/wireguard/client.go \
+ && test "$(grep -c 'case <-bind.closedCh:' proxy/wireguard/bind.go)" = "3" \
+ && grep -B1 -F "close(bind.closedCh)" proxy/wireguard/bind.go | grep -qF "default:" \
  && git apply --verbose /patches/xray-wireguard-tun-close.patch \
- && grep -qF "close(tun.closed)" proxy/wireguard/netstack.go \
- && grep -qF "tun.closeOnce.Do(func() {" proxy/wireguard/netstack.go \
- && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/netstack.go \
- && grep -q "golang.org/x/crypto v0.58.0$" go.mod \
- && grep -q "golang.org/x/net v0.62.0$" go.mod \
+ && grep -qF "close(tun.closed)" proxy/wireguard/gvisortun/tun.go \
+ && ! grep -qF "close(tun.incomingPacket)" proxy/wireguard/gvisortun/tun.go \
+ && git apply --verbose /patches/xray-x-net-0.60.0.patch \
+ && grep -q "golang.org/x/crypto v0.57.0$" go.mod \
+ && grep -q "golang.org/x/net v0.60.0$" go.mod \
  && git apply --verbose /patches/xray-xff-trusted-header.patch \
  && grep -q "func TrustedClientAddress" common/protocol/http/trusted_forwarder.go \
  && grep -q '"xray.trusted.forwarder.cidrs"' common/protocol/http/trusted_forwarder.go \

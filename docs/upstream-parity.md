@@ -334,9 +334,9 @@ upstream months after our pin, and nothing had noticed them. The drift check the
 
 The script reads every pin from the checked commit, never from a hardcoded value, through the same Dockerfile reader as the xray build (so a declaration on a continuation line or behind a CRLF counts), and the way docker resolves it: from the `ARG` declaration in the stage that builds (`xray-builder` for `XRAY_COMMIT`, `singbox-builder` for the sing-box pins), falling back to a global declaration only when that stage declares the `ARG` without a value. Two declarations with a value in that stage, or two global ones it falls back to, stop the run with exit 2, and so does a Dockerfile in which that stage does not exist the way docker reads it (a continuation line can swallow its `FROM`):
 
-| component | upstream | pin read from | pin on 2026-11-03 | line branch |
+| component | upstream | pin read from | pin on 2026-11-15 | line branch |
 |---|---|---|---|---|
-| `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`) | `main` |
+| `xray` | XTLS/Xray-core | `Dockerfile` `ARG XRAY_COMMIT` | `d2758a023cd7` (`v26.3.27`), held for the v0.8.25 rollout while `go.mod` stays on `676eaf66f8f0` (`v26.11.9`); see [State on 2026-11-15](#state-on-2026-11-15-the-xray-binary-is-held-on-v26327-for-the-v0825-rollout) | `main` |
 | `sing-box` | SagerNet/sing-box | `Dockerfile` `ARG SINGBOX_VERSION`, an upstream tag | `v1.13.21` (`628cb31ffa79`); fork `SINGBOX_COMMIT` `f92b2cdb67bc` | `oldstable` |
 | `sing-quic` | SagerNet/sing-quic | the `require` line of the sing-box fork's `go.mod` at `SINGBOX_COMMIT`, fetched from `SINGBOX_REPO` | `v0.6.5` (`d83826c306d7`) | `main` |
 
@@ -894,7 +894,8 @@ the `replace` to `./third_party/sing-vmess` is unchanged, so the build still use
 
 ### State on 2026-11-10: the Xray pin moves to the `v26.11.9` tag commit
 
-- Xray pin: `v26.11.9` (`676eaf66f8f05d4d558ee7a74b4736623d3feeb9`), the release tag commit itself
+- The Xray pin was `v26.11.9` (`676eaf66f8f05d4d558ee7a74b4736623d3feeb9`), the release tag commit itself, until the
+  binary was held on `v26.3.27` on 2026-11-15 (see [State on 2026-11-15](#state-on-2026-11-15-the-xray-binary-is-held-on-v26327-for-the-v0825-rollout))
 - Upstream released `v26.11.9` on 2026-11-09 at `676eaf66f8f0`, which is also the head of XTLS/Xray-core `main`. The
   drift check reported the release and its TUN IPv6 commit `2d287bbdee1e` (#7341) as `UNPORTED`; `git for-each-ref
   --contains 2d287bbdee1e refs/tags/` answers `v26.11.9`, so both are released items and the pin move ports them.
@@ -1020,6 +1021,75 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   `18b0317` waiver still holds and now names `f92b2cdb67bc`.
 - F-VSB-1 is not touched by this move: the fork's `go.mod` at `f92b2cdb67bc` still takes sing `v0.8.14`, sing-mux
   `v0.3.5` and sing-tun `v0.8.15` from the module proxy with no `replace`.
+
+### State on 2026-11-15: the Xray binary is held on `v26.3.27` for the v0.8.25 rollout
+
+- Xray pin: `v26.3.27` (`d2758a023cd7f4174a5a5fa4ff66e487d4342ba0`), the release tag commit itself
+- The v0.8.25 image builds the Xray binary from `d2758a023cd7` again. This is an owner-approved hold: `v26.11.9` refuses
+  the production chain links, which are VLESS outbounds without TLS or VLESS encryption. The refusal is upstream
+  `d7fa2076` (#6303). Its `validateOutboundTransportSecurity` in `infra/conf/xray.go` fails the outbound's `Build` with
+  "vless without TLS or other encryption is prohibited unless the server address is a private IP or domain". At
+  `676eaf66f8f0` the check reads no option and no environment variable; only stream security, VLESS encryption or a
+  private address passes it. `git tag --contains d7fa2076` starts at `v26.7.11`, a GitHub pre-release, and `v26.10.21`,
+  the first final release after `v26.3.27`, carries it too. The hold ends once the chain links are encrypted (an owner
+  item), and the `v26.11.9` line comes back in a later image.
+- Checked on 2026-11-15 with the real binaries (darwin/arm64, go1.27.4), not with the production config: a socks inbound
+  and one VLESS outbound to `203.0.113.10:443` with `"security": "none"` and `"encryption": "none"`. `xray run -test`
+  exits 0 (`Configuration OK.`) on this image's patched `v26.3.27` build, and exits 23 with the error above on a stock
+  `v26.11.9` build. With the address `10.20.30.40` it exits 0 on `v26.11.9` as well. That the production chain links are
+  refused is the rollout's own observation and is not re-run here.
+- Only the `xray-builder` stage moves. Its `ARG XRAY_COMMIT`, its patch `COPY` lines and its apply and guard chain are
+  those of v0.8.22 (`e4b18be7`), with two of main's Xray fixes kept:
+  - `xray-commander-message-size.patch` keeps the fix of `a9bf8fda` (only `grpc.MaxRecvMsgSize`, no
+    `grpc.MaxSendMsgSize`), regenerated against `d2758a023cd7`, and the stage keeps main's
+    `! grep -q "MaxSendMsgSize"` check. `patches/commander_message_size_test.go` passes on it.
+  - `xray-udp-conn-cancel-race.patch` stays, because the race is in `v26.3.27` too. On v0.8.22's patch chain,
+    `TestUDPConnCancelIsPublishedUnderTheWorkerLockBeforeCleanClosesIt` fails under `-race` without the fix (the
+    `conn.cancel = cancel` write in `udpWorker.callback` races the read in `udpConn.Close`, which `clean` calls) and
+    passes `-race -count=3` with it. The patch is regenerated against that chain and applied last, as on main.
+  - `xray-grpc-1.83.2.patch`, `xray-http-100-continue.patch`, `xray-ss2022-singbridge-close-race.patch` and
+    `xray-x-net-0.60.0.patch`, which the `v26.10.31` move dropped, are back. The 14 patches that move rebased are back at
+    their v0.8.22 content, and `xray-validator-credential-owner.patch` is the same in both. The singbridge close-race
+    deviation that [Fork deviations in the Xray build](#fork-deviations-in-the-xray-build) records as retired at the
+    `v26.10.31` move is in force again while the hold lasts.
+  - The stage still builds on main's `golang:1.27.4-alpine` digest, not on v0.8.22's `golang:1.26.10`, and
+    `ARG XRAY_VERSION` is `v26.3.27`. The builder, singbox-builder, geo-assets, filter-assets and final stages are main's.
+- `go.mod` and `go.sum` are not touched. The node agent still compiles against
+  `github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0`, because `backend/xray` imports `proxy/masque`
+  and the 26.11.9 WireGuard peer fields, so in this image the agent and the binary are on different Xray lines.
+  `d2758a023cd7` has no `proxy/masque`, and its WireGuard `Server` has no `AddUser` or `RemoveUser` (they came with
+  `345c76f`, #6360, first in the `v26.6.27` pre-release). MASQUE inbounds and WireGuard peers managed through the inbound
+  user manager therefore need the `v26.11.9` binary.
+- Artifact proof: `make build_xray` applies every patch with no offset, and `go version -m` on the binary prints
+  `mod github.com/xtls/xray-core v0.0.0-20260327174540-d2758a023cd7+dirty`,
+  `build vcs.revision=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` and `build vcs.modified=true`, built with go1.27.4.
+  `xray version` prints `Xray 26.3.27`. The tags `v26.3.27` and `v1.260327.0` (the Go module tag) both point at
+  `d2758a023cd7`. A linux/amd64 build with the Dockerfile's flags prints the same `mod` and `vcs.revision` lines.
+- `make test_xray_patches` names the 26.3.27 tests again (the singbridge close-race tests,
+  `TestInvalidDestinationIsRejectedWithoutPanic` and v0.8.22's WireGuard close tests), plus main's UDP cancel race
+  test. `go test -list` finds every name in the patched tree, and all 21 lines pass with `GOFLAGS=-race` (go1.27.4,
+  darwin/arm64).
+- `scripts/xray_guard_replay.py` prints `BASELINE ok: every patch applies, every guard passes and ./main builds for
+  linux/amd64` and catches all 67 non-test file diffs (seven `XRAY_GUARD_ONLY` batches, 0 uncaught). The shipped-patches
+  case in `scripts/test_xray_guard_replay.py` now describes this patch set, which parks no test file.
+- `scripts/toolchain_floor.sh` exits 0. The binary's `golang.org/x/net` is `v0.60.0` by patch order, at the floor.
+- govulncheck `v1.8.0` built with go1.27.4 (database of 2026-11-11), source mode on `./main/...` with `GOOS=linux
+  GOARCH=amd64 CGO_ENABLED=0`, finds two symbol-reachable ids in the patched `v26.3.27` tree: GO-2026-6888
+  (`github.com/andybalholm/brotli` `v1.0.6`, fixed in `v1.2.7`, reached through `utls.UConn.Handshake`) and
+  GO-2026-6865 (`github.com/klauspost/compress` `v1.17.4`, fixed in `v1.20.2`). In main's patched `v26.11.9` tree it
+  finds GO-2026-6865 alone (`v1.20.1`). The hold brings GO-2026-6888 back into the Xray binary, and neither binary is
+  free of GO-2026-6865. The govulncheck CI job scans the node module, not the Xray binary, so CI sees neither. This
+  image does not change it; it is an open decision for the rollout.
+- Drift: with the pin at `d2758a023cd7` the xray section reports the 16 releases from `v26.4.13` to `v26.11.9` and five
+  security-looking commits as unported. The 19 rows v0.8.22 had for them are back, rewritten as `rejected` with the
+  hold's reason, and `598bde74` (the Router API race, which `patches/xray-router-race.patch` fixes in the binary) as
+  `superseded`. v0.8.22's reasons were `pending ... until:2026-11-20` and named a pin move that has since happened and
+  been undone; kept as they were, they would expire on 2026-11-21 while the hold lasts. `676eaf66f8f0` (`v26.11.9`) is
+  added as `rejected`, and its TUN commit `2d287bbdee1e` (#7341, only `proxy/tun/README.md` and
+  `proxy/tun/tun_windows.go`, which is `//go:build windows`) as `not-applicable`. `13188021` and `f0877ce6` now name the
+  pins this image has. Moving the pin back to `v26.11.9` removes these rows again. Each component run on its own on
+  2026-11-15 reports `0 unported items` for `xray`, `node`, `sing-box` and `sing-quic`.
+- `NodeVersion` is `0.6.25`, pinned by `TestNodeVersionIsPinned`.
 
 ### Not covered
 
