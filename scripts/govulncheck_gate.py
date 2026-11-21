@@ -12,7 +12,10 @@ OSV_RE = re.compile(r"^GO-\d{4}-\d{4,}$")
 MODULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/-]*$")
 VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-CHECKING_MESSAGE = "Checking the code against the vulnerabilities..."
+CHECKING_MESSAGES = {
+    "source": "Checking the code against the vulnerabilities...",
+    "binary": "Checking the binary against the vulnerabilities...",
+}
 SHELL_OPERATOR_CHARS = "&|;()<>"
 STRICT_LIST_OPERATORS = ("&&", "|", "(", ")", "<", ">", ">>", ">&", "<&")
 APPLY_FLAGS = ("-v", "--verbose", "-q", "--quiet", "--index", "-3", "--3way", "--recount", "--ignore-whitespace", "--ignore-space-change")
@@ -107,8 +110,12 @@ def check_config(messages, path):
     last_modified = config.get("db_last_modified")
     if not isinstance(last_modified, str) or not last_modified:
         raise GateError(f"{path}: the config has no db_last_modified; govulncheck could not reach the vulnerability database {config.get('db')!r}, so it did not finish a scan")
-    if not any(kind == "progress" and isinstance(body, dict) and body.get("message") == CHECKING_MESSAGE for kind, body in messages):
-        raise GateError(f"{path} has no {CHECKING_MESSAGE!r} progress message; govulncheck did not fetch the vulnerabilities, so it did not finish a scan")
+    mode = config.get("scan_mode", "source")
+    if mode not in CHECKING_MESSAGES:
+        raise GateError(f"{path}: scan_mode is {mode!r}, want 'source' or 'binary'")
+    checking = CHECKING_MESSAGES[mode]
+    if not any(kind == "progress" and isinstance(body, dict) and body.get("message") == checking for kind, body in messages):
+        raise GateError(f"{path} has no {checking!r} progress message; govulncheck did not fetch the vulnerabilities, so it did not finish a scan")
     return config
 
 

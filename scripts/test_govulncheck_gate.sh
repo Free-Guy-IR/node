@@ -21,7 +21,7 @@ waiver="$osv $module $version 2026-11-30 patches/$patch the shipped binary carri
 config_msg() {
   local db_last_modified=',"db_last_modified":"2026-11-02T22:01:43Z"'
   [ "${2:-}" = db-unreachable ] && db_last_modified=
-  printf '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.8.0","db":"https://vuln.go.dev"%s,"go_version":"go1.26.10","scan_level":"%s","scan_mode":"source"}}\n' "$db_last_modified" "${1:-symbol}"
+  printf '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.8.0","db":"https://vuln.go.dev"%s,"go_version":"go1.26.10","scan_level":"%s","scan_mode":"%s"}}\n' "$db_last_modified" "${1:-symbol}" "${3:-source}"
 }
 
 osv_msg() {
@@ -468,6 +468,31 @@ fixture clean-scan-empty-waivers
 : >"$tmp/clean-scan-empty-waivers/waivers.txt"
 { config_msg; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; osv_msg GO-2026-6860; progress_msg "Checking the code against the vulnerabilities..."; } >"$tmp/clean-scan-empty-waivers/stream.json"
 check clean-scan-empty-waivers 0 "govulncheck-gate: pass: 0 called vulnerabilities"
+
+fixture binary-scan-clean
+: >"$tmp/binary-scan-clean/waivers.txt"
+{ config_msg symbol "" binary; sbom_msg; progress_msg "Scanning your binary for known vulnerabilities..."; progress_msg "Fetching vulnerabilities from the database..."; osv_msg GO-2026-6860; progress_msg "Checking the binary against the vulnerabilities..."; required GO-2026-6860 golang.org/x/net v0.60.0; } >"$tmp/binary-scan-clean/stream.json"
+check binary-scan-clean 0 "govulncheck-gate: pass: 0 called vulnerabilities (0 waived, 0 failing), 1 not called"
+
+fixture binary-scan-called
+: >"$tmp/binary-scan-called/waivers.txt"
+{ config_msg symbol "" binary; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; osv_msg GO-2026-6888; progress_msg "Checking the binary against the vulnerabilities..."; required GO-2026-6888 github.com/andybalholm/brotli v1.0.6; printf '{"finding":{"osv":"GO-2026-6888","fixed_version":"v1.2.7","trace":[{"module":"github.com/andybalholm/brotli","version":"v1.0.6","package":"github.com/andybalholm/brotli","function":"Read","receiver":"Reader"}]}}\n'; } >"$tmp/binary-scan-called/stream.json"
+check binary-scan-called 1 "FAIL GO-2026-6888 github.com/andybalholm/brotli@v1.0.6 is called (1 call paths), no waiver; fixed in v1.2.7"
+
+fixture binary-scan-with-the-source-progress
+: >"$tmp/binary-scan-with-the-source-progress/waivers.txt"
+{ config_msg symbol "" binary; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; progress_msg "Checking the code against the vulnerabilities..."; } >"$tmp/binary-scan-with-the-source-progress/stream.json"
+check binary-scan-with-the-source-progress 1 "has no 'Checking the binary against the vulnerabilities...' progress message"
+
+fixture source-scan-with-the-binary-progress
+: >"$tmp/source-scan-with-the-binary-progress/waivers.txt"
+{ config_msg; sbom_msg; progress_msg "Fetching vulnerabilities from the database..."; progress_msg "Checking the binary against the vulnerabilities..."; } >"$tmp/source-scan-with-the-binary-progress/stream.json"
+check source-scan-with-the-binary-progress 1 "has no 'Checking the code against the vulnerabilities...' progress message"
+
+fixture unknown-scan-mode
+: >"$tmp/unknown-scan-mode/waivers.txt"
+{ config_msg symbol "" extract; sbom_msg; progress_msg "Checking the code against the vulnerabilities..."; } >"$tmp/unknown-scan-mode/stream.json"
+check unknown-scan-mode 1 "scan_mode is 'extract', want 'source' or 'binary'"
 
 fixture n3-config-only-empty-waivers
 : >"$tmp/n3-config-only-empty-waivers/waivers.txt"

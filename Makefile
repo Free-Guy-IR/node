@@ -225,6 +225,7 @@ XRAY_REPO ?= https://github.com/XTLS/Xray-core.git
 XRAY_COMMIT ?= $(shell sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)
 XRAY_SRC ?= $(CURDIR)/xray-core
 XRAY_OUTPUT ?= $(XRAY_SRC)/xray
+XRAY_LDFLAGS ?= -s -w -buildid=
 
 build_xray:
 	test -n "$(XRAY_COMMIT)" && test -n "$(XRAY_SRC)"
@@ -236,7 +237,7 @@ build_xray:
 	test "$$(git -C "$(XRAY_SRC)" rev-parse HEAD)" = "$(XRAY_COMMIT)"
 	for patch in $(CURDIR)/patches/xray-*.patch; do git -C "$(XRAY_SRC)" apply --verbose "$$patch" || exit 1; done
 	cd "$(XRAY_SRC)" && echo "xray $(XRAY_COMMIT) needs go $$(sed -n 's/^go //p' go.mod); building with $$(GOTOOLCHAIN=local go version)"
-	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$(XRAY_OUTPUT)" ./main
+	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "$(XRAY_LDFLAGS)" -o "$(XRAY_OUTPUT)" ./main
 
 SINGBOX_REPO ?= $(shell sed -n 's/^ARG SINGBOX_REPO=//p' Dockerfile)
 SINGBOX_COMMIT ?= $(shell sed -n 's/^ARG SINGBOX_COMMIT=//p' Dockerfile)

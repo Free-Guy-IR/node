@@ -211,6 +211,15 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" -format json ./... > "$RUNNER_TEMP/govulncheck.json"
           python3 scripts/govulncheck_gate.py .github/govulncheck-waivers.txt "$RUNNER_TEMP/govulncheck.json"
 
+      - name: Fail on reachable vulnerabilities in the Xray binary the image builds
+        env:
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          make build_xray XRAY_SRC="$RUNNER_TEMP/xray-core" XRAY_OUTPUT="$RUNNER_TEMP/xray" XRAY_LDFLAGS=-buildid=
+          "$(go env GOPATH)/bin/govulncheck" -mode=binary -format json "$RUNNER_TEMP/xray" > "$RUNNER_TEMP/govulncheck-xray.json"
+          python3 scripts/govulncheck_gate.py .github/govulncheck-xray-waivers.txt "$RUNNER_TEMP/govulncheck-xray.json"
+
   workflow-policy:
     runs-on: ubuntu-latest
     env:
