@@ -1,0 +1,319 @@
+Freedom: refuse the local host for connections from user inbounds
+
+FORK DEVIATION: not upstream code. Upstream's freedom (310b764, 4e87f59, d52f150, 958eb9e and
+63ca2e0, in v26.11.9) blocks private destinations after resolution for the vless, vmess, trojan,
+shadowsocks, hysteria, wireguard and masque inbounds through finalRules, built on common/geodata
+from the geodata refactor 82624bc, which the pin does not have. This patch keeps only what the node needs: a
+connection whose inbound is vless, vmess, trojan, hysteria, wireguard or any shadowsocks inbound,
+the names those inbounds set in session.Inbound at the pin, may not reach a loopback address
+(127.0.0.0/8, ::1 and IPv4-mapped loopback) or an unspecified one (0.0.0.0, ::), which is never
+a remote destination. Private ranges, 100.64.0.0/10 and link-local stay reachable, and
+dokodemo-door, socks and http inbounds are not affected.
+
+Freedom refuses a literal or freedom-resolved destination before it dials, and after it dials it
+closes, before any payload, a connection whose remote end is loopback, which covers a domain the
+system resolver or sockopt resolved. A connection made through sockopt.dialerProxy reports
+0.0.0.0:0 as its remote end, so the after-dial check reads only loopback. UDP packets that a user
+inbound addresses per packet are dropped when their resolved address is the local host.
+proxy/freedom/local_host_refusal_test.go is fork code.
+
+diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
+index d107e35..3179cc7 100644
+--- a/proxy/freedom/freedom.go
++++ b/proxy/freedom/freedom.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"crypto/rand"
+ 	"io"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/pires/go-proxyproto"
+@@ -66,6 +67,35 @@ func (h *Handler) policy() policy.Session {
+ 	return p
+ }
+ 
++func refusesLocalHost(inbound *session.Inbound) bool {
++	if inbound == nil {
++		return false
++	}
++	switch inbound.Name {
++	case "vless", "vmess", "trojan", "hysteria", "wireguard":
++		return true
++	}
++	return strings.HasPrefix(inbound.Name, "shadowsocks")
++}
++
++func isLoopbackAddress(addr net.Address) bool {
++	return addr != nil && addr.Family().IsIP() && addr.IP().IsLoopback()
++}
++
++func isLocalHostAddress(addr net.Address) bool {
++	return isLoopbackAddress(addr) || addr != nil && addr.Family().IsIP() && addr.IP().IsUnspecified()
++}
++
++func remoteIsLoopback(conn net.Conn) bool {
++	switch addr := conn.RemoteAddr().(type) {
++	case *net.TCPAddr:
++		return addr.IP.IsLoopback()
++	case *net.UDPAddr:
++		return addr.IP.IsLoopback()
++	}
++	return false
++}
++
+ func isValidAddress(addr *net.IPOrDomain) bool {
+ 	if addr == nil {
+ 		return false
+@@ -85,6 +115,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	ob.Name = "freedom"
+ 	ob.CanSpliceCopy = 1
+ 	inbound := session.InboundFromContext(ctx)
++	refuseLocalHost := refusesLocalHost(inbound)
+ 
+ 	destination := ob.Target
+ 	origTargetAddr := ob.OriginalTarget.Address
+@@ -110,6 +141,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	output := link.Writer
+ 
+ 	var conn stat.Connection
++	var refused *net.Destination
+ 	err := retry.ExponentialBackoff(5, 100).On(func() error {
+ 		dialDest := destination
+ 		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
+@@ -133,11 +165,23 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			}
+ 		}
+ 
++		if refuseLocalHost && isLocalHostAddress(dialDest.Address) {
++			refused = &dialDest
++			return nil
++		}
++
+ 		rawConn, err := dialer.Dial(ctx, dialDest)
+ 		if err != nil {
+ 			return err
+ 		}
+ 
++		if refuseLocalHost && remoteIsLoopback(rawConn) {
++			remote := net.DestinationFromAddr(rawConn.RemoteAddr())
++			rawConn.Close()
++			refused = &remote
++			return nil
++		}
++
+ 		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
+ 			version := byte(h.config.ProxyProtocol)
+ 			srcAddr := inbound.Source.RawNetAddr()
+@@ -155,6 +199,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	if err != nil {
+ 		return errors.New("failed to open connection to ", destination).Base(err)
+ 	}
++	if refused != nil {
++		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the local host address ", *refused).AtWarning()
++	}
+ 	defer conn.Close()
+ 	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+ 
+@@ -190,6 +237,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			}
+ 		} else {
+ 			writer = NewPacketWriter(conn, h, UDPOverride, destination)
++			if pw, ok := writer.(*PacketWriter); ok {
++				pw.RefuseLocalHost = refuseLocalHost
++			}
+ 			if h.config.Noises != nil {
+ 				errors.LogDebug(ctx, "NOISE", h.config.Noises)
+ 				writer = &NoisePacketWriter{
+@@ -349,6 +399,7 @@ type PacketWriter struct {
+ 	// So, cache and keep the resolve result
+ 	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
+ 	LocalAddr       net.Address
++	RefuseLocalHost bool
+ }
+ 
+ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -399,6 +450,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+ 					}
+ 				}
+ 			}
++			if w.RefuseLocalHost && isLocalHostAddress(b.UDP.Address) {
++				b.Release()
++				continue
++			}
+ 			destAddr := b.UDP.RawNetAddr()
+ 			if destAddr == nil {
+ 				b.Release()
+diff --git a/proxy/freedom/local_host_refusal_test.go b/proxy/freedom/local_host_refusal_test.go
+new file mode 100644
+index 0000000..6cfbcc9
+--- /dev/null
++++ b/proxy/freedom/local_host_refusal_test.go
+@@ -0,0 +1,167 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/common/utils"
++	"github.com/xtls/xray-core/features/policy"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++type systemDialer struct{}
++
++func (systemDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++	return internet.DialSystem(ctx, dest, nil)
++}
++
++func (systemDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func (systemDialer) SetOutboundGateway(ctx context.Context, ob *session.Outbound) {}
++
++func loopbackListener(t *testing.T) (net.Port, *atomic.Int32) {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	accepted := new(atomic.Int32)
++	go func() {
++		for {
++			conn, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			accepted.Add(1)
++			conn.Close()
++		}
++	}()
++	return net.Port(ln.Addr().(*net.TCPAddr).Port), accepted
++}
++
++func processFrom(t *testing.T, inboundName string, target net.Destination) error {
++	t.Helper()
++	h := new(Handler)
++	if err := h.Init(&Config{}, policy.DefaultManager{}); err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, &session.Inbound{Name: inboundName})
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: target}})
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	uplinkWriter.Close()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	return h.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, systemDialer{})
++}
++
++func TestOnlyUserInboundsRefuseTheLocalHost(t *testing.T) {
++	for name, want := range map[string]bool{
++		"vless": true, "vmess": true, "trojan": true, "hysteria": true, "wireguard": true,
++		"shadowsocks": true, "shadowsocks-2022": true, "shadowsocks-2022-multi": true, "shadowsocks-2022-relay": true,
++		"dokodemo-door": false, "socks": false, "http": false, "": false,
++	} {
++		if got := refusesLocalHost(&session.Inbound{Name: name}); got != want {
++			t.Errorf("inbound %q refuses the local host: %v, want %v", name, got, want)
++		}
++	}
++	if refusesLocalHost(nil) {
++		t.Error("a connection without an inbound refuses the local host")
++	}
++}
++
++func TestTheLocalHostIsLoopbackAndUnspecifiedOnly(t *testing.T) {
++	for addr, want := range map[string]bool{
++		"127.0.0.1": true, "127.255.255.254": true, "::1": true, "::ffff:127.0.0.1": true, "0.0.0.0": true, "::": true,
++		"100.64.0.1": false, "10.0.0.1": false, "172.16.0.1": false, "192.168.1.1": false, "169.254.1.1": false,
++		"fe80::1": false, "8.8.8.8": false, "2001:db8::1": false, "localhost": false,
++	} {
++		if got := isLocalHostAddress(net.ParseAddress(addr)); got != want {
++			t.Errorf("%s is the local host: %v, want %v", addr, got, want)
++		}
++	}
++}
++
++func TestAUserInboundCannotReachALoopbackListenerThroughFreedom(t *testing.T) {
++	for _, target := range []string{"127.0.0.1", "localhost"} {
++		port, accepted := loopbackListener(t)
++		err := processFrom(t, "vless", net.TCPDestination(net.ParseAddress(target), port))
++		if err == nil || !strings.Contains(err.Error(), "local host address") {
++			t.Fatalf("vless to %s:%d: %v, want a refusal", target, port, err)
++		}
++		time.Sleep(100 * time.Millisecond)
++		if target == "127.0.0.1" && accepted.Load() != 0 {
++			t.Fatalf("vless to %s:%d: the listener accepted %d connections before the refusal", target, port, accepted.Load())
++		}
++	}
++}
++
++func TestOtherInboundsStillReachALoopbackListenerThroughFreedom(t *testing.T) {
++	for _, name := range []string{"socks", "http", "dokodemo-door"} {
++		port, accepted := loopbackListener(t)
++		if err := processFrom(t, name, net.TCPDestination(net.LocalHostIP, port)); err != nil && strings.Contains(err.Error(), "local host address") {
++			t.Fatalf("%s to 127.0.0.1:%d was refused: %v", name, port, err)
++		}
++		deadline := time.Now().Add(2 * time.Second)
++		for accepted.Load() == 0 && time.Now().Before(deadline) {
++			time.Sleep(20 * time.Millisecond)
++		}
++		if accepted.Load() == 0 {
++			t.Fatalf("%s to 127.0.0.1:%d never reached the listener", name, port)
++		}
++	}
++}
++
++func TestAUserInboundDropsUDPPacketsAddressedToTheLocalHost(t *testing.T) {
++	for _, refuse := range []bool{false, true} {
++		target, err := gonet.ListenPacket("udp", "127.0.0.1:0")
++		if err != nil {
++			t.Fatal(err)
++		}
++		sender, err := gonet.ListenPacket("udp", "127.0.0.1:0")
++		if err != nil {
++			t.Fatal(err)
++		}
++		w := &PacketWriter{
++			PacketConnWrapper: &internet.PacketConnWrapper{PacketConn: sender, Dest: target.LocalAddr()},
++			Handler:           &Handler{config: &Config{}},
++			ResolvedUDPAddr:   utils.NewTypedSyncMap[string, net.Address](),
++			RefuseLocalHost:   refuse,
++		}
++		b := buf.New()
++		b.WriteString("probe")
++		b.UDP = &net.Destination{Network: net.Network_UDP, Address: net.LocalHostIP, Port: net.Port(target.LocalAddr().(*net.UDPAddr).Port)}
++		if err := w.WriteMultiBuffer(buf.MultiBuffer{b}); err != nil {
++			t.Fatal(err)
++		}
++		target.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
++		got := make([]byte, 16)
++		n, _, err := target.ReadFrom(got)
++		delivered := err == nil && string(got[:n]) == "probe"
++		if delivered == refuse {
++			t.Errorf("RefuseLocalHost %v: packet to 127.0.0.1 delivered %v", refuse, delivered)
++		}
++		target.Close()
++		sender.Close()
++	}
++}

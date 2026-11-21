@@ -73,6 +73,7 @@ WORKDIR /xray-src
 COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-size.patch
 COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
+COPY patches/xray-freedom-local-host.patch /patches/xray-freedom-local-host.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-listener-mptcp-off.patch /patches/xray-listener-mptcp-off.patch
@@ -108,6 +109,14 @@ RUN git init -q . \
  && ! grep -q "MustNewName" app/dns/dnscommon.go \
  && git apply --verbose /patches/xray-dokodemo-unix-socket.patch \
  && grep -qF "if dest.Port == 0 && port != \"\" {" proxy/dokodemo/dokodemo.go \
+ && git apply --verbose /patches/xray-freedom-local-host.patch \
+ && grep -qF 'case "vless", "vmess", "trojan", "hysteria", "wireguard":' proxy/freedom/freedom.go \
+ && grep -qF 'return strings.HasPrefix(inbound.Name, "shadowsocks")' proxy/freedom/freedom.go \
+ && grep -qF "if refuseLocalHost && isLocalHostAddress(dialDest.Address) {" proxy/freedom/freedom.go \
+ && grep -qF "if refuseLocalHost && remoteIsLoopback(rawConn) {" proxy/freedom/freedom.go \
+ && grep -qF "pw.RefuseLocalHost = refuseLocalHost" proxy/freedom/freedom.go \
+ && grep -qF "if w.RefuseLocalHost && isLocalHostAddress(b.UDP.Address) {" proxy/freedom/freedom.go \
+ && grep -qF "func TestAUserInboundCannotReachALoopbackListenerThroughFreedom" proxy/freedom/local_host_refusal_test.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
  && grep -q "golang.org/x/net v0.58.0$" go.mod \
