@@ -1060,7 +1060,7 @@ edit Dockerfile 's|^(FROM alpine:3\.24\.2@sha256:[0-9a-f]+)$|\1 AS rt|'
 printf 'RUN cp /usr/local/bin/main /usr/local/bin/xray\nFROM r${T}\n' >>"$tmp/final-from-arg-built-stage/Dockerfile"
 check final-from-arg-built-stage 1 "whose base 'r\${t}' is chosen by a build argument"
 
-final_inst_refused="which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET or ENTRYPOINT [\"./main\"]"
+final_inst_refused="which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET, ENV GODEBUG=multipathtcp=0 or ENTRYPOINT [\"./main\"]"
 while IFS='|' read -r name line; do
   fixture "$name"
   printf '%s\n' "$line" >>"$tmp/$name/Dockerfile"
@@ -1076,13 +1076,17 @@ final-shell|SHELL ["/bin/sh","-c"]
 final-healthcheck|HEALTHCHECK CMD cp /usr/local/bin/main /usr/local/bin/xray
 final-workdir-bin|WORKDIR /usr/local/bin
 final-env-other|ENV LD_PRELOAD=/usr/local/bin/main
+final-env-godebug-mptcp-on|ENV GODEBUG=multipathtcp=1
+final-env-godebug-other|ENV GODEBUG=tlsrsakex=1
+final-env-godebug-extra|ENV GODEBUG=multipathtcp=0,tlsrsakex=1
+final-env-godebug-with-asset|ENV XRAY_LOCATION_ASSET=/usr/local/share/xray GODEBUG=multipathtcp=0
 final-arg|ARG X=1
 final-stopsignal|STOPSIGNAL SIGKILL
 EOF
 
 fixture final-allowed-instructions
 printf '%s\n' 'LABEL org.opencontainers.image.source="https://github.com/Free-Guy-IR/node"' 'WORKDIR /app' \
-  'ENV XRAY_LOCATION_ASSET=/usr/local/share/xray' 'ENTRYPOINT ["./main"]' >>"$tmp/final-allowed-instructions/Dockerfile"
+  'ENV XRAY_LOCATION_ASSET=/usr/local/share/xray' 'ENV GODEBUG=multipathtcp=0' 'ENTRYPOINT ["./main"]' >>"$tmp/final-allowed-instructions/Dockerfile"
 check final-allowed-instructions 0 "pins checked"
 
 directive_refused="parser directive"

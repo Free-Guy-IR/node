@@ -581,7 +581,7 @@ final_stage_inst_allowed() {
   case "$1" in
     LABEL | COPY) return 0 ;;
     WORKDIR) [ "$rest" = /app ] ;;
-    ENV) names_within "$2" XRAY_LOCATION_ASSET ;;
+    ENV) names_within "$2" XRAY_LOCATION_ASSET || [[ $2 =~ ^[Ee][Nn][Vv][[:space:]]+GODEBUG=multipathtcp=0$ ]] ;;
     ENTRYPOINT) [ "$rest" = '["./main"]' ] ;;
     *) return 1 ;;
   esac
@@ -770,7 +770,7 @@ while IFS=$'\t' read -r safety element; do
     fi
     if [ "$final_stage" = 1 ] && ! final_stage_inst_allowed "$keyword" "$element"; then
       checked=$((checked + 1))
-      refuse "the Dockerfile final stage sets '${element:0:120}', which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET or ENTRYPOINT [\"./main\"], so the image need not start ./main with the /usr/local/bin/xray the xray-builder stage checks"
+      refuse "the Dockerfile final stage sets '${element:0:120}', which is not LABEL, WORKDIR /app, COPY, ENV XRAY_LOCATION_ASSET, ENV GODEBUG=multipathtcp=0 or ENTRYPOINT [\"./main\"], so the image need not start ./main with the /usr/local/bin/xray the xray-builder stage checks"
     fi
   fi
   [ "$stage" != xray-builder ] || continue

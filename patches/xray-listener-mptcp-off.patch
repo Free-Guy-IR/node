@@ -1,0 +1,105 @@
+Transport: listen on plain TCP unless the socket settings ask for MPTCP
+
+Upstream: 6ea0ab5d3ae0e9c7d252347fa9250273d54fb2e9
+
+Go 1.24 and later make every TCP listener an MPTCP listener by default on a Linux kernel that
+supports MPTCP, and this image builds the core with Go 1.27.4. Upstream #7291 (v26.10.31) has
+DefaultListener.Listen call SetMultipathTCP(false) and turn MPTCP on only for sockopt.tcpMptcp,
+citing CVE-2026-98432. The change in transport/internet/system_listener.go is upstream's, without
+its two comment lines. transport/internet/system_listener_mptcp_test.go is fork code: on Linux, when
+the kernel accepts IPPROTO_MPTCP sockets, it reads SO_PROTOCOL from listeners ListenSystem opens
+and wants IPPROTO_TCP without socket settings and with tcpMptcp false, IPPROTO_MPTCP with it true.
+
+diff --git a/transport/internet/system_listener.go b/transport/internet/system_listener.go
+index 2ac28ed..1a1b36e 100644
+--- a/transport/internet/system_listener.go
++++ b/transport/internet/system_listener.go
+@@ -90,6 +90,7 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
+ 		lc.Control = getControlFunc(ctx, sockopt, dl.controllers)
+ 		// default disable keepalive
+ 		lc.KeepAlive = -1
++		lc.SetMultipathTCP(false)
+ 		if sockopt != nil {
+ 			if sockopt.TcpKeepAliveIdle*sockopt.TcpKeepAliveInterval < 0 {
+ 				return nil, errors.New("invalid TcpKeepAliveIdle or TcpKeepAliveInterval value: ", sockopt.TcpKeepAliveIdle, " ", sockopt.TcpKeepAliveInterval)
+@@ -108,9 +109,7 @@ func (dl *DefaultListener) Listen(ctx context.Context, addr net.Addr, sockopt *S
+ 				lc.KeepAliveConfig.Enable = true
+ 				lc.KeepAliveConfig.Interval = time.Duration(sockopt.TcpKeepAliveInterval) * time.Second
+ 			}
+-			if sockopt.TcpMptcp {
+-				lc.SetMultipathTCP(true)
+-			}
++			lc.SetMultipathTCP(sockopt.TcpMptcp)
+ 		}
+ 	case *net.UnixAddr:
+ 		lc.Control = nil
+diff --git a/transport/internet/system_listener_mptcp_test.go b/transport/internet/system_listener_mptcp_test.go
+new file mode 100644
+index 0000000..e5f87d5
+--- /dev/null
++++ b/transport/internet/system_listener_mptcp_test.go
+@@ -0,0 +1,64 @@
++//go:build linux
++
++package internet_test
++
++import (
++	"context"
++	"testing"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/transport/internet"
++	"golang.org/x/sys/unix"
++)
++
++func kernelHasMPTCP() bool {
++	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, unix.IPPROTO_MPTCP)
++	if err != nil {
++		return false
++	}
++	unix.Close(fd)
++	return true
++}
++
++func listenerProtocol(t *testing.T, sockopt *internet.SocketConfig) int {
++	t.Helper()
++	l, err := internet.ListenSystem(context.Background(), &net.TCPAddr{IP: net.IP{127, 0, 0, 1}, Port: 0}, sockopt)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer l.Close()
++	tcp, ok := l.(*net.TCPListener)
++	if !ok {
++		t.Fatalf("listener is %T, not *net.TCPListener", l)
++	}
++	raw, err := tcp.SyscallConn()
++	if err != nil {
++		t.Fatal(err)
++	}
++	var proto int
++	var serr error
++	if err := raw.Control(func(fd uintptr) {
++		proto, serr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PROTOCOL)
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if serr != nil {
++		t.Fatal(serr)
++	}
++	return proto
++}
++
++func TestATCPListenerIsPlainTCPUnlessItsSocketSettingsAskForMPTCP(t *testing.T) {
++	if !kernelHasMPTCP() {
++		t.Skip("this kernel refuses IPPROTO_MPTCP sockets, so a listener cannot be MPTCP either way")
++	}
++	if got := listenerProtocol(t, nil); got != unix.IPPROTO_TCP {
++		t.Errorf("listener without socket settings has protocol %d, want IPPROTO_TCP (%d)", got, unix.IPPROTO_TCP)
++	}
++	if got := listenerProtocol(t, &internet.SocketConfig{}); got != unix.IPPROTO_TCP {
++		t.Errorf("listener with tcpMptcp false has protocol %d, want IPPROTO_TCP (%d)", got, unix.IPPROTO_TCP)
++	}
++	if got := listenerProtocol(t, &internet.SocketConfig{TcpMptcp: true}); got != unix.IPPROTO_MPTCP {
++		t.Errorf("listener with tcpMptcp true has protocol %d, want IPPROTO_MPTCP (%d)", got, unix.IPPROTO_MPTCP)
++	}
++}

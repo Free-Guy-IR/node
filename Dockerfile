@@ -75,6 +75,7 @@ COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
+COPY patches/xray-listener-mptcp-off.patch /patches/xray-listener-mptcp-off.patch
 COPY patches/xray-pinned-ca-servername.patch /patches/xray-pinned-ca-servername.patch
 COPY patches/xray-quic-sniff.patch /patches/xray-quic-sniff.patch
 COPY patches/xray-router-race.patch /patches/xray-router-race.patch
@@ -111,6 +112,11 @@ RUN git init -q . \
  && grep -q "golang.org/x/text v0.41.0 // indirect$" go.mod \
  && git apply --verbose /patches/xray-http-100-continue.patch \
  && grep -qF "len(ResponseHeader1xx) >= 4 && bytes.Equal" proxy/http/server.go \
+ && git apply --verbose /patches/xray-listener-mptcp-off.patch \
+ && grep -qF "lc.SetMultipathTCP(false)" transport/internet/system_listener.go \
+ && grep -qF "lc.SetMultipathTCP(sockopt.TcpMptcp)" transport/internet/system_listener.go \
+ && ! grep -qF "lc.SetMultipathTCP(true)" transport/internet/system_listener.go \
+ && grep -qF "func TestATCPListenerIsPlainTCPUnlessItsSocketSettingsAskForMPTCP" transport/internet/system_listener_mptcp_test.go \
  && git apply --verbose /patches/xray-pinned-ca-servername.patch \
  && grep -qF 'return errors.New("Pinning CA needs a valid ServerName")' transport/internet/tls/config.go \
  && grep -qF "config := tlsConfig.GetTLSConfig(tls.WithDestination(dest))" transport/internet/grpc/dial.go \
@@ -283,5 +289,6 @@ COPY --from=filter-assets /assets/pgfilter.dat /usr/local/share/xray/pgfilter.da
 COPY --from=filter-assets /assets/pgfilter_index.json /usr/local/share/xray/pgfilter_index.json
 
 ENV XRAY_LOCATION_ASSET=/usr/local/share/xray
+ENV GODEBUG=multipathtcp=0
 
 ENTRYPOINT ["./main"]
