@@ -93,6 +93,7 @@ COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
 COPY patches/xray-udp-conn-cancel-race.patch /patches/xray-udp-conn-cancel-race.patch
+COPY patches/xray-udp-dispatcher-closed-race.patch /patches/xray-udp-dispatcher-closed-race.patch
 COPY patches/xray-zstd-brotli-cert-decompression.patch /patches/xray-zstd-brotli-cert-decompression.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
@@ -237,6 +238,12 @@ RUN git init -q . \
  && grep -qF "func (w *udpWorker) publishCancel(conn *udpConn, cancel context.CancelFunc) {" app/proxyman/inbound/worker.go \
  && ! grep -qE "^[[:space:]]{3}conn\.cancel = cancel$" app/proxyman/inbound/worker.go \
  && grep -qF "func TestUDPConnCancelIsPublishedUnderTheWorkerLockBeforeCleanClosesIt" app/proxyman/inbound/udp_conn_cancel_race_test.go \
+ && git apply --verbose /patches/xray-udp-dispatcher-closed-race.patch \
+ && grep -qF "closed atomic.Bool" transport/internet/udp/dispatcher.go \
+ && grep -qF "if c.closed.Swap(true) {" transport/internet/udp/dispatcher.go \
+ && grep -qF "if v.conn.closed.Load() {" transport/internet/udp/dispatcher.go \
+ && ! grep -qF "c.closed = true" transport/internet/udp/dispatcher.go \
+ && grep -qF "func TestDispatchesRacingTheTerminationOfAFailedFlowDoNotRace" transport/internet/udp/dispatcher_close_race_test.go \
  && git apply --verbose /patches/xray-zstd-brotli-cert-decompression.patch \
  && grep -q "github.com/andybalholm/brotli v1.2.7 // indirect$" go.mod \
  && grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod
