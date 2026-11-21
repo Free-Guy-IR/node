@@ -1,0 +1,163 @@
+HTTPUpgrade server: a read deadline and a size limit on the upgrade request, and keep accepting
+
+Upstream: c320e89108c73b3d83ace6c2f32db1da7a48e5d4
+
+At the pin, upgrade() reads the request with http.ReadRequest on the raw connection with no
+deadline and no size limit, and keepAccepting returns on the first Accept error, after which the
+inbound accepts nothing until the core restarts. Upstream #6463 (first in v26.7.11) gives the read
+4 seconds, the WebSocket hub's ReadHeaderTimeout, and 12288 bytes, the read limit net/http derives
+from that hub's MaxHeaderBytes of 8192, and keeps accepting after transient errors as the RAW hub
+does.
+The changes in transport/internet/httpupgrade/hub.go are upstream's, without its comment line;
+only the hunk context differs, because xray-trusted-xff.patch, applied before this patch, changes
+the same file further down. transport/internet/httpupgrade/handshake_deadline_test.go is fork code:
+a request that stops before its blank line is closed after about 4 seconds, a valid upgrade
+request with 16 KiB of headers is refused and one with 8 KiB is still upgraded.
+
+diff --git a/transport/internet/httpupgrade/handshake_deadline_test.go b/transport/internet/httpupgrade/handshake_deadline_test.go
+new file mode 100644
+index 0000000..7a418cb
+--- /dev/null
++++ b/transport/internet/httpupgrade/handshake_deadline_test.go
+@@ -0,0 +1,97 @@
++package httpupgrade_test
++
++import (
++	"bufio"
++	"context"
++	"errors"
++	"io"
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/testing/servers/tcp"
++	"github.com/xtls/xray-core/transport/internet"
++	. "github.com/xtls/xray-core/transport/internet/httpupgrade"
++	"github.com/xtls/xray-core/transport/internet/stat"
++)
++
++func listenForHandshakeTests(t *testing.T) net.Port {
++	t.Helper()
++	port := tcp.PickPort()
++	listener, err := ListenHTTPUpgrade(context.Background(), net.LocalHostIP, port, &internet.MemoryStreamConfig{
++		ProtocolName:     "httpupgrade",
++		ProtocolSettings: &Config{Path: "/up"},
++	}, func(conn stat.Connection) {
++		conn.Close()
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { listener.Close() })
++	return port
++}
++
++func dialRaw(t *testing.T, port net.Port) net.Conn {
++	t.Helper()
++	conn, err := net.Dial("tcp", net.TCPDestination(net.LocalHostIP, port).NetAddr())
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { conn.Close() })
++	return conn
++}
++
++func TestAnIdleHalfSentUpgradeRequestIsClosedAfterTheHandshakeDeadline(t *testing.T) {
++	conn := dialRaw(t, listenForHandshakeTests(t))
++	if _, err := conn.Write([]byte("GET /up HTTP/1.1\r\nHost: 127.0.0.1\r\n")); err != nil {
++		t.Fatal(err)
++	}
++	start := time.Now()
++	conn.SetReadDeadline(start.Add(9 * time.Second))
++	var b [64]byte
++	_, err := conn.Read(b[:])
++	waited := time.Since(start)
++	if errors.Is(err, os.ErrDeadlineExceeded) {
++		t.Fatalf("the server still holds the half-sent request open after %v", waited)
++	}
++	if err != io.EOF && !strings.Contains(err.Error(), "reset") {
++		t.Fatalf("read after %v: %v, want the server to close the connection", waited, err)
++	}
++	if waited < 3*time.Second || waited > 7*time.Second {
++		t.Fatalf("the server closed the connection after %v, want about 4s", waited)
++	}
++}
++
++func TestAnUpgradeRequestWithHeadersOverTheLimitIsRefused(t *testing.T) {
++	conn := dialRaw(t, listenForHandshakeTests(t))
++	request := "GET /up HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Pad: " + strings.Repeat("a", 16384) + "\r\n\r\n"
++	if _, err := conn.Write([]byte(request)); err != nil {
++		t.Fatal(err)
++	}
++	conn.SetReadDeadline(time.Now().Add(9 * time.Second))
++	line, err := bufio.NewReader(conn).ReadString('\n')
++	if strings.HasPrefix(line, "HTTP/1.1 101") {
++		t.Fatalf("the server upgraded a request with %d header bytes: %q", len(request), line)
++	}
++	if errors.Is(err, os.ErrDeadlineExceeded) {
++		t.Fatal("the server neither answered nor closed the connection")
++	}
++}
++
++func TestAnUpgradeRequestWithinTheLimitIsStillUpgraded(t *testing.T) {
++	conn := dialRaw(t, listenForHandshakeTests(t))
++	request := "GET /up HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nX-Pad: " + strings.Repeat("a", 8192) + "\r\n\r\n"
++	if _, err := conn.Write([]byte(request)); err != nil {
++		t.Fatal(err)
++	}
++	conn.SetReadDeadline(time.Now().Add(9 * time.Second))
++	line, err := bufio.NewReader(conn).ReadString('\n')
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.HasPrefix(line, "HTTP/1.1 101") {
++		t.Fatalf("status line %q, want 101 Switching Protocols", line)
++	}
++}
+diff --git a/transport/internet/httpupgrade/hub.go b/transport/internet/httpupgrade/hub.go
+index cb9a79d..f9180e7 100644
+--- a/transport/internet/httpupgrade/hub.go
++++ b/transport/internet/httpupgrade/hub.go
+@@ -4,8 +4,10 @@ import (
+ 	"bufio"
+ 	"context"
+ 	"crypto/tls"
++	"io"
+ 	"net/http"
+ 	"strings"
++	"time"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/errors"
+@@ -43,7 +45,10 @@ func (s *server) Handle(conn net.Conn) {
+ 
+ // upgrade execute a fake websocket upgrade process and return the available connection
+ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
+-	connReader := bufio.NewReader(conn)
++	conn.SetReadDeadline(time.Now().Add(time.Second * 4))
++	defer conn.SetReadDeadline(time.Time{})
++	connReader := bufio.NewReader(io.LimitReader(conn, 12288))
++
+ 	req, err := http.ReadRequest(connReader)
+ 	if err != nil {
+ 		return nil, err
+@@ -94,7 +99,15 @@ func (s *server) keepAccepting() {
+ 	for {
+ 		conn, err := s.innnerListener.Accept()
+ 		if err != nil {
+-			return
++			errStr := err.Error()
++			if strings.Contains(errStr, "closed") {
++				break
++			}
++			errors.LogWarningInner(context.Background(), err, "failed to accept raw connections")
++			if strings.Contains(errStr, "too many") {
++				time.Sleep(time.Millisecond * 500)
++			}
++			continue
+ 		}
+ 		go s.Handle(conn)
+ 	}

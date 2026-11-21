@@ -84,6 +84,7 @@ COPY patches/xray-ss2022-dispatch.patch /patches/xray-ss2022-dispatch.patch
 COPY patches/xray-ss2022-singbridge-close-race.patch /patches/xray-ss2022-singbridge-close-race.patch
 COPY patches/xray-stats-register-race.patch /patches/xray-stats-register-race.patch
 COPY patches/xray-trusted-xff.patch /patches/xray-trusted-xff.patch
+COPY patches/xray-upgrade-handshake-deadline.patch /patches/xray-upgrade-handshake-deadline.patch
 COPY patches/xray-validator-credential-owner.patch /patches/xray-validator-credential-owner.patch
 COPY patches/xray-websocket-early-data.patch /patches/xray-websocket-early-data.patch
 COPY patches/xray-wireguard-client-close.patch /patches/xray-wireguard-client-close.patch
@@ -174,6 +175,12 @@ RUN git init -q . \
  && grep -q "encoding.NewHunkConn(server, cancel, l.trustedXForwardedFor)" transport/internet/grpc/hub.go \
  && ! grep -rq "http_proto.ParseXForwardedFor" transport \
  && ! grep -rq "x-real-ip" transport/internet/grpc \
+ && git apply --verbose /patches/xray-upgrade-handshake-deadline.patch \
+ && grep -qF "conn.SetReadDeadline(time.Now().Add(time.Second * 4))" transport/internet/httpupgrade/hub.go \
+ && grep -qF "connReader := bufio.NewReader(io.LimitReader(conn, 12288))" transport/internet/httpupgrade/hub.go \
+ && ! grep -qF "connReader := bufio.NewReader(conn)" transport/internet/httpupgrade/hub.go \
+ && grep -qF 'errors.LogWarningInner(context.Background(), err, "failed to accept raw connections")' transport/internet/httpupgrade/hub.go \
+ && grep -qF "func TestAnIdleHalfSentUpgradeRequestIsClosedAfterTheHandshakeDeadline" transport/internet/httpupgrade/handshake_deadline_test.go \
  && git apply --verbose /patches/xray-validator-credential-owner.patch \
  && grep -qF "held, loaded := v.users.LoadOrStore(key, u)" proxy/vless/validator.go \
  && grep -qF "v.users.CompareAndDelete(ProcessUUID(u.(*protocol.MemoryUser).Account.(*MemoryAccount).ID.UUID()), u)" proxy/vless/validator.go \
