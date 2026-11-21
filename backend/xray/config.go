@@ -1071,7 +1071,17 @@ func (c *Config) ApplyAPI(apiPort, metricPort int) (err error) {
 
 	newRaw := json.RawMessage(rawBytes)
 
-	prependRules := []json.RawMessage{newRaw}
+	userTags := c.userInboundTags()
+	portGuard, err := apiGuardPortRule(userTags, apiPort, metricPort)
+	if err != nil {
+		return err
+	}
+
+	var prependRules []json.RawMessage
+	if portGuard != nil {
+		prependRules = append(prependRules, portGuard)
+	}
+	prependRules = append(prependRules, newRaw)
 	if blockTag := c.blackholeOutboundTag(); blockTag != "" {
 		guardRaw, err := malformedDomainGuardRule(blockTag)
 		if err != nil {
@@ -1084,11 +1094,11 @@ func (c *Config) ApplyAPI(apiPort, metricPort int) (err error) {
 	if err != nil {
 		return err
 	}
-	siblingGuard, err := siblingGuardRules(c.userInboundTags())
+	siblingGuard, err := siblingGuardRules(userTags)
 	if err != nil {
 		return err
 	}
-	if len(apiGuard) > 0 || len(siblingGuard) > 0 {
+	if portGuard != nil || len(apiGuard) > 0 || len(siblingGuard) > 0 {
 		c.ensureAPIGuardOutbound()
 		prependRules = append(prependRules, apiGuard...)
 		prependRules = append(prependRules, siblingGuard...)

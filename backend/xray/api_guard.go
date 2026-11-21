@@ -11,6 +11,7 @@ const (
 	apiGuardRuleTag       = "PG_NODE_API_GUARD"
 	apiGuardIPRuleTag     = apiGuardRuleTag + "_IP"
 	apiGuardDomainRuleTag = apiGuardRuleTag + "_DOMAIN"
+	apiGuardPortRuleTag   = apiGuardRuleTag + "_PORT"
 	apiGuardOutboundTag   = "PG_NODE_API_GUARD_BLOCK"
 )
 
@@ -39,17 +40,40 @@ func apiGuardDestinationIPs() []string {
 	return ips
 }
 
-func apiGuardRules(ports ...int) ([]json.RawMessage, error) {
+func guardPortSpec(ports ...int) string {
 	portList := make([]string, 0, len(ports))
 	for _, port := range ports {
 		if port > 0 {
 			portList = append(portList, fmt.Sprintf("%d", port))
 		}
 	}
-	if len(portList) == 0 {
+	return strings.Join(portList, ",")
+}
+
+func apiGuardPortRule(userInboundTags []string, ports ...int) (json.RawMessage, error) {
+	portSpec := guardPortSpec(ports...)
+	if len(userInboundTags) == 0 || portSpec == "" {
 		return nil, nil
 	}
-	portSpec := strings.Join(portList, ",")
+
+	rawBytes, err := json.Marshal(map[string]any{
+		"type":        "field",
+		"ruleTag":     apiGuardPortRuleTag,
+		"inboundTag":  userInboundTags,
+		"port":        portSpec,
+		"outboundTag": apiGuardOutboundTag,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(rawBytes), nil
+}
+
+func apiGuardRules(ports ...int) ([]json.RawMessage, error) {
+	portSpec := guardPortSpec(ports...)
+	if portSpec == "" {
+		return nil, nil
+	}
 
 	rules := []map[string]any{
 		{
@@ -113,7 +137,7 @@ const (
 func nodeGuardRuleTag(tag string) bool {
 	switch tag {
 	case malformedDomainGuardRuleTag,
-		apiGuardRuleTag, apiGuardIPRuleTag, apiGuardDomainRuleTag,
+		apiGuardRuleTag, apiGuardIPRuleTag, apiGuardDomainRuleTag, apiGuardPortRuleTag,
 		siblingGuardRuleTag, siblingGuardIPRuleTag, siblingGuardDomainRuleTag:
 		return true
 	default:
