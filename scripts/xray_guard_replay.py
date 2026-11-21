@@ -11,12 +11,10 @@ FETCH_STEPS = (
     "git fetch -q --depth 1 origin",
     "git checkout -q FETCH_HEAD",
 )
+BUILT_BINARY = "/out/xray"
 
 
-def chain_steps(dockerfile):
-    lines = open(dockerfile).read().split("\n")
-    stage = next(i for i, line in enumerate(lines) if line.startswith("FROM ") and line.rstrip().endswith("AS xray-builder"))
-    start = next(i for i, line in enumerate(lines) if i > stage and line.startswith("RUN git init -q . \\"))
+def run_steps(lines, start):
     steps = []
     for line in lines[start:]:
         text = line.rstrip()
@@ -25,13 +23,42 @@ def chain_steps(dockerfile):
             text = text[:-1].rstrip()
         text = text.strip()
         if text.startswith("RUN "):
-            text = text[len("RUN "):]
-        if text.startswith("&& "):
-            text = text[len("&& "):]
-        steps.append(text)
+            steps.append(text[len("RUN "):])
+        elif text.startswith("&& "):
+            steps.append(text[len("&& "):])
+        else:
+            steps[-1] += " " + text
         if not continued:
             break
+    return steps
+
+
+def xray_builder_run(dockerfile, prefix):
+    lines = open(dockerfile).read().split("\n")
+    stage = next(i for i, line in enumerate(lines) if line.startswith("FROM ") and line.rstrip().endswith("AS xray-builder"))
+    start = next(i for i, line in enumerate(lines) if i > stage and line.startswith(prefix))
+    return run_steps(lines, start)
+
+
+def chain_steps(dockerfile):
+    steps = xray_builder_run(dockerfile, "RUN git init -q . \\")
     return [step for step in steps if not step.startswith(FETCH_STEPS)]
+
+
+def binary_checks(dockerfile):
+    steps = xray_builder_run(dockerfile, "RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build ")
+    if " -o " + BUILT_BINARY + " " not in steps[0]:
+        raise ValueError("the xray-builder go build does not write " + BUILT_BINARY + ": " + steps[0])
+    return steps[1:]
+
+
+def check_binary(dockerfile, binary, env=None):
+    for step in binary_checks(dockerfile):
+        step = step.replace(BUILT_BINARY, binary)
+        result = subprocess.run(["/bin/sh", "-c", step], env=env, capture_output=True, text=True)
+        if result.returncode != 0:
+            return step
+    return None
 
 
 def split_patch(path):
@@ -76,6 +103,7 @@ def replay_targets(patches, only):
 
 class Replay:
     def __init__(self, dockerfile, src, commit):
+        self.dockerfile = dockerfile
         self.steps = chain_steps(dockerfile)
         self.src = src
         self.commit = commit
@@ -101,9 +129,19 @@ class Replay:
 
     def build(self):
         env = dict(self.env, CGO_ENABLED="0", GOOS="linux", GOARCH="amd64")
-        result = subprocess.run(["go", "build", "-trimpath", "-o", os.devnull, "./main"], cwd=self.src, env=env, capture_output=True, text=True)
-        lines = (result.stdout + result.stderr).strip().split("\n")
-        return result.returncode, lines[-1] if lines else ""
+        outdir = tempfile.mkdtemp(prefix="xray-guard-build-")
+        try:
+            binary = os.path.join(outdir, "xray")
+            result = subprocess.run(["go", "build", "-trimpath", "-ldflags", "-s -w -buildid=", "-o", binary, "./main"], cwd=self.src, env=env, capture_output=True, text=True)
+            lines = (result.stdout + result.stderr).strip().split("\n")
+            if result.returncode != 0:
+                return result.returncode, lines[-1] if lines else ""
+            failed = check_binary(self.dockerfile, binary, self.env)
+            if failed is not None:
+                return 1, "binary check failed: " + failed
+            return 0, ""
+        finally:
+            shutil.rmtree(outdir, ignore_errors=True)
 
 
 def without_file(patches, workdir, target, dropped):
@@ -131,7 +169,7 @@ def main():
     if code != 0:
         print("BASELINE BUILD FAIL:", last)
         return 1
-    print("BASELINE ok: every patch applies, every guard passes and ./main builds for linux/amd64", flush=True)
+    print("BASELINE ok: every patch applies, every guard passes, ./main builds for linux/amd64 and the built binary passes every Dockerfile binary check", flush=True)
     targets = replay_targets(patches, only)
     uncaught = []
     for name, path in targets:

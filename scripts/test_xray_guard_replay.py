@@ -9,6 +9,7 @@ sys.path.insert(0, scripts)
 import xray_guard_replay as replay
 
 patches = os.path.join(os.path.dirname(scripts), "patches")
+dockerfile = os.path.join(os.path.dirname(scripts), "Dockerfile")
 
 
 def changed(path):
@@ -89,6 +90,96 @@ class Targets(unittest.TestCase):
         self.assertEqual([entry for entry in tests if entry in targets], [])
         self.assertIn(("xray-xff-trusted-header.patch", "common/protocol/http/headers.go"), targets)
         self.assertIn(("xray-xff-trusted-header.patch", "transport/internet/grpc/encoding/remoteaddr.go"), targets)
+
+
+def buildinfo(deps):
+    lines = "path\tgithub.com/xtls/xray-core/main\nmod\tgithub.com/xtls/xray-core\t(devel)\t\n"
+    for dep in deps:
+        lines += dep
+    lines += "build\t-trimpath=true\nbuild\tCGO_ENABLED=0\n"
+    return lines.encode()
+
+
+def dep(path, version):
+    return "dep\t%s\t%s\th1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n" % (path, version)
+
+
+BROTLI = "github.com/andybalholm/brotli"
+COMPRESS = "github.com/klauspost/compress"
+
+
+class BinaryChecks(unittest.TestCase):
+    def check(self, *copies):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "xray")
+            with open(path, "wb") as binary:
+                binary.write(b"\x7fELF\x02\x01\x01\x00\x00\x00")
+                for deps in copies:
+                    binary.write(b"\xff Go buildinf:\x08\x02\x00\x00" + buildinfo(deps) + b"\x00\x01\x02")
+            return replay.check_binary(dockerfile, path)
+
+    def versions(self, brotli, compress):
+        deps = [dep(BROTLI, brotli), dep("github.com/google/btree", "v1.1.2"), dep(COMPRESS, compress)]
+        return self.check(deps, deps)
+
+    def test_the_dockerfile_checks_the_binary_its_go_build_writes(self):
+        checks = replay.binary_checks(dockerfile)
+        self.assertEqual(len(checks), 4)
+        for check in checks:
+            self.assertIn(replay.BUILT_BINARY, check)
+        self.assertEqual([BROTLI.replace(".", "[.]") in check for check in checks], [True, True, False, False])
+        self.assertEqual([COMPRESS.replace(".", "[.]") in check for check in checks], [False, False, True, True])
+
+    def test_the_chain_ends_with_the_decompressor_patch_and_its_go_mod_checks(self):
+        self.assertEqual(replay.chain_steps(dockerfile)[-3:], [
+            "git apply --verbose /patches/xray-zstd-brotli-cert-decompression.patch",
+            'grep -q "github.com/andybalholm/brotli v1.2.7 // indirect$" go.mod',
+            'grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod',
+        ])
+
+    def test_versions_at_or_above_both_floors_pass(self):
+        for brotli, compress in [
+            ("v1.2.7", "v1.20.2"),
+            ("v1.2.8", "v1.20.5"),
+            ("v1.2.10", "v1.20.10"),
+            ("v1.2.70", "v1.20.20"),
+            ("v1.3.0", "v1.21.0"),
+            ("v1.10.0", "v1.30.0"),
+            ("v1.20.1", "v1.100.0"),
+        ]:
+            with self.subTest(brotli=brotli, compress=compress):
+                self.assertIsNone(self.versions(brotli, compress))
+
+    def test_a_version_below_either_floor_fails(self):
+        for brotli, compress in [
+            ("v1.0.6", "v1.17.4"),
+            ("v1.2.6", "v1.20.2"),
+            ("v1.1.0", "v1.20.2"),
+            ("v1.2.7-rc.1", "v1.20.2"),
+            ("v1.2.8-0.20261101000000-0123456789ab", "v1.20.2"),
+            ("v0.9.9", "v1.20.2"),
+            ("v1.2.7", "v1.20.1"),
+            ("v1.2.7", "v1.19.9"),
+            ("v1.2.7", "v1.2.2"),
+            ("v1.2.7", "v1.20.2-rc.1"),
+            ("v1.2.7", "v0.30.0"),
+        ]:
+            with self.subTest(brotli=brotli, compress=compress):
+                self.assertIsNotNone(self.versions(brotli, compress))
+
+    def test_a_missing_module_fails(self):
+        self.assertIsNotNone(self.check([dep(COMPRESS, "v1.20.2")]))
+        self.assertIsNotNone(self.check([dep(BROTLI, "v1.2.7")]))
+
+    def test_one_copy_of_the_build_info_below_a_floor_fails(self):
+        good = [dep(BROTLI, "v1.2.7"), dep(COMPRESS, "v1.20.2")]
+        self.assertIsNone(self.check(good, good))
+        self.assertIsNotNone(self.check(good, [dep(BROTLI, "v1.0.6"), dep(COMPRESS, "v1.20.2")]))
+        self.assertIsNotNone(self.check(good, [dep(BROTLI, "v1.2.7"), dep(COMPRESS, "v1.17.4")]))
+
+    def test_a_replaced_module_fails(self):
+        replaced = "dep\t%s\tv1.2.7\n=>\t../brotli\t(devel)\t\n" % BROTLI
+        self.assertIsNotNone(self.check([replaced, dep(COMPRESS, "v1.20.2")]))
 
 
 if __name__ == "__main__":

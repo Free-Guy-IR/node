@@ -91,6 +91,7 @@ COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
 COPY patches/xray-udp-conn-cancel-race.patch /patches/xray-udp-conn-cancel-race.patch
+COPY patches/xray-zstd-brotli-cert-decompression.patch /patches/xray-zstd-brotli-cert-decompression.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
@@ -222,10 +223,17 @@ RUN git init -q . \
  && grep -qF "w.publishCancel(conn, cancel)" app/proxyman/inbound/worker.go \
  && grep -qF "func (w *udpWorker) publishCancel(conn *udpConn, cancel context.CancelFunc) {" app/proxyman/inbound/worker.go \
  && ! grep -qE "^[[:space:]]{3}conn\.cancel = cancel$" app/proxyman/inbound/worker.go \
- && grep -qF "func TestUDPConnCancelIsPublishedUnderTheWorkerLockBeforeCleanClosesIt" app/proxyman/inbound/udp_conn_cancel_race_test.go
+ && grep -qF "func TestUDPConnCancelIsPublishedUnderTheWorkerLockBeforeCleanClosesIt" app/proxyman/inbound/udp_conn_cancel_race_test.go \
+ && git apply --verbose /patches/xray-zstd-brotli-cert-decompression.patch \
+ && grep -q "github.com/andybalholm/brotli v1.2.7 // indirect$" go.mod \
+ && grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
-    -o /out/xray ./main
+    -o /out/xray ./main \
+ && grep -aqE "^dep[[:space:]]github[.]com/andybalholm/brotli[[:space:]]v1[.](2[.]([7-9]|[1-9][0-9]+)|([3-9]|[1-9][0-9]+)[.][0-9]+)[[:space:]]" /out/xray \
+ && test "$(grep -ac '^dep[[:space:]]github[.]com/andybalholm/brotli[[:space:]]' /out/xray)" = "$(grep -acE '^dep[[:space:]]github[.]com/andybalholm/brotli[[:space:]]v1[.](2[.]([7-9]|[1-9][0-9]+)|([3-9]|[1-9][0-9]+)[.][0-9]+)[[:space:]]' /out/xray)" \
+ && grep -aqE "^dep[[:space:]]github[.]com/klauspost/compress[[:space:]]v1[.](20[.]([2-9]|[1-9][0-9]+)|(2[1-9]|[3-9][0-9]|[1-9][0-9][0-9]+)[.][0-9]+)[[:space:]]" /out/xray \
+ && test "$(grep -ac '^dep[[:space:]]github[.]com/klauspost/compress[[:space:]]' /out/xray)" = "$(grep -acE '^dep[[:space:]]github[.]com/klauspost/compress[[:space:]]v1[.](20[.]([2-9]|[1-9][0-9]+)|(2[1-9]|[3-9][0-9]|[1-9][0-9][0-9]+)[.][0-9]+)[[:space:]]' /out/xray)"
 
 FROM --platform=$BUILDPLATFORM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS geo-assets
 

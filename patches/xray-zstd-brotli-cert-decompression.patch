@@ -1,0 +1,65 @@
+Build utls certificate decompression against brotli 1.2.7 and klauspost/compress 1.20.2
+
+FORK DEVIATION: not upstream code. The utls this pin requires, aa6edf4b11af, takes
+github.com/andybalholm/brotli v1.0.6 and github.com/klauspost/compress v1.17.4. Only its
+u_handshake_client.go imports them: decompressCert reads a server's CompressedCertificate through
+brotli.NewReader or zstd.NewReader while the client reads the server certificate, before that
+certificate is verified, for an algorithm the ClientHello advertised. brotli v1.0.6 has GO-2026-6888
+(excessive memory allocation on a crafted stream, fixed in v1.2.7) and compress v1.17.4 has
+GO-2026-6865 (a panic on two-block frames in fse and huff0, fixed in v1.20.2). This patch moves both
+requirements to those fixed releases. go mod tidy drops the go.sum lines of the old versions and adds
+those of github.com/xyproto/randomstring v1.0.5, which brotli v1.2.7's go.mod requires. No Go source
+changes. Upstream v26.11.9 (676eaf66f8f0) requires no brotli and klauspost/compress v1.20.1, so no
+upstream commit carries this. The patch applies last, in the Dockerfile and in the make build_xray
+glob alike, on the go.mod and go.sum that xray-grpc-1.83.2.patch and xray-x-net-0.60.0.patch leave.
+
+diff --git a/go.mod b/go.mod
+index 7066b12..185d90f 100644
+--- a/go.mod
++++ b/go.mod
+@@ -35,11 +35,11 @@ require (
+ )
+ 
+ require (
+-	github.com/andybalholm/brotli v1.0.6 // indirect
++	github.com/andybalholm/brotli v1.2.7 // indirect
+ 	github.com/davecgh/go-spew v1.1.1 // indirect
+ 	github.com/google/btree v1.1.2 // indirect
+ 	github.com/juju/ratelimit v1.0.2 // indirect
+-	github.com/klauspost/compress v1.17.4 // indirect
++	github.com/klauspost/compress v1.20.2 // indirect
+ 	github.com/kr/text v0.2.0 // indirect
+ 	github.com/pmezard/go-difflib v1.0.0 // indirect
+ 	github.com/quic-go/qpack v0.6.0 // indirect
+diff --git a/go.sum b/go.sum
+index 78ea3e7..20a2c27 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,5 +1,5 @@
+-github.com/andybalholm/brotli v1.0.6 h1:Yf9fFpf49Zrxb9NlQaluyE92/+X7UVHlhMNJN2sxfOI=
+-github.com/andybalholm/brotli v1.0.6/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
++github.com/andybalholm/brotli v1.2.7 h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A=
++github.com/andybalholm/brotli v1.2.7/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+ github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22 h1:00ziBGnLWQEcR9LThDwvxOznJJquJ9bYUdmBFnawLMU=
+ github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22/go.mod h1:Npbg8qBtAZlsAB3FWmqwlVh5jtVG6a4DlYsOylUpvzA=
+ github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
+@@ -31,8 +31,8 @@ github.com/h12w/go-socks5 v0.0.0-20200522160539-76189e178364 h1:5XxdakFhqd9dnXoA
+ github.com/h12w/go-socks5 v0.0.0-20200522160539-76189e178364/go.mod h1:eDJQioIyy4Yn3MVivT7rv/39gAJTrA7lgmYr8EW950c=
+ github.com/juju/ratelimit v1.0.2 h1:sRxmtRiajbvrcLQT7S+JbqU0ntsb9W2yhSdNN8tWfaI=
+ github.com/juju/ratelimit v1.0.2/go.mod h1:qapgC/Gy+xNh9UxzV13HGGl/6UXNN+ct+vwSgWNm/qk=
+-github.com/klauspost/compress v1.17.4 h1:Ej5ixsIri7BrIjBkRZLTo6ghwrEtHFk7ijlczPW4fZ4=
+-github.com/klauspost/compress v1.17.4/go.mod h1:/dCuZOvVtNoHsyb+cuJD3itjs3NbnF6KH9zAO4BDxPM=
++github.com/klauspost/compress v1.20.2 h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo=
++github.com/klauspost/compress v1.20.2/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
+ github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
+ github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
+@@ -67,6 +67,8 @@ github.com/vishvananda/netns v0.0.5 h1:DfiHV+j8bA32MFM7bfEunvT8IAqQ/NzSJHtcmW5zd
+ github.com/vishvananda/netns v0.0.5/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=
+ github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f h1:iy2JRioxmUpoJ3SzbFPyTxHZMbR/rSHP7dOOgYaq1O8=
+ github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f/go.mod h1:DsJblcWDGt76+FVqBVwbwRhxyyNJsGV48gJLch0OOWI=
++github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
++github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
+ github.com/yuin/goldmark v1.4.1/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
+ go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
+ go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
