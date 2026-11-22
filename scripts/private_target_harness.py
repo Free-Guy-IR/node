@@ -3,6 +3,7 @@ import asyncio
 import faulthandler
 import json
 import os
+import signal
 import socket
 import statistics
 import struct
@@ -35,6 +36,8 @@ PRIVATE_CIDRS = [
 NODE_PORTS = {"india": 20001, "egypt": 20002, "plain": 20003}
 CLIENT_PORTS = {"india": 10801, "egypt": 10802, "plain": 10803}
 CURRENT = ["starting"]
+RESOLV = "/etc/resolv.conf"
+CLEANUPS = []
 
 
 def say(*parts):
@@ -54,6 +57,23 @@ def print_core_logs(out):
                 print("".join(handle.readlines()[-40:]), flush=True)
 
 
+def clean_up():
+    while CLEANUPS:
+        CLEANUPS.pop()()
+
+
+def restore_resolv(saved):
+    kind, value = saved
+    if os.path.lexists(RESOLV):
+        os.remove(RESOLV)
+    if kind == "link":
+        os.symlink(value, RESOLV)
+    else:
+        with open(RESOLV, "w") as handle:
+            handle.write(value)
+    say("restored", RESOLV, "so the runner resolves names again")
+
+
 def watchdog(budget, out):
     started = time.time()
     while True:
@@ -64,6 +84,7 @@ def watchdog(budget, out):
             say("watchdog: over the %d s budget, every thread's stack and the core logs follow" % budget)
             faulthandler.dump_traceback(all_threads=True)
             print_core_logs(out)
+            clean_up()
             os._exit(3)
 
 
@@ -636,11 +657,16 @@ def prepare_runner():
     run(["sysctl", "-w", "net.ipv6.conf.%s.disable_ipv6=1" % TUNNEL_DEV])
     run(["ip", "link", "set", TUNNEL_DEV, "up"])
     run(["ip", "addr", "add", TUNNEL_NET, "dev", TUNNEL_DEV])
-    upstream = first_nameserver("/etc/resolv.conf")
-    if os.path.islink("/etc/resolv.conf"):
-        os.remove("/etc/resolv.conf")
+    upstream = first_nameserver(RESOLV)
+    if os.path.islink(RESOLV):
+        saved = ("link", os.readlink(RESOLV))
+    else:
+        with open(RESOLV) as handle:
+            saved = ("file", handle.read())
     dns = ScriptedDNS(upstream)
-    with open("/etc/resolv.conf", "w") as handle:
+    CLEANUPS.append(lambda: restore_resolv(saved))
+    os.remove(RESOLV)
+    with open(RESOLV, "w") as handle:
         handle.write("nameserver %s\noptions timeout:2 attempts:2\n" % LOOP)
     probe = run(["getent", "hosts", "public-probe." + ZONE], check=False)
     if PUBLIC not in probe.stdout:
@@ -657,7 +683,15 @@ def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.geteuid() != 0 or not sys.platform.startswith("linux"):
         raise SystemExit("this harness rewrites the runner's addresses and /etc/resolv.conf: run it as root on a GitHub Actions Linux runner only")
     os.makedirs(args.out, exist_ok=True)
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
     threading.Thread(target=watchdog, args=(900, args.out), daemon=True).start()
+    try:
+        run_harness(args)
+    finally:
+        clean_up()
+
+
+def run_harness(args):
     step("preparing the runner")
     dns = prepare_runner()
     link_local = link_local_address()
