@@ -91,9 +91,9 @@ loadable by stock v26.3.27.
   through `resolveOnce`; a dial that failed after a connect refusal is refused without retries; after the dial the
   remote address is checked (skipping the unspecified address chained dials report); a refusal is logged at warning
   with the inbound's protocol and tag; `PacketWriter` gets a `RefusesTarget` callback checked after per-packet
-  resolution, built when `Process` starts so that it keeps the session context through the TimeoutOnly swap of an
-  XUDP flow; a name freedom resolves itself takes its random answer among the dialable ones (`pickAnswer`), for the
-  connection and per datagram. The local-host checks and their messages stay first and unchanged, so the local host
+  resolution; a TimeoutOnly flow (XUDP) is detached with `context.WithoutCancel` instead of `context.Background()`,
+  so it keeps the session values that check needs; a name freedom resolves itself takes its random answer among the
+  dialable ones (`pickAnswer`), for the connection and per datagram. The local-host checks and their messages stay first and unchanged, so the local host
   is refused whatever an allow says.
 - `transport/internet/connect_check.go` (new): `ConnectCheck`, `ContextWithConnectCheck`, `ConnectCheckFromContext`,
   `SystemDialerAppliesConnectChecks` (the effective system dialer is the default one) and `CheckedPacketConn` (drops

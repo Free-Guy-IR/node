@@ -129,14 +129,14 @@ RUN git init -q . \
  && grep -qF "if err := core.RequireFeatures(ctx, h.initWithFeatures(config.(*Config))); err != nil {" proxy/freedom/freedom.go \
  && grep -qF "if h.refusesPrivateTarget(ctx, inbound, dialDest) {" proxy/freedom/freedom.go \
  && grep -qF "dialCtx = internet.ContextWithConnectCheck(ctx, h.connectCheck(ctx, inbound, connect))" proxy/freedom/freedom.go \
- && grep -qF "refusesPacketTarget := h.packetTargetCheck(ctx, inbound)" proxy/freedom/freedom.go \
+ && grep -qF "newCtx, newCancel = context.WithCancel(context.WithoutCancel(ctx))" proxy/freedom/freedom.go \
  && grep -qF "Address: pickAnswer(ips, h.answerRefusal(ctx, inbound, dialDest))," proxy/freedom/freedom.go \
  && grep -qF "ip = pickAnswer(ips, w.answerRefusal(b.UDP.Port))" proxy/freedom/freedom.go \
  && grep -qF "resolved, target, kind, err := h.resolveOnce(ctx, inbound, dialDest)" proxy/freedom/freedom.go \
  && grep -qF "rawConn, err := dialFirst(dialCtx, dialer, candidates)" proxy/freedom/freedom.go \
  && grep -qF "errors.LogWarning(ctx, refusal...)" proxy/freedom/freedom.go \
  && grep -qF "if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(ctx, inbound, remote) {" proxy/freedom/freedom.go \
- && grep -qF "pw.RefusesTarget = refusesPacketTarget" proxy/freedom/freedom.go \
+ && grep -qF "pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }" proxy/freedom/freedom.go \
  && grep -qF "if w.RefusesTarget != nil && w.RefusesTarget(net.UDPDestination(b.UDP.Address, b.UDP.Port)) {" proxy/freedom/freedom.go \
  && grep -qF "if err := c.buildPrivateTargetRules(config); err != nil {" infra/conf/freedom.go \
  && grep -qF "func (h *Handler) resolveOnce(ctx context.Context, inbound *session.Inbound, dest net.Destination) ([]net.Destination, *net.Destination, string, error) {" proxy/freedom/private_target.go \

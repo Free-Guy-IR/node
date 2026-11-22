@@ -103,8 +103,11 @@ private block at all. Production runs node v0.8.22 on the same Xray line, so the
   medium): the mux server marks every XUDP flow's context timeout-only, and freedom then swaps its context for a
   background one before it copies the datagrams, so the per-packet check, which read that variable, lost the session
   outbounds and refused every datagram an allow covers, silently: XUDP to `100.64.0.0/10` through rule#2 and `DIRECT`
-  on cores 1, 17, 19 and 21 delivered nothing. The per-packet check now keeps the context the connection started
-  with. Lows fixed in the same round: UDP-over-TCP datagrams are judged as UDP, not by the TCP name that opened the
+  on cores 1, 17, 19 and 21 delivered nothing. Freedom detaches such a flow because an XUDP flow can be taken over
+  by a later mux connection and must outlive the one that opened it, ending only on inactivity; it now detaches
+  with `context.WithoutCancel` instead of a fresh background context, which drops the opener's cancellation and
+  keeps the session values, so the per-packet check, the log lines and anything else in the flow see the session.
+  Lows fixed in the same round: UDP-over-TCP datagrams are judged as UDP, not by the TCP name that opened the
   stream (R2-L1); a freedom that resolves a name itself (`domainStrategy`, `DIRECT` is `ForceIPv4`) takes its random
   answer among those it would dial, so a public answer is used instead of refusing a private pick (R2-L3), for the
   connection and for each datagram; an outbound whose protocol key in any letter case names freedom loses every
@@ -194,8 +197,9 @@ behaviour on a stock v26.3.27 binary.
   cannot parse is refused.
 - UDP-over-TCP through freedom: each datagram's destination is checked as UDP; a refused one is dropped without a log
   line.
-- An XUDP flow: its datagrams are checked with the session's routing context, so an allow covers them as it covers
-  a plain UDP flow, although freedom runs the flow on a background context.
+- An XUDP flow: freedom detaches it from the context that opened it with `context.WithoutCancel`, so it still
+  outlives that context and ends only on inactivity, and its datagrams are checked with the session's routing
+  context, so an allow covers them as it covers a plain UDP flow.
 - A name a freedom resolves itself (`domainStrategy`) with a public and a private answer: the random answer is taken
   among the ones the guard would dial; only when every answer is refused is one of them taken, and refused.
 - A routing rule that also matches on a domain, targets a balancer or shares its `ruleTag` with another rule gives no

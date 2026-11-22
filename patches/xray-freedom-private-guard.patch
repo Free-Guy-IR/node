@@ -33,9 +33,10 @@ local host or a refused private address, refuses without dialing when the lookup
 the checked addresses, so nothing resolves the name again. app/proxyman/outbound's UDP-over-TCP server (the sing
 uot magic names) writes its datagrams through the same check, which judges each one as UDP and drops a refused one.
 Freedom also checks the remote address of the dialed connection, except the unspecified address that dialerProxy
-and proxySettings connections report, and each UDP datagram after per-packet resolution, which is dropped; that
-check keeps the routing context the connection started with, so the datagrams of an XUDP flow, whose context the
-mux server marks timeout-only and freedom then swaps for a background one, keep their allows. A refused connection
+and proxySettings connections report, and each UDP datagram after per-packet resolution, which is dropped. An XUDP
+flow, whose context the mux server marks timeout-only so that it outlives the mux connection that opened it, is
+detached with context.WithoutCancel instead of context.Background: it still ends only on inactivity, and it keeps
+the session values, so its datagrams keep their allows. A refused connection
 is logged at warning with the inbound's protocol and tag and "it is the private address" (or "local host",
 "unparsable"). privateAllow is node-owned: the
 PasarGuard node tags the routing rules that send explicit private addresses to a freedom outbound and lists them
@@ -781,7 +782,7 @@ index fd0547d..fbb6567 100644
 +  repeated PrivateTargetRule private_allow = 101;
  }
 diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
-index 3179cc7..3cc9919 100644
+index 3179cc7..8f46826 100644
 --- a/proxy/freedom/freedom.go
 +++ b/proxy/freedom/freedom.go
 @@ -4,6 +4,7 @@ import (
@@ -829,15 +830,7 @@ index 3179cc7..3cc9919 100644
  }
  
  func (h *Handler) policy() policy.Session {
-@@ -116,6 +117,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
- 	ob.CanSpliceCopy = 1
- 	inbound := session.InboundFromContext(ctx)
- 	refuseLocalHost := refusesLocalHost(inbound)
-+	refusesPacketTarget := h.packetTargetCheck(ctx, inbound)
- 
- 	destination := ob.Target
- 	origTargetAddr := ob.OriginalTarget.Address
-@@ -142,6 +144,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -142,6 +143,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  
  	var conn stat.Connection
  	var refused *net.Destination
@@ -845,7 +838,7 @@ index 3179cc7..3cc9919 100644
  	err := retry.ExponentialBackoff(5, 100).On(func() error {
  		dialDest := destination
  		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
-@@ -158,7 +161,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -158,7 +160,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			} else {
  				dialDest = net.Destination{
  					Network: dialDest.Network,
@@ -854,7 +847,7 @@ index 3179cc7..3cc9919 100644
  					Port:    dialDest.Port,
  				}
  				errors.LogInfo(ctx, "dialing to ", dialDest)
-@@ -170,8 +173,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -170,8 +172,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
@@ -890,7 +883,7 @@ index 3179cc7..3cc9919 100644
  			return err
  		}
  
-@@ -182,6 +211,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -182,6 +210,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
@@ -903,7 +896,7 @@ index 3179cc7..3cc9919 100644
  		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
  			version := byte(h.config.ProxyProtocol)
  			srcAddr := inbound.Source.RawNetAddr()
-@@ -200,7 +235,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -200,7 +234,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  		return errors.New("failed to open connection to ", destination).Base(err)
  	}
  	if refused != nil {
@@ -914,15 +907,24 @@ index 3179cc7..3cc9919 100644
  	}
  	defer conn.Close()
  	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
-@@ -239,6 +276,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -208,7 +244,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	var newCtx context.Context
+ 	var newCancel context.CancelFunc
+ 	if session.TimeoutOnlyFromContext(ctx) {
+-		newCtx, newCancel = context.WithCancel(context.Background())
++		newCtx, newCancel = context.WithCancel(context.WithoutCancel(ctx))
+ 	}
+ 
+ 	plcy := h.policy()
+@@ -239,6 +275,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			writer = NewPacketWriter(conn, h, UDPOverride, destination)
  			if pw, ok := writer.(*PacketWriter); ok {
  				pw.RefuseLocalHost = refuseLocalHost
-+				pw.RefusesTarget = refusesPacketTarget
++				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }
  			}
  			if h.config.Noises != nil {
  				errors.LogDebug(ctx, "NOISE", h.config.Noises)
-@@ -400,6 +438,7 @@ type PacketWriter struct {
+@@ -400,6 +437,7 @@ type PacketWriter struct {
  	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
  	LocalAddr       net.Address
  	RefuseLocalHost bool
@@ -930,7 +932,7 @@ index 3179cc7..3cc9919 100644
  }
  
  func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-@@ -432,7 +471,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -432,7 +470,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
  								continue
  							}
  						} else {
@@ -939,7 +941,7 @@ index 3179cc7..3cc9919 100644
  							ShouldUseSystemResolver = false
  						}
  					}
-@@ -454,6 +493,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -454,6 +492,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
  				b.Release()
  				continue
  			}
@@ -952,10 +954,10 @@ index 3179cc7..3cc9919 100644
  				b.Release()
 diff --git a/proxy/freedom/private_target.go b/proxy/freedom/private_target.go
 new file mode 100644
-index 0000000..a4779db
+index 0000000..0038b29
 --- /dev/null
 +++ b/proxy/freedom/private_target.go
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,318 @@
 +package freedom
 +
 +import (
@@ -1233,12 +1235,6 @@ index 0000000..a4779db
 +		checked = append(checked, target)
 +	}
 +	return checked, nil, "", nil
-+}
-+
-+func (h *Handler) packetTargetCheck(ctx context.Context, inbound *session.Inbound) func(net.Destination) bool {
-+	return func(dest net.Destination) bool {
-+		return h.refusesPrivateTarget(ctx, inbound, dest)
-+	}
 +}
 +
 +func (h *Handler) answerRefusal(ctx context.Context, inbound *session.Inbound, dest net.Destination) func(net.Address) bool {
@@ -2653,10 +2649,10 @@ index 0000000..f83374b
 +}
 diff --git a/proxy/freedom/private_target_round2_test.go b/proxy/freedom/private_target_round2_test.go
 new file mode 100644
-index 0000000..814285d
+index 0000000..30f3843
 --- /dev/null
 +++ b/proxy/freedom/private_target_round2_test.go
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,223 @@
 +package freedom
 +
 +import (
@@ -2831,6 +2827,53 @@ index 0000000..814285d
 +	}
 +	if delivered != 6 {
 +		t.Errorf("six UDP flows sent a datagram to a name a UseIPv4 freedom resolves to %s three times and to the allowed %s once: %d delivered, want 6", refused, addr.IP, delivered)
++	}
++}
++
++func TestAnXUDPFlowOutlivesTheContextThatOpenedIt(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	allowed := net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port))
++	base, handler, _ := realFreedomOutboundWith(t, "DIRECT", &Config{FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(addr.IP))}}, &proxyman.SenderConfig{})
++	opener, closeOpener := context.WithCancel(base)
++	defer closeOpener()
++	ctx := session.ContextWithInbound(opener, &session.Inbound{Name: "vless", Tag: "users"})
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: allowed, Tag: handler.Tag()}})
++	ctx = session.ContextWithTimeoutOnly(ctx, true)
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	done := make(chan struct{})
++	go func() {
++		handler.Dispatch(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter})
++		close(done)
++	}()
++	send := func() {
++		b := buf.New()
++		b.WriteString("datagram")
++		dest := allowed
++		b.UDP = &dest
++		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	}
++	send()
++	before := datagramsReceived(target, 500*time.Millisecond)
++	closeOpener()
++	time.Sleep(300 * time.Millisecond)
++	send()
++	after := datagramsReceived(target, 500*time.Millisecond)
++	uplinkWriter.Close()
++	select {
++	case <-done:
++	case <-time.After(5 * time.Second):
++		t.Error("the XUDP flow did not end after its uplink closed")
++	}
++	if before != 1 || after != 1 {
++		t.Errorf("an XUDP flow delivered %d datagram before and %d after the context that opened it ended, want 1 and 1: freedom detaches it so that it outlives that context", before, after)
 +	}
 +}
 diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go

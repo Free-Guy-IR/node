@@ -1601,8 +1601,9 @@ shipped.
   one resolution; a refusal there ends the dial without retries. Off that path (`proxySettings`, `dialerProxy`,
   another TCP transport, an alternative system dialer) it resolves a name once, refuses on any refused answer or a
   failed lookup, and dials only the checked addresses. It checks the remote end of the dialed connection (except the
-  unspecified address chained dials report), drops UDP datagrams per packet with the routing context the connection
-  started with (an XUDP flow runs on a background context), and the outbound handler's UDP-over-TCP socket drops
+  unspecified address chained dials report), drops UDP datagrams per packet (an XUDP flow is detached with
+  `context.WithoutCancel` instead of a background context, so it keeps the session values the check needs), and
+  the outbound handler's UDP-over-TCP socket drops
   refused datagrams through the same check, judged as UDP. A name freedom resolves itself takes its random answer
   among the dialable ones. A refusal is logged at warning with the inbound's protocol and tag. The node strips a
   panel-written `privateAllow` from every outbound whose protocol key, in any letter case, names freedom. The node owns
@@ -1631,7 +1632,8 @@ shipped.
   same core built without the guard on Linux (rebinding, a dummy tunnel, the zoned Host, UDP-over-TCP, latency).
   Hostile round 2 on `d6da520b` (BLOCK, no bypass) found that every XUDP datagram an allow covers was dropped,
   because freedom swaps an XUDP flow's context for a background one before the per-packet check read it; XUDP to
-  `100.64.0.0/10` through rule#2 and `DIRECT` delivered nothing until the check kept the session context. The harness
+  `100.64.0.0/10` through rule#2 and `DIRECT` delivered nothing until the flow was detached with
+  `context.WithoutCancel`, which keeps the session values. The harness
   now sends XUDP flows (to the CGNAT listener, and a public then a private datagram) and a name with a public and a
   private answer through `DIRECT`.
 - **Residual:** NAT64, 6to4, Teredo, IPv4-compatible `::a.b.c.d`, `fec0::/10` and the node's own public addresses
