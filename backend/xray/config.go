@@ -617,7 +617,9 @@ func (c *Config) snapshot() *Config {
 }
 
 func (c *Config) ToBytes() ([]byte, error) {
-	return json.Marshal(c.snapshot())
+	snapshot := c.snapshot()
+	snapshot.OutboundConfigs = c.outboundsWithPrivateAllow()
+	return json.Marshal(snapshot)
 }
 
 func filterRules(rules []json.RawMessage, apiTag string) ([]json.RawMessage, error) {

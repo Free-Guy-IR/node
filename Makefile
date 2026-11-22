@@ -262,6 +262,7 @@ test_singbox_http2_guard:
 	bash scripts/test_singbox_http2_guard.sh
 
 XRAY_GUARD_SRC ?= $(CURDIR)/xray-guard-src
+XRAY_FREEDOM_GEOIP_DAT ?= $(wildcard $(GEOFILES_DIR)/geoip.dat)
 
 test_xray_guards:
 	python3 -B scripts/test_xray_guard_replay.py
@@ -298,6 +299,7 @@ test_xray_patches:
 	cd "$(XRAY_SRC)" && GOTOOLCHAIN=local go test -race=false -count=1 -run 'TestAddingALargeDomainRuleDoesNotStallRoutePicking|TestRemovingAWebhookRuleDoesNotStallRoutePicking' ./app/router/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestTunnelOnUnixSocketWithoutPortDoesNotPanic' ./proxy/dokodemo/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestOnlyUserInboundsRefuseTheLocalHost|TestTheLocalHostIsLoopbackAndUnspecifiedOnly|TestAUserInboundCannotReachALoopbackListenerThroughFreedom|TestOtherInboundsStillReachALoopbackListenerThroughFreedom|TestAUserInboundDropsUDPPacketsAddressedToTheLocalHost' ./proxy/freedom/
+	cd "$(XRAY_SRC)" && XRAY_FREEDOM_GEOIP_DAT="$(XRAY_FREEDOM_GEOIP_DAT)" CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestAUserInboundCannotReachAPrivateListenerThroughFreedom|TestAUserInboundIsRefusedEveryPrivateRangeBeforeTheDial|TestANameFreedomResolvesToAPrivateAddressIsRefusedBeforeTheDial|TestAnAsIsNameOfAPrivateAddressIsRefusedBeforeTheHandshake|TestAnAsIsUDPNameOfAPrivateAddressIsRefusedAfterTheDialBeforeAnyDatagram|TestAUserInboundDropsUDPDatagramsAddressedToAPrivateListener|TestOtherInboundsStillReachAPrivateListenerThroughFreedom|TestAUserInboundStillDialsAPublicAddress|TestPrivateTargetsAreExactlyTheGeoIPPrivateRanges|TestThePrivateSetIsTheShippedGeoIPPrivateList|TestFinalRulesDecideAPrivateTargetByTheirFirstMatch|TestPrivateAllowEntriesOpenOnlyWhatTheyName|TestAnAllowNeverOpensTheLocalHost|TestAnAllowCarriesDataToThePrivateListener|TestACGNATAllowCarriesDataThroughFreedomAndStopsThere|TestFreedomReadsFinalRulesAndPrivateAllow|TestFreedomRefusesMalformedPrivateTargetRules' ./proxy/freedom/ ./infra/conf/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=1 -run 'TestEarlyDataConnAddressesBeforeFirstWrite' ./transport/internet/websocket/
 	cd "$(XRAY_SRC)" && CGO_ENABLED=1 GOTOOLCHAIN=local go test -race -count=3 -timeout 300s -run 'TestCloseWithPacketInFlightDoesNotPanic|TestProcessAfterCloseDoesNotPanic|TestProcessWhileClosingDoesNotRaceOrPanic|TestAClosedHandlerNeverBuildsANewTunnel|TestProcessTCPWhileClosingDoesNotRaceOrPanic|TestADialAfterCloseUsesTheTunnelProcessTookUnderTheLock|TestClosingABindTwiceDoesNotPanic' ./proxy/wireguard/ ./proxy/wireguard/gvisortun/
 

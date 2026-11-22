@@ -1,0 +1,1506 @@
+Freedom: refuse private destinations for connections from user inbounds
+
+FORK DEVIATION: not upstream code. Upstream blocks private destinations of user-inbound connections in two
+steps the pin does not have: v26.4.15 (310b764811aa) added ipsBlocked with a default that closes the stream,
+and v26.5.3 (4e87f59628ff) replaced it with finalRules and a default rule that blackholes the stream unless a
+finalRules allow matches; both build on common/geodata from the geodata refactor 82624bc. This patch keeps what
+the node needs on v26.3.27: a connection whose inbound is vless, vmess, trojan, hysteria, wireguard or any
+shadowsocks inbound, the inbounds xray-freedom-local-host.patch guards, may not reach an address of the
+geoip:private list of the geoip.dat the image ships, written here as 18 explicit prefixes so no asset is read,
+unless the freedom outbound's finalRules (upstream's JSON shape: action allow or block, network, port and ip, the
+first match decides) or its privateAllow entries (ip, inboundTag, network and port, any match allows) allow it.
+The local host stays refused whatever an allow says. finalRules decide private destinations only, so public
+destinations and the dokodemo-door, socks and http inbounds behave as before, and a stock v26.3.27 loads the same
+config without guarding it.
+
+Freedom checks the address it dials: a literal or freedom-resolved address before the dial; a TCP name it does not
+resolve itself (AsIs) after one system resolver lookup, refused when any answer is the local host or a refused
+private address, so the handshake never reaches the private host, through a sockopt.interface tunnel either; the
+remote address of the dialed connection, except the unspecified address that dialerProxy and proxySettings
+connections report; and each UDP datagram after per-packet resolution, which is dropped. A refused connection
+ends with "it is the private address" at warning. privateAllow is node-owned: the PasarGuard node derives it from
+the core's routing rules. infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and their tests
+are fork code.
+
+diff --git a/infra/conf/freedom.go b/infra/conf/freedom.go
+index 82d2c9a..02e3c31 100644
+--- a/infra/conf/freedom.go
++++ b/infra/conf/freedom.go
+@@ -23,6 +23,9 @@ type FreedomConfig struct {
+ 	Noise          *Noise    `json:"noise"`
+ 	Noises         []*Noise  `json:"noises"`
+ 	ProxyProtocol  uint32    `json:"proxyProtocol"`
++
++	FinalRules   []*FreedomFinalRule    `json:"finalRules"`
++	PrivateAllow []*FreedomPrivateAllow `json:"privateAllow"`
+ }
+ 
+ type Fragment struct {
+@@ -162,6 +165,9 @@ func (c *FreedomConfig) Build() (proto.Message, error) {
+ 	if c.ProxyProtocol > 0 && c.ProxyProtocol <= 2 {
+ 		config.ProxyProtocol = c.ProxyProtocol
+ 	}
++	if err := c.buildPrivateTargetRules(config); err != nil {
++		return nil, err
++	}
+ 	return config, nil
+ }
+ 
+diff --git a/infra/conf/freedom_private_target.go b/infra/conf/freedom_private_target.go
+new file mode 100644
+index 0000000..c8d70e9
+--- /dev/null
++++ b/infra/conf/freedom_private_target.go
+@@ -0,0 +1,73 @@
++package conf
++
++import (
++	"strings"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/proxy/freedom"
++)
++
++type FreedomFinalRule struct {
++	Action  string       `json:"action"`
++	Network *NetworkList `json:"network"`
++	Port    *PortList    `json:"port"`
++	IP      *StringList  `json:"ip"`
++}
++
++type FreedomPrivateAllow struct {
++	IP         *StringList  `json:"ip"`
++	InboundTag *StringList  `json:"inboundTag"`
++	Network    *NetworkList `json:"network"`
++	Port       *PortList    `json:"port"`
++}
++
++func (c *FreedomConfig) buildPrivateTargetRules(config *freedom.Config) error {
++	for _, entry := range c.FinalRules {
++		if entry == nil {
++			return errors.New("a finalRules entry is empty")
++		}
++		rule := &freedom.PrivateTargetRule{}
++		switch strings.ToLower(entry.Action) {
++		case "allow":
++		case "block":
++			rule.Block = true
++		default:
++			return errors.New("unknown finalRules action: ", entry.Action)
++		}
++		if err := fillPrivateTargetRule(rule, entry.Network, entry.Port, entry.IP); err != nil {
++			return errors.New("invalid finalRules entry").Base(err)
++		}
++		config.FinalRules = append(config.FinalRules, rule)
++	}
++	for _, entry := range c.PrivateAllow {
++		if entry == nil || entry.IP == nil || len(*entry.IP) == 0 {
++			return errors.New("a privateAllow entry needs an ip list")
++		}
++		rule := &freedom.PrivateTargetRule{}
++		if err := fillPrivateTargetRule(rule, entry.Network, entry.Port, entry.IP); err != nil {
++			return errors.New("invalid privateAllow entry").Base(err)
++		}
++		if entry.InboundTag != nil {
++			rule.InboundTags = append(rule.InboundTags, *entry.InboundTag...)
++		}
++		config.PrivateAllow = append(config.PrivateAllow, rule)
++	}
++	return nil
++}
++
++func fillPrivateTargetRule(rule *freedom.PrivateTargetRule, network *NetworkList, port *PortList, ip *StringList) error {
++	if network != nil {
++		rule.Networks = network.Build()
++	}
++	if port != nil {
++		rule.PortList = port.Build()
++	}
++	if ip != nil && len(*ip) > 0 {
++		geoips, err := ToCidrList(*ip)
++		if err != nil {
++			return err
++		}
++		rule.Ip = geoips
++	}
++	return nil
++}
+diff --git a/infra/conf/freedom_private_target_test.go b/infra/conf/freedom_private_target_test.go
+new file mode 100644
+index 0000000..26c24a4
+--- /dev/null
++++ b/infra/conf/freedom_private_target_test.go
+@@ -0,0 +1,92 @@
++package conf_test
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/xtls/xray-core/common/net"
++	. "github.com/xtls/xray-core/infra/conf"
++	"github.com/xtls/xray-core/proxy/freedom"
++)
++
++func buildFreedom(t *testing.T, raw string) (*freedom.Config, error) {
++	t.Helper()
++	config := new(FreedomConfig)
++	if err := json.Unmarshal([]byte(raw), config); err != nil {
++		t.Fatal(err)
++	}
++	message, err := config.Build()
++	if err != nil {
++		return nil, err
++	}
++	return message.(*freedom.Config), nil
++}
++
++func TestFreedomReadsFinalRulesAndPrivateAllow(t *testing.T) {
++	config, err := buildFreedom(t, `{
++		"domainStrategy": "UseIPv4",
++		"finalRules": [
++			{"action": "Block", "network": "tcp", "port": "443", "ip": ["10.0.0.0/8"]},
++			{"action": "allow", "ip": ["192.168.0.0/16", "fd00::/8"]},
++			{"action": "ALLOW"}
++		],
++		"privateAllow": [
++			{"ip": ["100.64.0.0/10"]},
++			{"ip": "10.8.0.0/16,10.9.0.1", "inboundTag": ["relay-in", "relay-out"], "network": "udp", "port": "53,1000-2000"}
++		]
++	}`)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(config.FinalRules) != 3 || len(config.PrivateAllow) != 2 {
++		t.Fatalf("got %d finalRules and %d privateAllow entries, want 3 and 2", len(config.FinalRules), len(config.PrivateAllow))
++	}
++	first, second, third := config.FinalRules[0], config.FinalRules[1], config.FinalRules[2]
++	if !first.Block || second.Block || third.Block {
++		t.Errorf("actions block %v %v %v, want true false false", first.Block, second.Block, third.Block)
++	}
++	if len(first.Networks) != 1 || first.Networks[0] != net.Network_TCP || first.PortList == nil || len(first.PortList.Range) != 1 || first.PortList.Range[0].From != 443 {
++		t.Errorf("the first rule's network %v and ports %v", first.Networks, first.PortList)
++	}
++	if len(first.Ip) != 1 || len(first.Ip[0].Cidr) != 1 || first.Ip[0].Cidr[0].Prefix != 8 {
++		t.Errorf("the first rule's addresses %v", first.Ip)
++	}
++	if len(third.Ip) != 0 || third.Networks != nil || third.PortList != nil {
++		t.Errorf("an allow without conditions carries %v %v %v", third.Ip, third.Networks, third.PortList)
++	}
++	scoped := config.PrivateAllow[1]
++	if strings.Join(scoped.InboundTags, ",") != "relay-in,relay-out" || len(scoped.Networks) != 1 || scoped.Networks[0] != net.Network_UDP || len(scoped.PortList.Range) != 2 {
++		t.Errorf("the scoped privateAllow entry is %v", scoped)
++	}
++	cidrs := 0
++	for _, geoip := range scoped.Ip {
++		cidrs += len(geoip.Cidr)
++	}
++	if cidrs != 2 {
++		t.Errorf("the scoped privateAllow entry holds %d prefixes, want 2", cidrs)
++	}
++	if len(config.PrivateAllow[0].InboundTags) != 0 {
++		t.Errorf("an entry without inboundTag is scoped to %v", config.PrivateAllow[0].InboundTags)
++	}
++}
++
++func TestFreedomRefusesMalformedPrivateTargetRules(t *testing.T) {
++	for _, raw := range []string{
++		`{"finalRules": [{"action": "reject", "ip": ["10.0.0.0/8"]}]}`,
++		`{"finalRules": [{"ip": ["10.0.0.0/8"]}]}`,
++		`{"finalRules": [null]}`,
++		`{"finalRules": [{"action": "allow", "ip": ["10.0.0.0/33"]}]}`,
++		`{"privateAllow": [{}]}`,
++		`{"privateAllow": [{"ip": []}]}`,
++		`{"privateAllow": [null]}`,
++		`{"privateAllow": [{"ip": ["not-an-address"]}]}`,
++	} {
++		if _, err := buildFreedom(t, raw); err == nil {
++			t.Errorf("%s was accepted", raw)
++		}
++	}
++	if _, err := buildFreedom(t, `{"finalRules": [], "privateAllow": []}`); err != nil {
++		t.Errorf("empty lists were refused: %v", err)
++	}
++}
+diff --git a/proxy/freedom/config.pb.go b/proxy/freedom/config.pb.go
+index f39abcf..74f3e61 100644
+--- a/proxy/freedom/config.pb.go
++++ b/proxy/freedom/config.pb.go
+@@ -1,12 +1,14 @@
+ // Code generated by protoc-gen-go. DO NOT EDIT.
+ // versions:
+ // 	protoc-gen-go v1.36.11
+-// 	protoc        v6.33.5
++// 	protoc        v7.36.2
+ // source: proxy/freedom/config.proto
+ 
+ package freedom
+ 
+ import (
++	router "github.com/xtls/xray-core/app/router"
++	net "github.com/xtls/xray-core/common/net"
+ 	protocol "github.com/xtls/xray-core/common/protocol"
+ 	internet "github.com/xtls/xray-core/transport/internet"
+ 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+@@ -251,6 +253,82 @@ func (x *Noise) GetApplyTo() string {
+ 	return ""
+ }
+ 
++type PrivateTargetRule struct {
++	state         protoimpl.MessageState `protogen:"open.v1"`
++	Block         bool                   `protobuf:"varint,1,opt,name=block,proto3" json:"block,omitempty"`
++	Networks      []net.Network          `protobuf:"varint,2,rep,packed,name=networks,proto3,enum=xray.common.net.Network" json:"networks,omitempty"`
++	PortList      *net.PortList          `protobuf:"bytes,3,opt,name=port_list,json=portList,proto3" json:"port_list,omitempty"`
++	Ip            []*router.GeoIP        `protobuf:"bytes,4,rep,name=ip,proto3" json:"ip,omitempty"`
++	InboundTags   []string               `protobuf:"bytes,5,rep,name=inbound_tags,json=inboundTags,proto3" json:"inbound_tags,omitempty"`
++	unknownFields protoimpl.UnknownFields
++	sizeCache     protoimpl.SizeCache
++}
++
++func (x *PrivateTargetRule) Reset() {
++	*x = PrivateTargetRule{}
++	mi := &file_proxy_freedom_config_proto_msgTypes[3]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *PrivateTargetRule) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*PrivateTargetRule) ProtoMessage() {}
++
++func (x *PrivateTargetRule) ProtoReflect() protoreflect.Message {
++	mi := &file_proxy_freedom_config_proto_msgTypes[3]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use PrivateTargetRule.ProtoReflect.Descriptor instead.
++func (*PrivateTargetRule) Descriptor() ([]byte, []int) {
++	return file_proxy_freedom_config_proto_rawDescGZIP(), []int{3}
++}
++
++func (x *PrivateTargetRule) GetBlock() bool {
++	if x != nil {
++		return x.Block
++	}
++	return false
++}
++
++func (x *PrivateTargetRule) GetNetworks() []net.Network {
++	if x != nil {
++		return x.Networks
++	}
++	return nil
++}
++
++func (x *PrivateTargetRule) GetPortList() *net.PortList {
++	if x != nil {
++		return x.PortList
++	}
++	return nil
++}
++
++func (x *PrivateTargetRule) GetIp() []*router.GeoIP {
++	if x != nil {
++		return x.Ip
++	}
++	return nil
++}
++
++func (x *PrivateTargetRule) GetInboundTags() []string {
++	if x != nil {
++		return x.InboundTags
++	}
++	return nil
++}
++
+ type Config struct {
+ 	state               protoimpl.MessageState  `protogen:"open.v1"`
+ 	DomainStrategy      internet.DomainStrategy `protobuf:"varint,1,opt,name=domain_strategy,json=domainStrategy,proto3,enum=xray.transport.internet.DomainStrategy" json:"domain_strategy,omitempty"`
+@@ -259,13 +337,15 @@ type Config struct {
+ 	Fragment            *Fragment               `protobuf:"bytes,5,opt,name=fragment,proto3" json:"fragment,omitempty"`
+ 	ProxyProtocol       uint32                  `protobuf:"varint,6,opt,name=proxy_protocol,json=proxyProtocol,proto3" json:"proxy_protocol,omitempty"`
+ 	Noises              []*Noise                `protobuf:"bytes,7,rep,name=noises,proto3" json:"noises,omitempty"`
++	FinalRules          []*PrivateTargetRule    `protobuf:"bytes,100,rep,name=final_rules,json=finalRules,proto3" json:"final_rules,omitempty"`
++	PrivateAllow        []*PrivateTargetRule    `protobuf:"bytes,101,rep,name=private_allow,json=privateAllow,proto3" json:"private_allow,omitempty"`
+ 	unknownFields       protoimpl.UnknownFields
+ 	sizeCache           protoimpl.SizeCache
+ }
+ 
+ func (x *Config) Reset() {
+ 	*x = Config{}
+-	mi := &file_proxy_freedom_config_proto_msgTypes[3]
++	mi := &file_proxy_freedom_config_proto_msgTypes[4]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -277,7 +357,7 @@ func (x *Config) String() string {
+ func (*Config) ProtoMessage() {}
+ 
+ func (x *Config) ProtoReflect() protoreflect.Message {
+-	mi := &file_proxy_freedom_config_proto_msgTypes[3]
++	mi := &file_proxy_freedom_config_proto_msgTypes[4]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -290,7 +370,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
+ 
+ // Deprecated: Use Config.ProtoReflect.Descriptor instead.
+ func (*Config) Descriptor() ([]byte, []int) {
+-	return file_proxy_freedom_config_proto_rawDescGZIP(), []int{3}
++	return file_proxy_freedom_config_proto_rawDescGZIP(), []int{4}
+ }
+ 
+ func (x *Config) GetDomainStrategy() internet.DomainStrategy {
+@@ -335,11 +415,25 @@ func (x *Config) GetNoises() []*Noise {
+ 	return nil
+ }
+ 
++func (x *Config) GetFinalRules() []*PrivateTargetRule {
++	if x != nil {
++		return x.FinalRules
++	}
++	return nil
++}
++
++func (x *Config) GetPrivateAllow() []*PrivateTargetRule {
++	if x != nil {
++		return x.PrivateAllow
++	}
++	return nil
++}
++
+ var File_proxy_freedom_config_proto protoreflect.FileDescriptor
+ 
+ const file_proxy_freedom_config_proto_rawDesc = "" +
+ 	"\n" +
+-	"\x1aproxy/freedom/config.proto\x12\x12xray.proxy.freedom\x1a!common/protocol/server_spec.proto\x1a\x1ftransport/internet/config.proto\"S\n" +
++	"\x1aproxy/freedom/config.proto\x12\x12xray.proxy.freedom\x1a!common/protocol/server_spec.proto\x1a\x1ftransport/internet/config.proto\x1a\x17app/router/config.proto\x1a\x18common/net/network.proto\x1a\x15common/net/port.proto\"S\n" +
+ 	"\x13DestinationOverride\x12<\n" +
+ 	"\x06server\x18\x01 \x01(\v2$.xray.common.protocol.ServerEndpointR\x06server\"\x98\x02\n" +
+ 	"\bFragment\x12!\n" +
+@@ -362,7 +456,13 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
+ 	"\tdelay_min\x18\x03 \x01(\x04R\bdelayMin\x12\x1b\n" +
+ 	"\tdelay_max\x18\x04 \x01(\x04R\bdelayMax\x12\x16\n" +
+ 	"\x06packet\x18\x05 \x01(\fR\x06packet\x12\x19\n" +
+-	"\bapply_to\x18\x06 \x01(\tR\aapplyTo\"\xe9\x02\n" +
++	"\bapply_to\x18\x06 \x01(\tR\aapplyTo\"\xe2\x01\n" +
++	"\x11PrivateTargetRule\x12\x14\n" +
++	"\x05block\x18\x01 \x01(\bR\x05block\x124\n" +
++	"\bnetworks\x18\x02 \x03(\x0e2\x18.xray.common.net.NetworkR\bnetworks\x126\n" +
++	"\tport_list\x18\x03 \x01(\v2\x19.xray.common.net.PortListR\bportList\x12&\n" +
++	"\x02ip\x18\x04 \x03(\v2\x16.xray.app.router.GeoIPR\x02ip\x12!\n" +
++	"\finbound_tags\x18\x05 \x03(\tR\vinboundTags\"\xfd\x03\n" +
+ 	"\x06Config\x12P\n" +
+ 	"\x0fdomain_strategy\x18\x01 \x01(\x0e2'.xray.transport.internet.DomainStrategyR\x0edomainStrategy\x12Z\n" +
+ 	"\x14destination_override\x18\x03 \x01(\v2'.xray.proxy.freedom.DestinationOverrideR\x13destinationOverride\x12\x1d\n" +
+@@ -370,7 +470,10 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
+ 	"user_level\x18\x04 \x01(\rR\tuserLevel\x128\n" +
+ 	"\bfragment\x18\x05 \x01(\v2\x1c.xray.proxy.freedom.FragmentR\bfragment\x12%\n" +
+ 	"\x0eproxy_protocol\x18\x06 \x01(\rR\rproxyProtocol\x121\n" +
+-	"\x06noises\x18\a \x03(\v2\x19.xray.proxy.freedom.NoiseR\x06noisesBX\n" +
++	"\x06noises\x18\a \x03(\v2\x19.xray.proxy.freedom.NoiseR\x06noises\x12F\n" +
++	"\vfinal_rules\x18d \x03(\v2%.xray.proxy.freedom.PrivateTargetRuleR\n" +
++	"finalRules\x12J\n" +
++	"\rprivate_allow\x18e \x03(\v2%.xray.proxy.freedom.PrivateTargetRuleR\fprivateAllowBX\n" +
+ 	"\x16com.xray.proxy.freedomP\x01Z'github.com/xtls/xray-core/proxy/freedom\xaa\x02\x12Xray.Proxy.Freedomb\x06proto3"
+ 
+ var (
+@@ -385,26 +488,35 @@ func file_proxy_freedom_config_proto_rawDescGZIP() []byte {
+ 	return file_proxy_freedom_config_proto_rawDescData
+ }
+ 
+-var file_proxy_freedom_config_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
++var file_proxy_freedom_config_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+ var file_proxy_freedom_config_proto_goTypes = []any{
+ 	(*DestinationOverride)(nil),     // 0: xray.proxy.freedom.DestinationOverride
+ 	(*Fragment)(nil),                // 1: xray.proxy.freedom.Fragment
+ 	(*Noise)(nil),                   // 2: xray.proxy.freedom.Noise
+-	(*Config)(nil),                  // 3: xray.proxy.freedom.Config
+-	(*protocol.ServerEndpoint)(nil), // 4: xray.common.protocol.ServerEndpoint
+-	(internet.DomainStrategy)(0),    // 5: xray.transport.internet.DomainStrategy
++	(*PrivateTargetRule)(nil),       // 3: xray.proxy.freedom.PrivateTargetRule
++	(*Config)(nil),                  // 4: xray.proxy.freedom.Config
++	(*protocol.ServerEndpoint)(nil), // 5: xray.common.protocol.ServerEndpoint
++	(net.Network)(0),                // 6: xray.common.net.Network
++	(*net.PortList)(nil),            // 7: xray.common.net.PortList
++	(*router.GeoIP)(nil),            // 8: xray.app.router.GeoIP
++	(internet.DomainStrategy)(0),    // 9: xray.transport.internet.DomainStrategy
+ }
+ var file_proxy_freedom_config_proto_depIdxs = []int32{
+-	4, // 0: xray.proxy.freedom.DestinationOverride.server:type_name -> xray.common.protocol.ServerEndpoint
+-	5, // 1: xray.proxy.freedom.Config.domain_strategy:type_name -> xray.transport.internet.DomainStrategy
+-	0, // 2: xray.proxy.freedom.Config.destination_override:type_name -> xray.proxy.freedom.DestinationOverride
+-	1, // 3: xray.proxy.freedom.Config.fragment:type_name -> xray.proxy.freedom.Fragment
+-	2, // 4: xray.proxy.freedom.Config.noises:type_name -> xray.proxy.freedom.Noise
+-	5, // [5:5] is the sub-list for method output_type
+-	5, // [5:5] is the sub-list for method input_type
+-	5, // [5:5] is the sub-list for extension type_name
+-	5, // [5:5] is the sub-list for extension extendee
+-	0, // [0:5] is the sub-list for field type_name
++	5,  // 0: xray.proxy.freedom.DestinationOverride.server:type_name -> xray.common.protocol.ServerEndpoint
++	6,  // 1: xray.proxy.freedom.PrivateTargetRule.networks:type_name -> xray.common.net.Network
++	7,  // 2: xray.proxy.freedom.PrivateTargetRule.port_list:type_name -> xray.common.net.PortList
++	8,  // 3: xray.proxy.freedom.PrivateTargetRule.ip:type_name -> xray.app.router.GeoIP
++	9,  // 4: xray.proxy.freedom.Config.domain_strategy:type_name -> xray.transport.internet.DomainStrategy
++	0,  // 5: xray.proxy.freedom.Config.destination_override:type_name -> xray.proxy.freedom.DestinationOverride
++	1,  // 6: xray.proxy.freedom.Config.fragment:type_name -> xray.proxy.freedom.Fragment
++	2,  // 7: xray.proxy.freedom.Config.noises:type_name -> xray.proxy.freedom.Noise
++	3,  // 8: xray.proxy.freedom.Config.final_rules:type_name -> xray.proxy.freedom.PrivateTargetRule
++	3,  // 9: xray.proxy.freedom.Config.private_allow:type_name -> xray.proxy.freedom.PrivateTargetRule
++	10, // [10:10] is the sub-list for method output_type
++	10, // [10:10] is the sub-list for method input_type
++	10, // [10:10] is the sub-list for extension type_name
++	10, // [10:10] is the sub-list for extension extendee
++	0,  // [0:10] is the sub-list for field type_name
+ }
+ 
+ func init() { file_proxy_freedom_config_proto_init() }
+@@ -418,7 +530,7 @@ func file_proxy_freedom_config_proto_init() {
+ 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+ 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proxy_freedom_config_proto_rawDesc), len(file_proxy_freedom_config_proto_rawDesc)),
+ 			NumEnums:      0,
+-			NumMessages:   4,
++			NumMessages:   5,
+ 			NumExtensions: 0,
+ 			NumServices:   0,
+ 		},
+diff --git a/proxy/freedom/config.proto b/proxy/freedom/config.proto
+index fd0547d..f77ed9f 100644
+--- a/proxy/freedom/config.proto
++++ b/proxy/freedom/config.proto
+@@ -8,6 +8,9 @@ option java_multiple_files = true;
+ 
+ import "common/protocol/server_spec.proto";
+ import "transport/internet/config.proto";
++import "app/router/config.proto";
++import "common/net/network.proto";
++import "common/net/port.proto";
+ 
+ message DestinationOverride {
+   xray.common.protocol.ServerEndpoint server = 1;
+@@ -32,6 +35,14 @@ message Noise {
+   string apply_to = 6;
+ }
+ 
++message PrivateTargetRule {
++  bool block = 1;
++  repeated xray.common.net.Network networks = 2;
++  xray.common.net.PortList port_list = 3;
++  repeated xray.app.router.GeoIP ip = 4;
++  repeated string inbound_tags = 5;
++}
++
+ message Config {
+   xray.transport.internet.DomainStrategy domain_strategy = 1;
+   DestinationOverride destination_override = 3;
+@@ -39,4 +50,6 @@ message Config {
+   Fragment fragment = 5;
+   uint32 proxy_protocol = 6;
+   repeated Noise noises = 7;
++  repeated PrivateTargetRule final_rules = 100;
++  repeated PrivateTargetRule private_allow = 101;
+ }
+diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
+index 3179cc7..4890bb2 100644
+--- a/proxy/freedom/freedom.go
++++ b/proxy/freedom/freedom.go
+@@ -53,13 +53,15 @@ func init() {
+ type Handler struct {
+ 	policyManager policy.Manager
+ 	config        *Config
++	finalRules    []*targetRule
++	privateAllow  []*targetRule
+ }
+ 
+ // Init initializes the Handler with necessary parameters.
+ func (h *Handler) Init(config *Config, pm policy.Manager) error {
+ 	h.config = config
+ 	h.policyManager = pm
+-	return nil
++	return h.initTargetRules(config)
+ }
+ 
+ func (h *Handler) policy() policy.Session {
+@@ -142,6 +144,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 
+ 	var conn stat.Connection
+ 	var refused *net.Destination
++	refusedKind := "local host"
+ 	err := retry.ExponentialBackoff(5, 100).On(func() error {
+ 		dialDest := destination
+ 		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
+@@ -170,6 +173,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			return nil
+ 		}
+ 
++		if h.refusesPrivateTarget(inbound, dialDest) {
++			refused, refusedKind = &dialDest, "private"
++			return nil
++		}
++
++		if refuseLocalHost && dialDest.Network == net.Network_TCP && dialDest.Address.Family().IsDomain() {
++			if target, kind := h.refusedResolvedTarget(ctx, inbound, dialDest); target != nil {
++				refused, refusedKind = target, kind
++				return nil
++			}
++		}
++
+ 		rawConn, err := dialer.Dial(ctx, dialDest)
+ 		if err != nil {
+ 			return err
+@@ -182,6 +197,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			return nil
+ 		}
+ 
++		if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(inbound, remote) {
++			rawConn.Close()
++			refused, refusedKind = &remote, "private"
++			return nil
++		}
++
+ 		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
+ 			version := byte(h.config.ProxyProtocol)
+ 			srcAddr := inbound.Source.RawNetAddr()
+@@ -200,7 +221,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 		return errors.New("failed to open connection to ", destination).Base(err)
+ 	}
+ 	if refused != nil {
+-		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the local host address ", *refused).AtWarning()
++		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the ", refusedKind, " address ", *refused).AtWarning()
+ 	}
+ 	defer conn.Close()
+ 	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+@@ -239,6 +260,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			writer = NewPacketWriter(conn, h, UDPOverride, destination)
+ 			if pw, ok := writer.(*PacketWriter); ok {
+ 				pw.RefuseLocalHost = refuseLocalHost
++				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(inbound, dest) }
+ 			}
+ 			if h.config.Noises != nil {
+ 				errors.LogDebug(ctx, "NOISE", h.config.Noises)
+@@ -400,6 +422,7 @@ type PacketWriter struct {
+ 	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
+ 	LocalAddr       net.Address
+ 	RefuseLocalHost bool
++	RefusesTarget   func(net.Destination) bool
+ }
+ 
+ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -454,6 +477,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+ 				b.Release()
+ 				continue
+ 			}
++			if w.RefusesTarget != nil && w.RefusesTarget(net.UDPDestination(b.UDP.Address, b.UDP.Port)) {
++				b.Release()
++				continue
++			}
+ 			destAddr := b.UDP.RawNetAddr()
+ 			if destAddr == nil {
+ 				b.Release()
+diff --git a/proxy/freedom/private_target.go b/proxy/freedom/private_target.go
+new file mode 100644
+index 0000000..236fb25
+--- /dev/null
++++ b/proxy/freedom/private_target.go
+@@ -0,0 +1,154 @@
++package freedom
++
++import (
++	"context"
++	"net/netip"
++	"slices"
++
++	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++)
++
++func v4Prefix(a, b, c, d byte, bits int) netip.Prefix {
++	return netip.PrefixFrom(netip.AddrFrom4([4]byte{a, b, c, d}), bits)
++}
++
++var privateTargetPrefixes = []netip.Prefix{
++	v4Prefix(0, 0, 0, 0, 8),
++	v4Prefix(10, 0, 0, 0, 8),
++	v4Prefix(100, 64, 0, 0, 10),
++	v4Prefix(127, 0, 0, 0, 8),
++	v4Prefix(169, 254, 0, 0, 16),
++	v4Prefix(172, 16, 0, 0, 12),
++	v4Prefix(192, 0, 0, 0, 24),
++	v4Prefix(192, 0, 2, 0, 24),
++	v4Prefix(192, 88, 99, 0, 24),
++	v4Prefix(192, 168, 0, 0, 16),
++	v4Prefix(198, 18, 0, 0, 15),
++	v4Prefix(198, 51, 100, 0, 24),
++	v4Prefix(203, 0, 113, 0, 24),
++	v4Prefix(224, 0, 0, 0, 3),
++	netip.MustParsePrefix("::/127"),
++	netip.MustParsePrefix("fc00::/7"),
++	netip.MustParsePrefix("fe80::/10"),
++	netip.MustParsePrefix("ff00::/8"),
++}
++
++func isPrivateTarget(addr net.Address) bool {
++	if addr == nil || !addr.Family().IsIP() {
++		return false
++	}
++	ip, ok := netip.AddrFromSlice(addr.IP())
++	if !ok {
++		return false
++	}
++	ip = ip.Unmap()
++	for _, prefix := range privateTargetPrefixes {
++		if prefix.Contains(ip) {
++			return true
++		}
++	}
++	return false
++}
++
++type targetRule struct {
++	block       bool
++	networks    []net.Network
++	ports       net.MemoryPortList
++	ip          router.GeoIPMatcher
++	inboundTags []string
++}
++
++func buildTargetRules(configs []*PrivateTargetRule) ([]*targetRule, error) {
++	rules := make([]*targetRule, 0, len(configs))
++	for _, config := range configs {
++		rule := &targetRule{
++			block:       config.GetBlock(),
++			networks:    config.GetNetworks(),
++			inboundTags: config.GetInboundTags(),
++		}
++		if config.GetPortList() != nil {
++			rule.ports = net.PortListFromProto(config.GetPortList())
++		}
++		if len(config.GetIp()) > 0 {
++			matcher, err := router.BuildOptimizedGeoIPMatcher(config.GetIp()...)
++			if err != nil {
++				return nil, err
++			}
++			rule.ip = matcher
++		}
++		rules = append(rules, rule)
++	}
++	return rules, nil
++}
++
++func (h *Handler) initTargetRules(config *Config) error {
++	var err error
++	if h.finalRules, err = buildTargetRules(config.GetFinalRules()); err != nil {
++		return errors.New("failed to build the finalRules of freedom").Base(err)
++	}
++	if h.privateAllow, err = buildTargetRules(config.GetPrivateAllow()); err != nil {
++		return errors.New("failed to build the privateAllow of freedom").Base(err)
++	}
++	return nil
++}
++
++func (r *targetRule) matches(inbound *session.Inbound, dest net.Destination) bool {
++	if len(r.networks) > 0 && !slices.Contains(r.networks, dest.Network) {
++		return false
++	}
++	if len(r.ports) > 0 && !r.ports.Contains(dest.Port) {
++		return false
++	}
++	if len(r.inboundTags) > 0 && (inbound == nil || !slices.Contains(r.inboundTags, inbound.Tag)) {
++		return false
++	}
++	return r.ip == nil || r.ip.Match(dest.Address.IP())
++}
++
++func (h *Handler) refusesPrivateTarget(inbound *session.Inbound, dest net.Destination) bool {
++	if !refusesLocalHost(inbound) || !isPrivateTarget(dest.Address) {
++		return false
++	}
++	for _, rule := range h.finalRules {
++		if rule.matches(inbound, dest) {
++			return rule.block
++		}
++	}
++	for _, rule := range h.privateAllow {
++		if rule.matches(inbound, dest) {
++			return false
++		}
++	}
++	return true
++}
++
++func (h *Handler) refusedResolvedTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) (*net.Destination, string) {
++	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, dest.Address.Domain())
++	if err != nil {
++		errors.LogInfoInner(ctx, err, "failed to resolve ", dest.Address.Domain(), " before dialing it")
++		return nil, ""
++	}
++	for _, addr := range addrs {
++		resolved := net.Destination{Network: dest.Network, Address: net.IPAddress(addr.IP), Port: dest.Port}
++		if isLocalHostAddress(resolved.Address) {
++			return &resolved, "local host"
++		}
++		if h.refusesPrivateTarget(inbound, resolved) {
++			return &resolved, "private"
++		}
++	}
++	return nil, ""
++}
++
++func remoteTarget(conn net.Conn) (net.Destination, bool) {
++	switch addr := conn.RemoteAddr().(type) {
++	case *net.TCPAddr:
++		return net.TCPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), len(addr.IP) > 0 && !addr.IP.IsUnspecified()
++	case *net.UDPAddr:
++		return net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), len(addr.IP) > 0 && !addr.IP.IsUnspecified()
++	}
++	return net.Destination{}, false
++}
+diff --git a/proxy/freedom/private_target_refusal_test.go b/proxy/freedom/private_target_refusal_test.go
+new file mode 100644
+index 0000000..f83374b
+--- /dev/null
++++ b/proxy/freedom/private_target_refusal_test.go
+@@ -0,0 +1,431 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"net/netip"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/dns"
++	"github.com/xtls/xray-core/features/policy"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	"github.com/xtls/xray-core/transport/pipe"
++	"golang.org/x/net/dns/dnsmessage"
++)
++
++var guardedInboundNames = []string{
++	"vless", "vmess", "trojan", "hysteria", "wireguard",
++	"shadowsocks", "shadowsocks-2022", "shadowsocks-2022-multi", "shadowsocks-2022-relay",
++}
++
++func privateHostAddress(t *testing.T) gonet.IP {
++	t.Helper()
++	ifaces, err := gonet.Interfaces()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, iface := range ifaces {
++		if iface.Flags&gonet.FlagUp == 0 || iface.Flags&gonet.FlagLoopback != 0 {
++			continue
++		}
++		addrs, err := iface.Addrs()
++		if err != nil {
++			continue
++		}
++		for _, addr := range addrs {
++			ipNet, ok := addr.(*gonet.IPNet)
++			if !ok || ipNet.IP.To4() == nil {
++				continue
++			}
++			if ip, ok := netip.AddrFromSlice(ipNet.IP.To4()); ok && ip.IsPrivate() {
++				return ipNet.IP.To4()
++			}
++		}
++	}
++	t.Skip("this host has no non-loopback private IPv4 address to listen on")
++	return nil
++}
++
++type privateListener struct {
++	port     net.Port
++	ip       gonet.IP
++	accepted atomic.Int32
++	received atomic.Int64
++}
++
++func listenOnPrivateHost(t *testing.T) *privateListener {
++	t.Helper()
++	ip := privateHostAddress(t)
++	ln, err := gonet.Listen("tcp4", gonet.JoinHostPort(ip.String(), "0"))
++	if err != nil {
++		t.Skipf("cannot listen on the private address %s: %v", ip, err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	l := &privateListener{port: net.Port(ln.Addr().(*gonet.TCPAddr).Port), ip: ip}
++	go func() {
++		for {
++			conn, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			l.accepted.Add(1)
++			go func() {
++				defer conn.Close()
++				chunk := make([]byte, 1024)
++				for {
++					n, err := conn.Read(chunk)
++					l.received.Add(int64(n))
++					if err != nil {
++						return
++					}
++				}
++			}()
++		}
++	}()
++	return l
++}
++
++func (l *privateListener) destination() net.Destination {
++	return net.TCPDestination(net.IPAddress(l.ip), l.port)
++}
++
++func (l *privateListener) waitFor(received int64, within time.Duration) bool {
++	deadline := time.Now().Add(within)
++	for time.Now().Before(deadline) {
++		if l.received.Load() >= received {
++			return true
++		}
++		time.Sleep(20 * time.Millisecond)
++	}
++	return l.received.Load() >= received
++}
++
++func processPayload(h *Handler, inbound *session.Inbound, target net.Destination, dialer internet.Dialer, payload []byte) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	if inbound != nil {
++		ctx = session.ContextWithInbound(ctx, inbound)
++	}
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: target}})
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	if len(payload) > 0 {
++		b := buf.New()
++		b.Write(payload)
++		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	}
++	uplinkWriter.Close()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	return h.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, dialer)
++}
++
++func newHandler(t *testing.T, config *Config) *Handler {
++	t.Helper()
++	h := new(Handler)
++	if err := h.Init(config, policy.DefaultManager{}); err != nil {
++		t.Fatal(err)
++	}
++	return h
++}
++
++type recordingDialer struct {
++	mu     sync.Mutex
++	dialed []net.Destination
++	dial   func(ctx context.Context, dest net.Destination) (stat.Connection, error)
++}
++
++func (d *recordingDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++	d.mu.Lock()
++	d.dialed = append(d.dialed, dest)
++	d.mu.Unlock()
++	if d.dial != nil {
++		return d.dial(ctx, dest)
++	}
++	local, remote := gonet.Pipe()
++	remote.Close()
++	return local, nil
++}
++
++func (d *recordingDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func (d *recordingDialer) SetOutboundGateway(ctx context.Context, ob *session.Outbound) {}
++
++func (d *recordingDialer) count() int {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	return len(d.dialed)
++}
++
++func refusedAsPrivate(err error, inbound string) bool {
++	return err != nil && strings.Contains(err.Error(), "private address") && strings.Contains(err.Error(), "the "+inbound+" inbound")
++}
++
++func TestAUserInboundCannotReachAPrivateListenerThroughFreedom(t *testing.T) {
++	for _, name := range guardedInboundNames {
++		listener := listenOnPrivateHost(t)
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: name, Tag: "users"}, listener.destination(), systemDialer{}, []byte("payload"))
++		time.Sleep(100 * time.Millisecond)
++		if !refusedAsPrivate(err, name) {
++			t.Errorf("%s to %s: %v, want a refusal of the private address naming the inbound", name, listener.destination(), err)
++		}
++		if listener.accepted.Load() != 0 || listener.received.Load() != 0 {
++			t.Errorf("%s to %s: the private listener accepted %d connections and received %d bytes", name, listener.destination(), listener.accepted.Load(), listener.received.Load())
++		}
++	}
++}
++
++func TestAUserInboundIsRefusedEveryPrivateRangeBeforeTheDial(t *testing.T) {
++	targets := []net.Address{
++		net.IPAddress([]byte{10, 1, 2, 3}),
++		net.IPAddress([]byte{100, 64, 0, 1}),
++		net.IPAddress([]byte{169, 254, 169, 254}),
++		net.IPAddress([]byte{172, 16, 0, 1}),
++		net.IPAddress([]byte{192, 0, 0, 1}),
++		net.IPAddress([]byte{192, 0, 2, 1}),
++		net.IPAddress([]byte{192, 88, 99, 1}),
++		net.IPAddress([]byte{192, 168, 1, 1}),
++		net.IPAddress([]byte{198, 18, 0, 1}),
++		net.IPAddress([]byte{198, 51, 100, 1}),
++		net.IPAddress([]byte{203, 0, 113, 1}),
++		net.IPAddress([]byte{224, 0, 0, 251}),
++		net.IPAddress([]byte{240, 0, 0, 1}),
++		net.IPAddress([]byte{255, 255, 255, 255}),
++		net.ParseAddress("fd00::1"),
++		net.ParseAddress("fe80::1"),
++		net.ParseAddress("ff02::1"),
++	}
++	for _, network := range []net.Network{net.Network_TCP, net.Network_UDP} {
++		for _, address := range targets {
++			dialer := &recordingDialer{}
++			target := net.Destination{Network: network, Address: address, Port: 8080}
++			err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "users"}, target, dialer, nil)
++			if !refusedAsPrivate(err, "vless") || dialer.count() != 0 {
++				t.Errorf("vless to %s: %v after %d dials, want a refusal before any dial", target, err, dialer.count())
++			}
++		}
++	}
++}
++
++type stubDNSClient struct {
++	answers map[string][]net.IP
++}
++
++func (s *stubDNSClient) Type() interface{} {
++	return dns.ClientType()
++}
++
++func (s *stubDNSClient) Start() error {
++	return nil
++}
++
++func (s *stubDNSClient) Close() error {
++	return nil
++}
++
++func (s *stubDNSClient) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, error) {
++	if ips, ok := s.answers[domain]; ok {
++		return ips, 0, nil
++	}
++	return nil, 0, dns.ErrEmptyResponse
++}
++
++func TestANameFreedomResolvesToAPrivateAddressIsRefusedBeforeTheDial(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	internet.InitSystemDialer(&stubDNSClient{answers: map[string][]net.IP{"private-target.pgtest": {listener.ip}}}, nil)
++	t.Cleanup(func() { internet.InitSystemDialer(nil, nil) })
++
++	target := net.TCPDestination(net.DomainAddress("private-target.pgtest"), listener.port)
++	err := processPayload(newHandler(t, &Config{DomainStrategy: internet.DomainStrategy_USE_IP4}), &session.Inbound{Name: "vless", Tag: "users"}, target, systemDialer{}, []byte("payload"))
++	time.Sleep(100 * time.Millisecond)
++	if !refusedAsPrivate(err, "vless") {
++		t.Errorf("vless to %s: %v, want a refusal of the private address", target, err)
++	}
++	if listener.accepted.Load() != 0 {
++		t.Errorf("vless to %s: the private listener accepted %d connections", target, listener.accepted.Load())
++	}
++}
++
++func serveStubDNS(t *testing.T, name string, answer gonet.IP) string {
++	t.Helper()
++	conn, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { conn.Close() })
++	fqdn := name + "."
++	go func() {
++		packet := make([]byte, 1500)
++		for {
++			n, from, err := conn.ReadFrom(packet)
++			if err != nil {
++				return
++			}
++			var parser dnsmessage.Parser
++			header, err := parser.Start(packet[:n])
++			if err != nil {
++				continue
++			}
++			question, err := parser.Question()
++			if err != nil {
++				continue
++			}
++			rcode := dnsmessage.RCodeNameError
++			if strings.EqualFold(question.Name.String(), fqdn) {
++				rcode = dnsmessage.RCodeSuccess
++			}
++			builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: header.ID, Response: true, Authoritative: true, RCode: rcode})
++			builder.StartQuestions()
++			builder.Question(question)
++			builder.StartAnswers()
++			if rcode == dnsmessage.RCodeSuccess && question.Type == dnsmessage.TypeA {
++				var a [4]byte
++				copy(a[:], answer.To4())
++				builder.AResource(dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}, dnsmessage.AResource{A: a})
++			}
++			reply, err := builder.Finish()
++			if err != nil {
++				continue
++			}
++			conn.WriteTo(reply, from)
++		}
++	}()
++	return conn.LocalAddr().String()
++}
++
++func useStubSystemResolver(t *testing.T, server string) {
++	t.Helper()
++	resolver := gonet.DefaultResolver
++	preferGo, dial := resolver.PreferGo, resolver.Dial
++	resolver.PreferGo = true
++	resolver.Dial = func(ctx context.Context, network, address string) (gonet.Conn, error) {
++		var d gonet.Dialer
++		return d.DialContext(ctx, "udp4", server)
++	}
++	t.Cleanup(func() {
++		resolver.PreferGo, resolver.Dial = preferGo, dial
++	})
++}
++
++func TestAnAsIsNameOfAPrivateAddressIsRefusedBeforeTheHandshake(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	useStubSystemResolver(t, serveStubDNS(t, "private-target.pgtest", listener.ip))
++	if addrs, err := gonet.DefaultResolver.LookupHost(context.Background(), "private-target.pgtest"); err != nil || len(addrs) != 1 || addrs[0] != listener.ip.String() {
++		t.Fatalf("the stub system resolver answers %v, %v, want %s", addrs, err, listener.ip)
++	}
++
++	target := net.TCPDestination(net.DomainAddress("private-target.pgtest"), listener.port)
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "trojan", Tag: "users"}, target, systemDialer{}, []byte("payload"))
++	time.Sleep(100 * time.Millisecond)
++	if !refusedAsPrivate(err, "trojan") {
++		t.Errorf("trojan to %s: %v, want a refusal of the private address", target, err)
++	}
++	if listener.accepted.Load() != 0 || listener.received.Load() != 0 {
++		t.Errorf("trojan to %s: the private listener accepted %d connections and received %d bytes, want no handshake", target, listener.accepted.Load(), listener.received.Load())
++	}
++}
++
++func listenUDPOnPrivateHost(t *testing.T) (gonet.PacketConn, *gonet.UDPAddr) {
++	t.Helper()
++	ip := privateHostAddress(t)
++	conn, err := gonet.ListenPacket("udp4", gonet.JoinHostPort(ip.String(), "0"))
++	if err != nil {
++		t.Skipf("cannot listen for UDP on the private address %s: %v", ip, err)
++	}
++	t.Cleanup(func() { conn.Close() })
++	return conn, conn.LocalAddr().(*gonet.UDPAddr)
++}
++
++func receivedDatagram(conn gonet.PacketConn, within time.Duration) bool {
++	conn.SetReadDeadline(time.Now().Add(within))
++	packet := make([]byte, 64)
++	n, _, err := conn.ReadFrom(packet)
++	return err == nil && n > 0
++}
++
++func TestAnAsIsUDPNameOfAPrivateAddressIsRefusedAfterTheDialBeforeAnyDatagram(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	useStubSystemResolver(t, serveStubDNS(t, "private-target.pgtest", addr.IP))
++
++	destination := net.UDPDestination(net.DomainAddress("private-target.pgtest"), net.Port(addr.Port))
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "shadowsocks", Tag: "users"}, destination, systemDialer{}, []byte("datagram"))
++	if !refusedAsPrivate(err, "shadowsocks") {
++		t.Errorf("shadowsocks to %s: %v, want a refusal of the private address", destination, err)
++	}
++	if receivedDatagram(target, 500*time.Millisecond) {
++		t.Errorf("shadowsocks to %s: the private UDP listener received a datagram", destination)
++	}
++}
++
++func TestAUserInboundDropsUDPDatagramsAddressedToAPrivateListener(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, &session.Inbound{Name: "vless", Tag: "users"})
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: net.UDPDestination(net.IPAddress([]byte{1, 1, 1, 1}), 53)}})
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	b := buf.New()
++	b.WriteString("datagram")
++	b.UDP = &net.Destination{Network: net.Network_UDP, Address: net.IPAddress(addr.IP), Port: net.Port(addr.Port)}
++	uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	uplinkWriter.Close()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	h := newHandler(t, &Config{})
++	done := make(chan error, 1)
++	go func() {
++		done <- h.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, systemDialer{})
++	}()
++	if receivedDatagram(target, 1500*time.Millisecond) {
++		t.Errorf("a vless UDP flow delivered a datagram addressed to the private listener %s", addr)
++	}
++	cancel()
++	<-done
++}
++
++func TestOtherInboundsStillReachAPrivateListenerThroughFreedom(t *testing.T) {
++	for _, inbound := range []*session.Inbound{{Name: "socks"}, {Name: "http"}, {Name: "dokodemo-door", Tag: "API_INBOUND"}, nil} {
++		listener := listenOnPrivateHost(t)
++		err := processPayload(newHandler(t, &Config{}), inbound, listener.destination(), systemDialer{}, []byte("payload"))
++		if err != nil && strings.Contains(err.Error(), "private address") {
++			t.Fatalf("%v to %s was refused: %v", inbound, listener.destination(), err)
++		}
++		if !listener.waitFor(int64(len("payload")), 2*time.Second) {
++			t.Errorf("%v to %s: the private listener received %d bytes, want the payload", inbound, listener.destination(), listener.received.Load())
++		}
++	}
++}
++
++func TestAUserInboundStillDialsAPublicAddress(t *testing.T) {
++	useStubSystemResolver(t, serveStubDNS(t, "public-target.pgtest", gonet.IPv4(1, 1, 1, 1)))
++	for _, address := range []net.Address{net.IPAddress([]byte{1, 1, 1, 1}), net.ParseAddress("2606:4700:4700::1111"), net.DomainAddress("public-target.pgtest")} {
++		dialer := &recordingDialer{}
++		target := net.TCPDestination(address, 443)
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vmess", Tag: "users"}, target, dialer, nil)
++		if refusedAsPrivate(err, "vmess") || dialer.count() == 0 {
++			t.Errorf("vmess to %s: %v after %d dials, want the dial", target, err, dialer.count())
++		}
++	}
++}
+diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go
+new file mode 100644
+index 0000000..c9151eb
+--- /dev/null
++++ b/proxy/freedom/private_target_rules_test.go
+@@ -0,0 +1,294 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"net/netip"
++	"os"
++	"slices"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	"google.golang.org/protobuf/proto"
++)
++
++func TestPrivateTargetsAreExactlyTheGeoIPPrivateRanges(t *testing.T) {
++	private := [][]byte{
++		{0, 0, 0, 1}, {10, 0, 0, 0}, {10, 255, 255, 255}, {100, 64, 0, 0}, {100, 127, 255, 255},
++		{127, 0, 0, 2}, {169, 254, 169, 254}, {172, 16, 0, 0}, {172, 31, 255, 255}, {192, 0, 0, 1},
++		{192, 0, 2, 1}, {192, 88, 99, 1}, {192, 168, 0, 1}, {198, 18, 0, 0}, {198, 19, 255, 255},
++		{198, 51, 100, 1}, {203, 0, 113, 1}, {224, 0, 0, 251}, {239, 255, 255, 250}, {240, 0, 0, 1},
++		{255, 255, 255, 255},
++	}
++	public := [][]byte{
++		{1, 1, 1, 1}, {8, 8, 8, 8}, {100, 63, 255, 255}, {100, 128, 0, 0}, {172, 15, 255, 255},
++		{172, 32, 0, 0}, {192, 0, 1, 255}, {192, 0, 3, 0}, {192, 88, 98, 255}, {192, 169, 0, 0},
++		{198, 17, 255, 255}, {198, 20, 0, 0}, {198, 51, 99, 255}, {203, 0, 114, 0}, {223, 255, 255, 255},
++		{11, 0, 0, 0}, {9, 255, 255, 255}, {169, 253, 255, 255}, {169, 255, 0, 0},
++	}
++	for _, ip := range private {
++		if !isPrivateTarget(net.IPAddress(ip)) {
++			t.Errorf("%v is not a private target", gonet.IP(ip))
++		}
++		mapped := append([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff}, ip...)
++		if !isPrivateTarget(net.IPAddress(mapped)) {
++			t.Errorf("the IPv4-mapped form of %v is not a private target", gonet.IP(ip))
++		}
++	}
++	for _, ip := range public {
++		if isPrivateTarget(net.IPAddress(ip)) {
++			t.Errorf("%v is a private target", gonet.IP(ip))
++		}
++	}
++	for addr, want := range map[string]bool{
++		"::": true, "::1": true, "fc00::1": true, "fdff:ffff::1": true, "fe80::1": true, "febf:ffff::1": true,
++		"ff02::1": true, "ff0e::1": true,
++		"::2": false, "fbff:ffff::1": false, "fe00::1": false, "fec0::1": false, "2001:db8::1": false,
++		"2606:4700:4700::1111": false, "64:ff9b::a00:1": false,
++	} {
++		if got := isPrivateTarget(net.ParseAddress(addr)); got != want {
++			t.Errorf("%s is a private target: %v, want %v", addr, got, want)
++		}
++	}
++	if isPrivateTarget(net.DomainAddress("localhost")) || isPrivateTarget(nil) {
++		t.Error("a domain or a missing address is a private target")
++	}
++}
++
++func TestThePrivateSetIsTheShippedGeoIPPrivateList(t *testing.T) {
++	path := os.Getenv("XRAY_FREEDOM_GEOIP_DAT")
++	if path == "" {
++		t.Skip("XRAY_FREEDOM_GEOIP_DAT names no geoip.dat to compare with")
++	}
++	raw, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var list router.GeoIPList
++	if err := proto.Unmarshal(raw, &list); err != nil {
++		t.Fatal(err)
++	}
++	var shipped []netip.Prefix
++	for _, entry := range list.Entry {
++		if !strings.EqualFold(entry.CountryCode, "private") {
++			continue
++		}
++		for _, cidr := range entry.Cidr {
++			addr, ok := netip.AddrFromSlice(cidr.Ip)
++			if !ok {
++				t.Fatalf("geoip:private holds an invalid address %v", cidr.Ip)
++			}
++			shipped = append(shipped, netip.PrefixFrom(addr.Unmap(), int(cidr.Prefix)).Masked())
++		}
++	}
++	builtIn := slices.Clone(privateTargetPrefixes)
++	order := func(a, b netip.Prefix) int {
++		if c := a.Addr().Compare(b.Addr()); c != 0 {
++			return c
++		}
++		return a.Bits() - b.Bits()
++	}
++	slices.SortFunc(shipped, order)
++	slices.SortFunc(builtIn, order)
++	if !slices.Equal(shipped, builtIn) {
++		t.Fatalf("geoip:private of %s is %v, the built-in private set is %v", path, shipped, builtIn)
++	}
++}
++
++func cidrRule(block bool, cidrs ...string) *PrivateTargetRule {
++	geoip := &router.GeoIP{}
++	for _, c := range cidrs {
++		prefix := netip.MustParsePrefix(c).Masked()
++		geoip.Cidr = append(geoip.Cidr, &router.CIDR{Ip: prefix.Addr().AsSlice(), Prefix: uint32(prefix.Bits())})
++	}
++	return &PrivateTargetRule{Block: block, Ip: []*router.GeoIP{geoip}}
++}
++
++func hostCIDR(ip gonet.IP) string {
++	return netip.PrefixFrom(netip.AddrFrom4([4]byte(ip.To4())), 32).String()
++}
++
++func TestFinalRulesDecideAPrivateTargetByTheirFirstMatch(t *testing.T) {
++	inbound := &session.Inbound{Name: "vless", Tag: "users"}
++	target := net.TCPDestination(net.IPAddress([]byte{10, 1, 2, 3}), 443)
++	for _, c := range []struct {
++		name    string
++		rules   []*PrivateTargetRule
++		refused bool
++	}{
++		{"no rule", nil, true},
++		{"allow", []*PrivateTargetRule{cidrRule(false, "10.0.0.0/8")}, false},
++		{"block then allow", []*PrivateTargetRule{cidrRule(true, "10.1.2.3/32"), cidrRule(false, "10.0.0.0/8")}, true},
++		{"allow then block", []*PrivateTargetRule{cidrRule(false, "10.1.2.3/32"), cidrRule(true, "10.0.0.0/8")}, false},
++		{"allow of another range", []*PrivateTargetRule{cidrRule(false, "192.168.0.0/16")}, true},
++		{"allow without an address list", []*PrivateTargetRule{{}}, false},
++		{"allow on another network", []*PrivateTargetRule{{Networks: []net.Network{net.Network_UDP}}}, true},
++		{"allow on another port", []*PrivateTargetRule{{PortList: &net.PortList{Range: []*net.PortRange{{From: 80, To: 80}}}}}, true},
++		{"allow on the port", []*PrivateTargetRule{{PortList: &net.PortList{Range: []*net.PortRange{{From: 400, To: 500}}}}}, false},
++	} {
++		h := newHandler(t, &Config{FinalRules: c.rules})
++		if got := h.refusesPrivateTarget(inbound, target); got != c.refused {
++			t.Errorf("%s: %s refused %v, want %v", c.name, target, got, c.refused)
++		}
++	}
++	h := newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(true, "1.1.1.1/32"), {Block: true}}})
++	if h.refusesPrivateTarget(inbound, net.TCPDestination(net.IPAddress([]byte{1, 1, 1, 1}), 443)) {
++		t.Error("finalRules refused a public target")
++	}
++	if h.refusesPrivateTarget(&session.Inbound{Name: "socks"}, target) {
++		t.Error("finalRules refused a private target of a socks inbound")
++	}
++}
++
++func TestPrivateAllowEntriesOpenOnlyWhatTheyName(t *testing.T) {
++	cgnat := cidrRule(false, "100.64.0.0/10")
++	scoped := cidrRule(false, "10.8.0.0/16")
++	scoped.InboundTags = []string{"relay-in"}
++	scoped.Networks = []net.Network{net.Network_TCP}
++	scoped.PortList = &net.PortList{Range: []*net.PortRange{{From: 22, To: 22}}}
++	h := newHandler(t, &Config{PrivateAllow: []*PrivateTargetRule{cgnat, scoped}})
++	for _, c := range []struct {
++		tag     string
++		dest    net.Destination
++		refused bool
++	}{
++		{"users", net.TCPDestination(net.IPAddress([]byte{100, 64, 0, 1}), 443), false},
++		{"users", net.UDPDestination(net.IPAddress([]byte{100, 127, 255, 254}), 53), false},
++		{"users", net.TCPDestination(net.IPAddress([]byte{10, 0, 0, 1}), 443), true},
++		{"users", net.TCPDestination(net.IPAddress([]byte{192, 168, 1, 1}), 443), true},
++		{"users", net.TCPDestination(net.ParseAddress("fd00::1"), 443), true},
++		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), false},
++		{"users", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), true},
++		{"relay-in", net.UDPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), true},
++		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 443), true},
++		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 9, 1, 1}), 22), true},
++	} {
++		if got := h.refusesPrivateTarget(&session.Inbound{Name: "vless", Tag: c.tag}, c.dest); got != c.refused {
++			t.Errorf("inbound %s to %s refused %v, want %v", c.tag, c.dest, got, c.refused)
++		}
++	}
++}
++
++func TestAnAllowNeverOpensTheLocalHost(t *testing.T) {
++	for _, config := range []*Config{
++		{FinalRules: []*PrivateTargetRule{cidrRule(false, "127.0.0.1/8", "::1/128")}},
++		{PrivateAllow: []*PrivateTargetRule{cidrRule(false, "127.0.0.1/8", "::1/128")}},
++		{FinalRules: []*PrivateTargetRule{{}}},
++	} {
++		for _, address := range []net.Address{net.LocalHostIP, net.LocalHostIPv6} {
++			dialer := &recordingDialer{}
++			err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(address, 8080), dialer, nil)
++			if err == nil || !strings.Contains(err.Error(), "local host address") || dialer.count() != 0 {
++				t.Errorf("%v to %s: %v after %d dials, want the local host refused", config, address, err, dialer.count())
++			}
++		}
++	}
++}
++
++func TestAnAllowCarriesDataToThePrivateListener(t *testing.T) {
++	for _, name := range []string{"finalRules", "privateAllow", "block first"} {
++		listener := listenOnPrivateHost(t)
++		config := &Config{}
++		switch name {
++		case "finalRules":
++			config.FinalRules = []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}
++		case "privateAllow":
++			config.PrivateAllow = []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}
++		case "block first":
++			config.FinalRules = []*PrivateTargetRule{cidrRule(true, hostCIDR(listener.ip)), cidrRule(false, hostCIDR(listener.ip))}
++		}
++		err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), systemDialer{}, []byte("payload"))
++		if name == "block first" {
++			time.Sleep(100 * time.Millisecond)
++			if !refusedAsPrivate(err, "vless") || listener.accepted.Load() != 0 {
++				t.Errorf("%s: %v, the listener accepted %d connections, want a refusal", name, err, listener.accepted.Load())
++			}
++			continue
++		}
++		if refusedAsPrivate(err, "vless") || !listener.waitFor(int64(len("payload")), 2*time.Second) {
++			t.Errorf("%s: %v, the listener received %d bytes, want the payload", name, err, listener.received.Load())
++		}
++	}
++}
++
++type reportedRemote struct {
++	gonet.Conn
++	remote gonet.Addr
++}
++
++func (c *reportedRemote) RemoteAddr() gonet.Addr {
++	return c.remote
++}
++
++func TestACGNATAllowCarriesDataThroughFreedomAndStopsThere(t *testing.T) {
++	local, err := gonet.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer local.Close()
++	received := make(chan string, 4)
++	go func() {
++		for {
++			conn, err := local.Accept()
++			if err != nil {
++				return
++			}
++			go func() {
++				defer conn.Close()
++				chunk := make([]byte, 64)
++				if n, _ := conn.Read(chunk); n > 0 {
++					received <- string(chunk[:n])
++				}
++			}()
++		}
++	}()
++	cgnat := gonet.IPv4(100, 64, 0, 7).To4()
++	dialer := &recordingDialer{dial: func(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++		conn, err := gonet.Dial("tcp4", local.Addr().String())
++		if err != nil {
++			return nil, err
++		}
++		return &reportedRemote{Conn: conn, remote: &gonet.TCPAddr{IP: dest.Address.IP(), Port: int(dest.Port)}}, nil
++	}}
++	h := newHandler(t, &Config{PrivateAllow: []*PrivateTargetRule{cidrRule(false, "100.64.0.0/10")}})
++	err = processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.IPAddress(cgnat), 9000), dialer, []byte("cgnat"))
++	if refusedAsPrivate(err, "vless") {
++		t.Fatalf("vless to the CGNAT address was refused: %v", err)
++	}
++	select {
++	case got := <-received:
++		if got != "cgnat" {
++			t.Fatalf("the CGNAT target received %q", got)
++		}
++	case <-time.After(2 * time.Second):
++		t.Fatal("the CGNAT target received nothing")
++	}
++	for _, other := range [][]byte{{10, 0, 0, 7}, {172, 16, 0, 7}, {192, 168, 0, 7}, {169, 254, 169, 254}} {
++		before := dialer.count()
++		err := processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.IPAddress(other), 9000), dialer, []byte("leak"))
++		if !refusedAsPrivate(err, "vless") || dialer.count() != before {
++			t.Errorf("the CGNAT allow let vless reach %v: %v", gonet.IP(other), err)
++		}
++	}
++	dialer.dial = func(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++		conn, err := gonet.Dial("tcp4", local.Addr().String())
++		if err != nil {
++			return nil, err
++		}
++		return &reportedRemote{Conn: conn, remote: &gonet.TCPAddr{IP: gonet.IPv4(10, 0, 0, 7), Port: 9000}}, nil
++	}
++	err = processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("cgnat-or-not.pgtest"), 9000), dialer, []byte("rebound"))
++	if !refusedAsPrivate(err, "vless") {
++		t.Errorf("a connection whose remote end is outside the CGNAT allow was kept: %v", err)
++	}
++	select {
++	case got := <-received:
++		t.Errorf("a connection whose remote end is outside the CGNAT allow delivered %q", got)
++	case <-time.After(300 * time.Millisecond):
++	}
++}

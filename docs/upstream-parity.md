@@ -1564,8 +1564,9 @@ shipped.
   those inbounds set in `session.Inbound` at the pin. It checks a literal or freedom-resolved address before dialing;
   after dialing it closes, before any payload, a connection whose remote end is loopback, which covers names the
   system resolver or sockopt resolved; UDP packets addressed per packet are dropped when they resolve to the local
-  host. Private ranges, `100.64.0.0/10` and link-local stay reachable, and dokodemo-door, socks and http inbounds are
-  unchanged. A dialerProxy connection reports `0.0.0.0:0` as its remote end, so the after-dial check reads only
+  host. Private ranges, `100.64.0.0/10` and link-local stayed reachable until
+  [the private-target guard](#fork-deviation-freedom-refuses-private-destinations-for-user-inbounds-patchesxray-freedom-private-guardpatch),
+  and dokodemo-door, socks and http inbounds are unchanged. A dialerProxy connection reports `0.0.0.0:0` as its remote end, so the after-dial check reads only
   loopback.
 - **Upstream:** `v26.11.9` blocks private destinations per inbound type through freedom `finalRules` (310b764, 4e87f59,
   d52f150, 958eb9e, 63ca2e0), built on the geodata refactor 82624bc, which the pin does not have.
@@ -1577,6 +1578,43 @@ shipped.
 - **Residual:** an AsIs freedom completes the TCP handshake with a loopback listener before it closes the connection.
 - **Retire when:** the pin moves to a release whose freedom has the default safe policy and the node's cores are
   checked against it.
+
+### FORK DEVIATION: freedom refuses private destinations for user inbounds (patches/xray-freedom-private-guard.patch)
+
+- **Why:** the held `v26.3.27` freedom has neither upstream's `ipsBlocked` default (`v26.4.15`) nor its `finalRules`
+  default rule (`v26.5.3`), and the local-host patch refuses only the local host. A user of an inbound with its own
+  routing rule (the inbound-specific rules of cores 1, 17, 19 and 21, the `india` rule of core 16) reached private,
+  CGNAT, link-local and unique-local addresses, cloud metadata among them, through a public name that resolves to
+  one: the rule matches in the domain pass, before routing's `geoip:private` block sees an address. Core 16 has no
+  private block at all.
+- **What:** for the inbounds the local-host patch guards, freedom refuses an address of `geoip:private` in the shipped
+  geoip.dat (18 prefixes written into the patch) unless the outbound's `finalRules` (upstream's JSON shape, first match
+  decides, read for private addresses only) or its `privateAllow` entries allow it; the local host stays refused
+  whatever an allow says. It checks a literal or freedom-resolved address before the dial, resolves an AsIs TCP name
+  with the system resolver and checks every answer before the dial, checks the remote end of the dialed connection
+  (except the unspecified address chained dials report) and drops UDP datagrams per packet. The node owns
+  `privateAllow`: `backend/xray/private_target_allow.go` writes it into every freedom outbound of every config it
+  renders, from routing rules that send literal private addresses to that outbound with no condition other than
+  inbound tag, network and port, minus the ranges the node's sibling guard keeps user inbounds off; the core 1 layout
+  gets `[{"ip": ["100.64.0.0/10"]}]` on `DIRECT` and nothing else.
+- **Upstream:** `310b764811aa` (`v26.4.15`, `ipsBlocked`), `4e87f59628ff` and `958eb9ea8f1c` (`v26.5.3`, `finalRules`
+  and `blockDelay`), built on the geodata refactor 82624bc. Upstream's default set is wider than `geoip:private`
+  (NAT64, 6to4, Teredo and others) and blackholes a blocked stream for 30 to 90 s; this patch refuses at once, as the
+  local-host patch does.
+- **Evidence:** `specs/006-xray-private-target-guard`. On a darwin/arm64 host: the patch tests fail on the 28 patches
+  (the private listener accepts the connection and its payload, a datagram is delivered, the dialer is called) and
+  pass with the patch under `-race`; the built-in set equals `geoip:private` of the shipped geoip.dat. Through the
+  node and a real `xray run` of a core 1 and a core 16 layout, a name that the core's DNS resolves to a private
+  listener through an inbound-specific `DIRECT` rule, and a private literal of core 16, carry about 1.5 GB in one
+  second on the 28-patch build and nothing on the patched one, with no handshake. Seven freedom mutants and the
+  canary are each caught.
+- **Residual:** a DNS answer that changes between the pre-dial lookup and the dial reaches the after-dial check, which
+  closes the connection after the handshake and before any payload; NAT64, 6to4 and Teredo prefixes are not refused;
+  a chained freedom is checked on its literal or locally resolved address only; a routing rule shadowed by an earlier
+  private block still gives an allow; each new TCP connection a user sends by name through an AsIs freedom costs one
+  extra system DNS lookup.
+- **Retire when:** the pin moves to `v26.5.3` or later; the node must then render the derived allows as `finalRules`,
+  or the CGNAT route of core 1 breaks there.
 
 ### FORK DEVIATION: Dockerfile.xray removed
 

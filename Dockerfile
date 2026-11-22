@@ -74,6 +74,7 @@ COPY patches/xray-commander-message-size.patch /patches/xray-commander-message-s
 COPY patches/xray-dns-long-domain.patch /patches/xray-dns-long-domain.patch
 COPY patches/xray-dokodemo-unix-socket.patch /patches/xray-dokodemo-unix-socket.patch
 COPY patches/xray-freedom-local-host.patch /patches/xray-freedom-local-host.patch
+COPY patches/xray-freedom-private-guard.patch /patches/xray-freedom-private-guard.patch
 COPY patches/xray-grpc-1.83.2.patch /patches/xray-grpc-1.83.2.patch
 COPY patches/xray-http-100-continue.patch /patches/xray-http-100-continue.patch
 COPY patches/xray-listener-mptcp-off.patch /patches/xray-listener-mptcp-off.patch
@@ -119,6 +120,18 @@ RUN git init -q . \
  && grep -qF "pw.RefuseLocalHost = refuseLocalHost" proxy/freedom/freedom.go \
  && grep -qF "if w.RefuseLocalHost && isLocalHostAddress(b.UDP.Address) {" proxy/freedom/freedom.go \
  && grep -qF "func TestAUserInboundCannotReachALoopbackListenerThroughFreedom" proxy/freedom/local_host_refusal_test.go \
+ && git apply --verbose /patches/xray-freedom-private-guard.patch \
+ && grep -qF "repeated PrivateTargetRule final_rules = 100;" proxy/freedom/config.proto \
+ && grep -qF "repeated PrivateTargetRule private_allow = 101;" proxy/freedom/config.proto \
+ && grep -qF "return h.initTargetRules(config)" proxy/freedom/freedom.go \
+ && grep -qF "if h.refusesPrivateTarget(inbound, dialDest) {" proxy/freedom/freedom.go \
+ && grep -qF "if target, kind := h.refusedResolvedTarget(ctx, inbound, dialDest); target != nil {" proxy/freedom/freedom.go \
+ && grep -qF "if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(inbound, remote) {" proxy/freedom/freedom.go \
+ && grep -qF "pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(inbound, dest) }" proxy/freedom/freedom.go \
+ && grep -qF "if w.RefusesTarget != nil && w.RefusesTarget(net.UDPDestination(b.UDP.Address, b.UDP.Port)) {" proxy/freedom/freedom.go \
+ && grep -qF "if err := c.buildPrivateTargetRules(config); err != nil {" infra/conf/freedom.go \
+ && grep -qF "func (h *Handler) refusedResolvedTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) (*net.Destination, string) {" proxy/freedom/private_target.go \
+ && grep -qF "func TestAUserInboundCannotReachAPrivateListenerThroughFreedom" proxy/freedom/private_target_refusal_test.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \
  && grep -q "golang.org/x/net v0.58.0$" go.mod \

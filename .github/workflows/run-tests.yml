@@ -98,6 +98,16 @@ jobs:
           fi
           TEST_INTEGRATION=true go test -v -p 1 "${packages[@]}"
 
+      - name: Give the runner the addresses and names the private-target guard tests dial
+        run: |
+          sudo ip addr add 100.64.0.1/32 dev lo
+          sudo ip addr add 192.168.233.1/32 dev lo
+          sudo ip addr add 1.2.3.4/32 dev lo
+          echo "192.168.233.1 private-target.pgnode.test" | sudo tee -a /etc/hosts
+          echo "100.64.0.1 cgnat-target.pgnode.test" | sudo tee -a /etc/hosts
+          getent hosts private-target.pgnode.test cgnat-target.pgnode.test
+          echo "PG_NODE_PRIVATE_GUARD_REQUIRED=1" >> "$GITHUB_ENV"
+
       - name: Run the controller and backend tests under the race detector
         run: |
           TEST_INTEGRATION=true CGO_ENABLED=1 SINGBOX_EXECUTABLE_PATH="$RUNNER_TEMP/sing-box" \

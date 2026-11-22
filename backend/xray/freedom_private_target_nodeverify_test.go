@@ -20,9 +20,13 @@ const (
 type privateTargetPin struct {
 	version              string
 	blocksPrivateTargets bool
+	forkGuard            bool
 }
 
 func (p privateTargetPin) String() string {
+	if p.forkGuard {
+		return fmt.Sprintf("core %s with the fork's private-target guard (it reads privateAllow, so freedom blocks a private target of a user inbound unless finalRules or privateAllow allow it, as v%s and later do through finalRules)", p.version, finalRulesSince)
+	}
 	if p.blocksPrivateTargets {
 		return fmt.Sprintf("core %s (v%s or later: the default rule of freedom blocks a private target of a user inbound unless finalRules allow it)", p.version, finalRulesSince)
 	}
@@ -61,6 +65,8 @@ func privateTargetPinOf(t *testing.T, binary string) privateTargetPin {
 		pin.blocksPrivateTargets = true
 	case slices.Compare(release, xrayRelease(t, ipsBlockedDefaultSince)) >= 0:
 		t.Fatalf("core %s (v%s or later but before v%s): freedom blocks a private target of a user inbound through its ipsBlocked default and ignores finalRules, so a user inbound reaches the traffic host neither as on the held line nor through the allow every live config carries", pin.version, ipsBlockedDefaultSince, finalRulesSince)
+	case readsPrivateAllow(t, binary):
+		pin.blocksPrivateTargets, pin.forkGuard = true, true
 	}
 	return pin
 }
@@ -80,7 +86,7 @@ func requireThePrivateTargetIsReached(t *testing.T, pin privateTargetPin, binary
 	source := startByteSource(t)
 	aliceID := uuid.New()
 	_, port := startSessionBackendWithOutbound(t, binary, outbound, sessionUser("1.alice", aliceID, sessionTestInbound))
-	if received, err := receive(openVlessStream(t, port, aliceID, source), 500*time.Millisecond); err != nil || received == 0 {
+	if received, err := receivePayload(openVlessStream(t, port, aliceID, source), 500*time.Millisecond); err != nil || received == 0 {
 		t.Fatalf("%s: %s carried %d bytes to %s (err %v): %s", pin, through, received, source, err, changed)
 	}
 }
@@ -91,7 +97,7 @@ func requireNothingReachesThePrivateTarget(t *testing.T, pin privateTargetPin, b
 	source := startByteSource(t)
 	aliceID := uuid.New()
 	_, port := startSessionBackendWithOutbound(t, binary, outbound, sessionUser("1.alice", aliceID, sessionTestInbound))
-	if received, _ := receive(openVlessStream(t, port, aliceID, source), time.Second); received != 0 {
+	if received, _ := receivePayload(openVlessStream(t, port, aliceID, source), time.Second); received != 0 {
 		t.Fatalf("%s: %s carried %d bytes to %s: %s", pin, through, received, source, changed)
 	}
 }
