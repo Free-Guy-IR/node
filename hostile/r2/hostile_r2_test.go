@@ -163,7 +163,6 @@ func TestHostileR2SocketOptionsAndFragmentKeepTheConnectCheck(t *testing.T) {
 		{"tproxy", &Config{}, &proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{SocketSettings: &internet.SocketConfig{Tproxy: internet.SocketConfig_TProxy}}}},
 		{"tcpMptcp", &Config{}, &proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{SocketSettings: &internet.SocketConfig{TcpMptcp: true}}}},
 		{"fragment", &Config{Fragment: &Fragment{PacketsFrom: 0, PacketsTo: 1, LengthMin: 1, LengthMax: 3}}, nil},
-		{"mux", &Config{}, &proxyman.SenderConfig{MultiplexSettings: &proxyman.MultiplexingConfig{Enabled: true, Concurrency: 8}}},
 	} {
 		ctx, handler, _ := hostileFreedom(t, "DIRECT", c.config, c.sender)
 		for range 2 {
@@ -171,6 +170,17 @@ func TestHostileR2SocketOptionsAndFragmentKeepTheConnectCheck(t *testing.T) {
 		}
 		requireUntouched(t, c.name+": a rebinding name (DNS "+dns.answers()+")", listener, nil)
 	}
+}
+
+func TestHostileR2AFreedomWithMuxNeverDialsTheUserTarget(t *testing.T) {
+	listener := listenOnPrivateHost(t)
+	ctx, handler, _ := hostileFreedom(t, "DIRECT", &Config{}, &proxyman.SenderConfig{MultiplexSettings: &proxyman.MultiplexingConfig{Enabled: true, Concurrency: 8}})
+	for range 2 {
+		dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), []byte("payload"))
+	}
+	requireUntouched(t, "a private literal through a freedom with mux enabled", listener, nil)
+	handler.Close()
+	time.Sleep(500 * time.Millisecond)
 }
 
 func TestHostileR2ARebindingNameBehindADualStackAnswerIsCheckedOnEveryFamily(t *testing.T) {

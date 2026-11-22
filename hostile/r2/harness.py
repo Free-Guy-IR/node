@@ -227,15 +227,16 @@ class UDPSink:
 class TunCounter:
     def __init__(self, proto):
         self.proto = proto
-        run(["iptables", "-w", "-I", "OUTPUT", "1", "-o", TUN_DEV, "-d", TUN_TARGET + "/32", "-p", proto])
+        self.comment = "hr2-" + proto
+        run(["iptables", "-w", "-I", "OUTPUT", "1", "-o", TUN_DEV, "-d", TUN_TARGET + "/32", "-p", proto, "-m", "comment", "--comment", self.comment])
+        CLEANUPS.append(lambda: run(["iptables", "-w", "-D", "OUTPUT", "-o", TUN_DEV, "-d", TUN_TARGET + "/32", "-p", proto, "-m", "comment", "--comment", self.comment], check=False))
 
     def packets(self):
         listing = run(["iptables", "-w", "-L", "OUTPUT", "-v", "-x", "-n"]).stdout
         for line in listing.splitlines():
-            fields = line.split()
-            if len(fields) > 3 and fields[3] == self.proto and TUN_TARGET in fields:
-                return int(fields[0])
-        raise SystemExit("the iptables counter for %s is gone" % self.proto)
+            if "/* %s */" % self.comment in line:
+                return int(line.split()[0])
+        raise SystemExit("the iptables counter %s is gone:\n%s" % (self.comment, listing))
 
 
 def recv_exact(sock, size):
