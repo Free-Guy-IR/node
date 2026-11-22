@@ -990,7 +990,7 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
 | id | module | fixed version | state |
 |---|---|---|---|
 | GO-2026-5932 | `golang.org/x/crypto`, package `openpgp` | none: the package is unmaintained | not reachable per the govulncheck call graph on the patched build tree at node `d18d291` (2026-09-24): no package in the build imports `x/crypto/openpgp`. There is no fix to take |
-| GO-2026-5841 | `github.com/klauspost/compress` v1.17.4 (indirect), package `s2` | v1.18.7 | not reachable per the govulncheck call graph on the patched build tree at node `d18d291` (2026-09-24): no package in the build imports `s2`. Upstream Xray `main` (`60e2a0c`) still requires v1.17.4, so there is no upstream bump to take |
+| GO-2026-5841 | `github.com/klauspost/compress` v1.17.4 (indirect), package `s2` | v1.18.7 | not reachable per the govulncheck call graph on the patched build tree at node `d18d291` (2026-09-24): no package in the build imports `s2`. Upstream Xray `main` (`60e2a0c`) still requires v1.17.4, so there is no upstream bump to take. Gone since 2026-11-22: `xray-zstd-brotli-cert-decompression.patch` moves compress to v1.20.2 |
 
 - These are recorded here because `.github/upstream-waivers.txt` accepts only a 40-hex commit sha or a GHSA id, and the
   drift check matches only Xray's own advisories, not dependency advisories. A GO- id in the waiver file would be
@@ -1079,7 +1079,9 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   GO-2026-6865 (`github.com/klauspost/compress` `v1.17.4`, fixed in `v1.20.2`). In main's patched `v26.11.9` tree it
   finds GO-2026-6865 alone (`v1.20.1`). The hold brings GO-2026-6888 back into the Xray binary, and neither binary is
   free of GO-2026-6865. The govulncheck CI job scans the node module, not the Xray binary, so CI sees neither. This
-  image does not change it; it is an open decision for the rollout.
+  image does not change it; it is an open decision for the rollout. Closed on 2026-11-22: the held build now takes
+  brotli `v1.2.7` and klauspost/compress `v1.20.2`, and CI scans the Xray binary; see
+  [State on 2026-11-22](#state-on-2026-11-22-security-fixes-in-the-held-xray-build).
 - Drift: with the pin at `d2758a023cd7` the xray section reports the 16 releases from `v26.4.13` to `v26.11.9` and five
   security-looking commits as unported. The 19 rows v0.8.22 had for them are back, rewritten as `rejected` with the
   hold's reason, and `598bde74` (the Router API race, which `patches/xray-router-race.patch` fixes in the binary) as
@@ -1091,10 +1093,60 @@ govulncheck v1.8.0 was run with `GOOS=linux` on `./main/...` of the pinned v26.3
   2026-11-15 reports `0 unported items` for `xray`, `node`, `sing-box` and `sing-quic`.
 - `NodeVersion` is `0.6.25`, pinned by `TestNodeVersionIsPinned`.
 
+### State on 2026-11-22: security fixes in the held Xray build
+
+The pin stays `d2758a023cd7` (`v26.3.27`). Seven patches are added, all checked on a darwin/arm64 host with go1.27.4
+and, where a network is involved, on 127.0.0.1 only:
+
+| patch | source | what it fixes | red before, green after |
+|---|---|---|---|
+| `xray-zstd-brotli-cert-decompression.patch` | fork (go.mod/go.sum) | brotli `v1.0.6` to `v1.2.7` (GO-2026-6888) and klauspost/compress `v1.17.4` to `v1.20.2` (GO-2026-6865), used only by utls `decompressCert` | govulncheck below; through `zstd.NewReader` and `Read`, klauspost's own regression input panics `v1.17.4` in the decoder goroutine (`index out of range [33077] with length 32768`) and is refused by `v1.20.2`; the brotli allocation was not reproduced |
+| `xray-listener-mptcp-off.patch` | upstream `6ea0ab5` (#7291), comment lines left out | Go 1.24+ makes TCP listeners MPTCP by default; listeners are plain TCP unless `tcpMptcp` is set | Go level only: built from a go 1.27.3 module, `ListenConfig.MultipathTCP()` is true by default and false with `GODEBUG=multipathtcp=0`; the Linux `SO_PROTOCOL` test runs in CI, not on this host |
+| `xray-upgrade-handshake-deadline.patch` | upstream `c320e89` (#6463), comment line left out | the HTTPUpgrade request read had no deadline and no size limit, and the accept loop stopped on the first error | a half-sent request stays open past 9 s and a 16 KiB header gets `101` before; closed after 4 s and refused after, an 8 KiB header still upgrades |
+| `xray-udp-dispatcher-closed-race.patch` | upstream `b1905088` (#7411) | data race on `connEntry.closed` between the timer and the dispatch path | `DATA RACE` under `-race` before, clean `-count=3` after |
+| `xray-xhttp-upload-queue.patch` | upstream `f496437` (#6372), comment left out | the 31st packet-up POST to a session nobody reads blocked `Push` while holding the mutex `Close` needs, so the session was never freed | on a real server the 31st POST to a fresh session gets no answer in 45 s before and `500` after 30 s, when the reaper closes the session; the XHTTP lab is byte-exact before and after |
+| `xray-freedom-local-host.patch` | fork | user inbounds reached loopback ports through names that resolve to 127.0.0.1 | see [the deviation](#fork-deviation-freedom-refuses-the-local-host-for-user-inbounds-patchesxray-freedom-local-hostpatch) |
+| `xray-zz-reality-e1986a4d31ca.patch` | fork (go.mod/go.sum) | REALITY's target probe sliced past a cut post-handshake record and the panic took xray down | an xray REALITY inbound whose target cuts that record exits with `slice bounds out of range [450:116]` within 7 s before and stays up after |
+
+- **Order.** The dependency patches apply last: `xray-zstd-brotli-cert-decompression.patch` after the grpc and x-net
+  patches whose go.mod and go.sum it extends, and the REALITY patch after it, on its go.sum lines. Both names sort
+  last, so `make build_xray`'s glob applies the 28 patches in the Dockerfile's order, with no offset.
+- **Dependency floors.** After `go build` the xray-builder stage reads the build info in `/out/xray`, the `dep` lines
+  `go version -m` prints, with `grep -a`: the build fails unless a brotli line at `v1.2.7` or later and a compress line
+  at `v1.20.2` or later exist and every `dep` line of either module is at or above its floor. The drift check and the
+  toolchain floor accept only `grep`, `test`, `git apply` and `go build` in that stage, which is why the check reads
+  the binary with `grep` rather than running `go version -m`. `scripts/xray_guard_replay.py` runs the same checks on
+  the binary it builds, so `make test_xray_guards` exercises them in CI.
+- **CI scans the Xray binary.** A step of the govulncheck job builds Xray with `make build_xray
+  XRAY_LDFLAGS=-buildid=`, scans it with `govulncheck -mode=binary` and runs `scripts/govulncheck_gate.py` on the
+  result with its own, empty waiver file `.github/govulncheck-xray-waivers.txt`. The scanned build keeps its symbol
+  table: govulncheck v1.8.0 cannot read symbols from a `-s -w` binary and then reports every vulnerable symbol of
+  every module version in the build info, which flags x/net html (GO-2026-6860, GO-2026-6866) and x/crypto openpgp
+  (GO-2026-5932), packages the binary does not contain. The gate now reads `scan_mode` and wants the binary progress
+  message for a binary scan. On a copy of the tree without the brotli/compress patch the step fails with GO-2026-6888
+  and GO-2026-6865 called; at the head of this work it passes with those three ids module-level only.
+- **GODEBUG.** The final stage sets `ENV GODEBUG=multipathtcp=0`, which also covers the agent's own gRPC listener and
+  sing-box: the agent starts Xray with `os.Environ()` and sing-box with no environment of its own, so both inherit it.
+  `scripts/toolchain_floor.sh` allows exactly that line in the final stage.
+- **Drift.** Three upstream `main` commits after `v26.11.9` appeared after the 2026-11-15 run: `b1905088` is ported
+  above, `02cf0f60` (compress `v1.20.4` for CVE-2026-116591, which is GO-2026-6865) is waived as superseded by the
+  brotli/compress patch, and `82b5b76b` (XMC finalmask, absent at the pin) as not-applicable. `xray`, `node`,
+  `sing-box` and `sing-quic` each report 0 unported items.
+- **Labs.** XHTTP: real xray server and client, TLS h2 packet-up, TLS h2 stream-up and HTTP/1.1 packet-up, each with
+  3 sequential and 3 parallel 8 MiB uploads and downloads checked by SHA-256, 36 of 36 byte-exact with and without
+  the upload-queue patch, xmux carrying the 24 TLS sessions over 6 connections in both. REALITY: with a local TLS 1.3
+  target the handshake works and an unauthenticated client gets the target's certificate; with a local proxy to
+  `www.cloudflare.com:443` that cuts the first record after the client's ChangeCipherSpec, the old REALITY panics
+  and the new one does not. `xray run -test` exits 0 on the rendered 2026-11-11 snapshots of cores 1, 16 and 17.
+- **Not covered.** No Linux host was used, so the MPTCP listener test and an `ss -HlM` count of MPTCP listeners run
+  only in CI or on a lab Linux host; nothing was tried on a production host. The REALITY crypto/tls fixes that need
+  REALITY `3c98159` or later, and with it Xray `0f127f9`, stay out while the hold lasts.
+
 ### Not covered
 
 - **SagerNet/sing, sing-vmess, grpc-go and other Go dependencies.** The sing-box fork vendors or requires them. The
-  govulncheck CI job scans only the node module, so it does not cover them. On 2026-10-10, govulncheck v1.8.0 with
+  govulncheck CI job scans the node module and, since 2026-11-22, the Xray binary, but not sing-box, so it does not
+  cover them. On 2026-10-10, govulncheck v1.8.0 with
   Go 1.26.9 on `./cmd/sing-box` at `SINGBOX_COMMIT` `4a87f50`, with the image's build tags, found no standard library
   id. It found 20 symbol-reachable ids in x/net 0.50.0, x/crypto 0.48.0 (ssh), x/text 0.34.0 and grpc 1.79.1. The
   node binds the sing-box gRPC and clash APIs to 127.0.0.1 and serves Hysteria2 over QUIC, so their HTTP/2 server paths
@@ -1119,7 +1171,8 @@ A rename that parks a test file under a name Go never builds, such as `headers_t
 `headers_test.go.upstream`, is a test-file diff too: the replay does not drop it. Dropping both such renames of
 `xray-xff-trusted-header.patch` leaves the linux/amd64 `./main` binary byte-identical (sha256 checked on 2026-11-07),
 and `go test` of the two packages, which `make test_xray_patches` runs, then fails to compile on redeclared test
-functions. At the `v26.10.31` pin all 19 removals fail.
+functions. At the `v26.10.31` pin all 19 removals fail. On 2026-11-22, at the held `v26.3.27` pin with 28 patches, all
+76 removals fail, and the baseline also runs the Dockerfile's checks on the built binary's dependency floors.
 
 Every `go test` line of `make test_xray_patches` states its own race mode: `-race` with `CGO_ENABLED=1`, or
 `-race=false`. CI runs the target as `CGO_ENABLED=1 GOFLAGS=-race make test_xray_patches`. A `-race` or `-race=false`
@@ -1500,6 +1553,30 @@ shipped.
   `make test_xray_patches` runs them under `-race`.
 - **Removal condition:** drop the patch when an ownership-aware `Del` (and the matching `Add` refusal) reaches an
   Xray release the fork pins.
+
+### FORK DEVIATION: freedom refuses the local host for user inbounds (patches/xray-freedom-local-host.patch)
+
+- **Why:** the node's port-only API guard closes the API and metric ports, but a user could still reach any other
+  loopback port, such as the sing-box extras' v2ray_api and clash_api ports that FindFreePort picks at runtime,
+  through a name that resolves to 127.0.0.1 when a panel rule matches in the first routing pass.
+- **What:** freedom refuses a loopback (127.0.0.0/8, `::1`, IPv4-mapped loopback) or unspecified (`0.0.0.0`, `::`)
+  destination for connections from the vless, vmess, trojan, hysteria, wireguard and shadowsocks inbounds, the names
+  those inbounds set in `session.Inbound` at the pin. It checks a literal or freedom-resolved address before dialing;
+  after dialing it closes, before any payload, a connection whose remote end is loopback, which covers names the
+  system resolver or sockopt resolved; UDP packets addressed per packet are dropped when they resolve to the local
+  host. Private ranges, `100.64.0.0/10` and link-local stay reachable, and dokodemo-door, socks and http inbounds are
+  unchanged. A dialerProxy connection reports `0.0.0.0:0` as its remote end, so the after-dial check reads only
+  loopback.
+- **Upstream:** `v26.11.9` blocks private destinations per inbound type through freedom `finalRules` (310b764, 4e87f59,
+  d52f150, 958eb9e, 63ca2e0), built on the geodata refactor 82624bc, which the pin does not have.
+- **Evidence:** on the pin's freedom.go a vless connection to a loopback listener is opened; with the patch the five
+  fork tests pass under `-race`. In the node-apiguard lab, a name probe to an unguarded loopback port is reached
+  before and closed after in every scenario, with "refused ... it is the local host address" in the server log; with
+  freedom AsIs and a name the system resolver maps to 127.0.0.1 the probe is closed after the TCP handshake, before
+  any data. `example.com:80` answers through the lab before and after.
+- **Residual:** an AsIs freedom completes the TCP handshake with a loopback listener before it closes the connection.
+- **Retire when:** the pin moves to a release whose freedom has the default safe policy and the node's cores are
+  checked against it.
 
 ### FORK DEVIATION: Dockerfile.xray removed
 
