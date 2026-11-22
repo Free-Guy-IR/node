@@ -97,6 +97,7 @@ COPY patches/xray-xhttp-upload-queue.patch /patches/xray-xhttp-upload-queue.patc
 COPY patches/xray-udp-conn-cancel-race.patch /patches/xray-udp-conn-cancel-race.patch
 COPY patches/xray-udp-dispatcher-closed-race.patch /patches/xray-udp-dispatcher-closed-race.patch
 COPY patches/xray-zstd-brotli-cert-decompression.patch /patches/xray-zstd-brotli-cert-decompression.patch
+COPY patches/xray-zz-reality-e1986a4d31ca.patch /patches/xray-zz-reality-e1986a4d31ca.patch
 RUN git init -q . \
  && git remote add origin https://github.com/XTLS/Xray-core.git \
  && git fetch -q --depth 1 origin ${XRAY_COMMIT} \
@@ -261,7 +262,9 @@ RUN git init -q . \
  && grep -qF "func TestDispatchesRacingTheTerminationOfAFailedFlowDoNotRace" transport/internet/udp/dispatcher_close_race_test.go \
  && git apply --verbose /patches/xray-zstd-brotli-cert-decompression.patch \
  && grep -q "github.com/andybalholm/brotli v1.2.7 // indirect$" go.mod \
- && grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod
+ && grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod \
+ && git apply --verbose /patches/xray-zz-reality-e1986a4d31ca.patch \
+ && grep -q "github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca$" go.mod
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-s -w -buildid=" \
     -o /out/xray ./main \

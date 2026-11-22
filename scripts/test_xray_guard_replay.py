@@ -130,11 +130,13 @@ class BinaryChecks(unittest.TestCase):
         self.assertEqual([BROTLI.replace(".", "[.]") in check for check in checks], [True, True, False, False])
         self.assertEqual([COMPRESS.replace(".", "[.]") in check for check in checks], [False, False, True, True])
 
-    def test_the_chain_ends_with_the_decompressor_patch_and_its_go_mod_checks(self):
-        self.assertEqual(replay.chain_steps(dockerfile)[-3:], [
+    def test_the_chain_ends_with_the_decompressor_and_reality_patches_and_their_go_mod_checks(self):
+        self.assertEqual(replay.chain_steps(dockerfile)[-5:], [
             "git apply --verbose /patches/xray-zstd-brotli-cert-decompression.patch",
             'grep -q "github.com/andybalholm/brotli v1.2.7 // indirect$" go.mod',
             'grep -q "github.com/klauspost/compress v1.20.2 // indirect$" go.mod',
+            "git apply --verbose /patches/xray-zz-reality-e1986a4d31ca.patch",
+            'grep -q "github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca$" go.mod',
         ])
 
     def test_versions_at_or_above_both_floors_pass(self):

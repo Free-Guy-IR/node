@@ -1,0 +1,42 @@
+Build REALITY at e1986a4d31ca, which bounds the post-handshake record scan of the target probe
+
+FORK DEVIATION: not an upstream Xray commit. The pin requires github.com/xtls/reality 9234c772ba8f.
+REALITY e1986a4d31ca (#36) changes only record_detect.go and tls.go and leaves REALITY's go.mod as it
+was: PostHandshakeRecordDetectConn.Read stops at a record the data does not hold instead of slicing
+past the end, which panicked the probe goroutine that xray starts for every REALITY listener when
+the target's post-handshake record was cut short; both probe goroutines close their target
+connection; the CCS probe no longer writes the err its caller returns; and the buffer that holds a
+target record grows from 8192 to 17 KiB. Upstream Xray moved from 9234c772ba8f straight to
+8cdf7bf9c7f0 (47cfe99), which also refuses a ClientHello without X25519MLKEM768, so this patch stops
+one commit earlier. It changes only go.mod and go.sum and applies last, after
+xray-zstd-brotli-cert-decompression.patch, whose go.sum lines it uses as context; its name sorts
+last for the make build_xray glob.
+
+diff --git a/go.mod b/go.mod
+index 185d90f..d128d58 100644
+--- a/go.mod
++++ b/go.mod
+@@ -18,7 +18,7 @@ require (
+ 	github.com/sagernet/sing-shadowsocks v0.2.7
+ 	github.com/stretchr/testify v1.11.1
+ 	github.com/vishvananda/netlink v1.3.1
+-	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f
++	github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca
+ 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
+ 	golang.org/x/crypto v0.57.0
+ 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842
+diff --git a/go.sum b/go.sum
+index 20a2c27..5735d67 100644
+--- a/go.sum
++++ b/go.sum
+@@ -65,8 +65,8 @@ github.com/vishvananda/netlink v1.3.1 h1:3AEMt62VKqz90r0tmNhog0r/PpWKmrEShJU0wJW
+ github.com/vishvananda/netlink v1.3.1/go.mod h1:ARtKouGSTGchR8aMwmkzC0qiNPrrWO5JS/XMVl45+b4=
+ github.com/vishvananda/netns v0.0.5 h1:DfiHV+j8bA32MFM7bfEunvT8IAqQ/NzSJHtcmW5zdEY=
+ github.com/vishvananda/netns v0.0.5/go.mod h1:SpkAiCQRtJ6TvvxPnOSyH3BMl6unz3xZlaprSwhNNJM=
+-github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f h1:iy2JRioxmUpoJ3SzbFPyTxHZMbR/rSHP7dOOgYaq1O8=
+-github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f/go.mod h1:DsJblcWDGt76+FVqBVwbwRhxyyNJsGV48gJLch0OOWI=
++github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca h1:eugDuiZ7KGED+IFIBQIUsPJXThy+Wgp3MnroI8S11RE=
++github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca/go.mod h1:DsJblcWDGt76+FVqBVwbwRhxyyNJsGV48gJLch0OOWI=
+ github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZqKjWU=
+ github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
+ github.com/yuin/goldmark v1.4.1/go.mod h1:mwnBkeHKe2W/ZEtQ+71ViKU8L12m81fl3OWwC1Zlc8k=
