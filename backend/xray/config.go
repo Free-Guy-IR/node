@@ -618,7 +618,7 @@ func (c *Config) snapshot() *Config {
 
 func (c *Config) ToBytes() ([]byte, error) {
 	snapshot := c.snapshot()
-	snapshot.OutboundConfigs = c.outboundsWithPrivateAllow()
+	snapshot.RouterConfig, snapshot.OutboundConfigs = c.privateTargetRendering()
 	return json.Marshal(snapshot)
 }
 

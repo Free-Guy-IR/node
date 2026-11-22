@@ -329,11 +329,24 @@ func vlessToName(t *testing.T, port int, id uuid.UUID, name string, targetPort i
 	return conn
 }
 
+var coreOneCGNATRule = map[string]any{"type": "field", "ip": []any{"100.64.0.0/10"}, "outboundTag": "DIRECT"}
+
 func coreOneLive(ports [3]int, egressInterface string, hosts map[string]any) map[string]any {
-	return coreOneLiveWithCGNATRule(ports, egressInterface, hosts, map[string]any{"type": "field", "ip": []any{"100.64.0.0/10"}, "outboundTag": "DIRECT"})
+	return coreOneLiveWith(ports, egressInterface, hosts, []any{coreOneCGNATRule}, nil)
 }
 
-func coreOneLiveWithCGNATRule(ports [3]int, egressInterface string, hosts map[string]any, cgnatRule map[string]any) map[string]any {
+func coreOneLiveWith(ports [3]int, egressInterface string, hosts map[string]any, beforePrivateBlock, afterPrivateBlock []any) map[string]any {
+	rules := []any{
+		map[string]any{"type": "field", "port": "25", "outboundTag": "BLOCK"},
+		map[string]any{"type": "field", "network": "udp", "port": "443", "ip": []any{"1.1.1.1/32"}, "outboundTag": "BLOCK"},
+	}
+	rules = append(rules, beforePrivateBlock...)
+	rules = append(rules, map[string]any{"type": "field", "ip": []any{"geoip:private"}, "outboundTag": "BLOCK"})
+	rules = append(rules, afterPrivateBlock...)
+	rules = append(rules,
+		map[string]any{"type": "field", "inboundTag": []any{"egress-in"}, "outboundTag": "egress_wireguard"},
+		map[string]any{"type": "field", "inboundTag": []any{"direct-in"}, "outboundTag": "DIRECT"},
+	)
 	return map[string]any{
 		"log":      map[string]any{"loglevel": "warning"},
 		"dns":      map[string]any{"hosts": hosts},
@@ -343,17 +356,7 @@ func coreOneLiveWithCGNATRule(ports [3]int, egressInterface string, hosts map[st
 			map[string]any{"tag": "egress_wireguard", "protocol": "freedom", "settings": map[string]any{}, "streamSettings": map[string]any{"sockopt": map[string]any{"interface": egressInterface}}},
 			map[string]any{"tag": "BLOCK", "protocol": "blackhole", "settings": map[string]any{}},
 		},
-		"routing": map[string]any{
-			"domainStrategy": "IPIfNonMatch",
-			"rules": []any{
-				map[string]any{"type": "field", "port": "25", "outboundTag": "BLOCK"},
-				map[string]any{"type": "field", "network": "udp", "port": "443", "ip": []any{"1.1.1.1/32"}, "outboundTag": "BLOCK"},
-				cgnatRule,
-				map[string]any{"type": "field", "ip": []any{"geoip:private"}, "outboundTag": "BLOCK"},
-				map[string]any{"type": "field", "inboundTag": []any{"egress-in"}, "outboundTag": "egress_wireguard"},
-				map[string]any{"type": "field", "inboundTag": []any{"direct-in"}, "outboundTag": "DIRECT"},
-			},
-		},
+		"routing": map[string]any{"domainStrategy": "IPIfNonMatch", "rules": rules},
 	}
 }
 
@@ -387,8 +390,9 @@ func coreOneShapeKeepsUsersOffPrivateTargets(t *testing.T, binary string, guarde
 	t.Run("CGNAT through DIRECT", func(t *testing.T) {
 		host := cgnatHostOrSkip(t)
 		source := startCountingSource(t, host)
-		requireDataArrives(t, vlessTo(t, ports[0], id, source.addr), "an ordinary user to "+source.addr.String()+" through the CGNAT rule")
-		requireDataArrives(t, vlessTo(t, ports[1], id, source.addr), "egress-in to "+source.addr.String()+" through the CGNAT rule")
+		for i, inbound := range []string{"an ordinary user", "egress-in", "direct-in"} {
+			requireDataArrives(t, vlessTo(t, ports[i], id, source.addr), inbound+" to "+source.addr.String()+" through the CGNAT rule")
+		}
 		requireDataArrives(t, vlessToName(t, ports[2], id, xrayCGNATName, source.addr.Port), "direct-in to "+xrayCGNATName)
 	})
 
@@ -410,12 +414,55 @@ func coreOneShapeKeepsUsersOffPrivateTargets(t *testing.T, binary string, guarde
 		requireDataArrives(t, vlessTo(t, ports[1], id, source.addr), "egress-in to "+source.addr.String())
 	})
 
-	t.Run("the same CGNAT route with a condition the node cannot turn into an allow", func(t *testing.T) {
+}
+
+func startCoreOneVariant(t *testing.T, binary string, beforePrivateBlock, afterPrivateBlock []any) ([3]int, uuid.UUID, net.IP) {
+	t.Helper()
+	privateHost := privateTargetHost(t)
+	ports := [3]int{netutil.FindFreePort(), netutil.FindFreePort(), netutil.FindFreePort()}
+	id := uuid.New()
+	hosts := map[string]any{xrayPrivateName: privateHost.String()}
+	shape := coreOneLiveWith(ports, interfaceOwning(t, privateHost), hosts, beforePrivateBlock, afterPrivateBlock)
+	startPrivateGuardBackend(t, binary, shape, privateGuardUser(id, "VLESS TCP SESSION", "egress-in", "direct-in"))
+	return ports, id, privateHost
+}
+
+func TestLiveACGNATRouteWithoutADerivableAllowStaysRefused(t *testing.T) {
+	forEachXrayBinaryWithItsGuard(t, func(t *testing.T, binary string, guarded bool) {
 		source := startCountingSource(t, cgnatHostOrSkip(t))
-		controlPorts := [3]int{netutil.FindFreePort(), netutil.FindFreePort(), netutil.FindFreePort()}
-		control := coreOneLiveWithCGNATRule(controlPorts, interfaceOwning(t, privateHost), hosts, map[string]any{"type": "field", "source": []any{"0.0.0.0/0", "::/0"}, "ip": []any{"100.64.0.0/10"}, "outboundTag": "DIRECT"})
-		startPrivateGuardBackend(t, binary, control, privateGuardUser(id, "VLESS TCP SESSION", "egress-in", "direct-in"))
-		requireGuarded(t, guarded, vlessTo(t, controlPorts[0], id, source.addr), source, "an ordinary user to "+source.addr.String()+" through a CGNAT rule that also matches on source")
+		ports, id, _ := startCoreOneVariant(t, binary, []any{
+			map[string]any{"type": "field", "ruleTag": "shared", "port": "25", "outboundTag": "BLOCK"},
+			map[string]any{"type": "field", "ruleTag": "shared", "ip": []any{"100.64.0.0/10"}, "outboundTag": "DIRECT"},
+		}, nil)
+		requireGuarded(t, guarded, vlessTo(t, ports[0], id, source.addr), source, "an ordinary user to "+source.addr.String()+" through a CGNAT rule under a ruleTag another rule shares, which the node cannot turn into an allow")
+	})
+}
+
+func TestLiveAPrivateRouteAnEarlierBlockShadowsDoesNotOpenItsAddressByName(t *testing.T) {
+	forEachXrayBinaryWithItsGuard(t, func(t *testing.T, binary string, guarded bool) {
+		privateHost := privateTargetHost(t)
+		ports, id, _ := startCoreOneVariant(t, binary, []any{coreOneCGNATRule}, []any{
+			map[string]any{"type": "field", "ip": []any{privateHost.String() + "/32"}, "outboundTag": "DIRECT"},
+		})
+		literal := startCountingSource(t, privateHost)
+		requireNothingArrives(t, vlessTo(t, ports[2], id, literal.addr), literal, "direct-in to the literal "+literal.addr.String()+", which the earlier block decides")
+		byName := startCountingSource(t, privateHost)
+		requireGuarded(t, guarded, vlessToName(t, ports[2], id, xrayPrivateName, byName.addr.Port), byName, "direct-in to "+xrayPrivateName+" through DIRECT under a shadowed private route")
+	})
+}
+
+func TestLiveAnInboundRestrictedPrivateRouteOpensItsAddressForItsInboundOnly(t *testing.T) {
+	forEachXrayBinaryWithItsGuard(t, func(t *testing.T, binary string, guarded bool) {
+		privateHost := privateTargetHost(t)
+		ports, id, _ := startCoreOneVariant(t, binary, []any{
+			coreOneCGNATRule,
+			map[string]any{"type": "field", "inboundTag": []any{"egress-in"}, "ip": []any{privateHost.String() + "/32"}, "outboundTag": "DIRECT"},
+		}, nil)
+		requireDataArrives(t, vlessTo(t, ports[1], id, startCountingSource(t, privateHost).addr), "egress-in to the literal private address its own rule sends to DIRECT")
+		leak := startCountingSource(t, privateHost)
+		requireGuarded(t, guarded, vlessToName(t, ports[2], id, xrayPrivateName, leak.addr.Port), leak, "direct-in to "+xrayPrivateName+" through DIRECT, where only egress-in's rule sends that address")
+		ordinary := startCountingSource(t, privateHost)
+		requireNothingArrives(t, vlessToName(t, ports[0], id, xrayPrivateName, ordinary.addr.Port), ordinary, "an ordinary user to "+xrayPrivateName+", which routing blocks")
 	})
 }
 

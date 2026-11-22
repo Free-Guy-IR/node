@@ -124,13 +124,19 @@ RUN git init -q . \
  && grep -qF "repeated PrivateTargetRule final_rules = 100;" proxy/freedom/config.proto \
  && grep -qF "repeated PrivateTargetRule private_allow = 101;" proxy/freedom/config.proto \
  && grep -qF "return h.initTargetRules(config)" proxy/freedom/freedom.go \
- && grep -qF "if h.refusesPrivateTarget(inbound, dialDest) {" proxy/freedom/freedom.go \
+ && grep -qF "repeated string inbound_tags = 5;" proxy/freedom/config.proto \
+ && grep -qF "string rule_tag = 6;" proxy/freedom/config.proto \
+ && grep -qF "if err := core.RequireFeatures(ctx, h.initWithFeatures(config.(*Config))); err != nil {" proxy/freedom/freedom.go \
+ && grep -qF "if h.refusesPrivateTarget(ctx, inbound, dialDest) {" proxy/freedom/freedom.go \
  && grep -qF "if target, kind := h.refusedResolvedTarget(ctx, inbound, dialDest); target != nil {" proxy/freedom/freedom.go \
- && grep -qF "if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(inbound, remote) {" proxy/freedom/freedom.go \
- && grep -qF "pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(inbound, dest) }" proxy/freedom/freedom.go \
+ && grep -qF "if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(ctx, inbound, remote) {" proxy/freedom/freedom.go \
+ && grep -qF "pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }" proxy/freedom/freedom.go \
  && grep -qF "if w.RefusesTarget != nil && w.RefusesTarget(net.UDPDestination(b.UDP.Address, b.UDP.Port)) {" proxy/freedom/freedom.go \
  && grep -qF "if err := c.buildPrivateTargetRules(config); err != nil {" infra/conf/freedom.go \
  && grep -qF "func (h *Handler) refusedResolvedTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) (*net.Destination, string) {" proxy/freedom/private_target.go \
+ && grep -qF "ruleTag, outboundTag, matched := h.router.MatchingRule(privateRoutingContext(ctx, outbounds, dest))" proxy/freedom/private_target.go \
+ && grep -qF "func (r *Router) MatchingRule(ctx routing.Context) (string, string, bool) {" app/router/private_target_match.go \
+ && grep -qF "rule, _, err := r.pickRouteInternal(ctx)" app/router/private_target_match.go \
  && grep -qF "func TestAUserInboundCannotReachAPrivateListenerThroughFreedom" proxy/freedom/private_target_refusal_test.go \
  && git apply --verbose /patches/xray-grpc-1.83.2.patch \
  && grep -q "google.golang.org/grpc v1.83.2$" go.mod \

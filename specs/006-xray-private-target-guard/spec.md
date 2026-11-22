@@ -50,14 +50,23 @@ private block at all. Production runs node v0.8.22 on the same Xray line, so the
   still reaches the after-dial check, which closes the connection after the handshake and before any payload.
 - Q: What may still be reached? → A: the local host, never. Any other private destination only when the outbound's
   `finalRules` allow it (first matching rule decides, `allow` or `block`, on network, port and address, as upstream
-  writes them) or when the node-owned `privateAllow` list of that outbound covers it. `finalRules` decide private
-  destinations only; public destinations stay as they are today.
+  writes them), or when a `privateAllow` entry of that outbound names the routing rule that decides for it: the
+  router's own first match for the connection, with the address being dialed as its target, must be that rule, and
+  the rule must send to this same outbound. `finalRules` decide private destinations only; public destinations stay
+  as they are today.
 - Q: Where does `privateAllow` come from? → A: the node writes it into every config it renders, from the core's own
-  routing: a rule that sends literal private addresses to a freedom outbound and is conditioned on nothing beyond
-  address, inbound tag, network and port gives that outbound an allow for exactly those addresses under the same
-  inbound tags, network and port. A value the panel sends in that field is replaced. Rules that send private ranges
-  to BLOCK, blackhole or any other non-freedom outbound never create an allow. The ranges the node's own guard
-  already keeps user inbounds off (the local host and link-local) are never allowed.
+  routing: each rule that sends literal private addresses to a freedom outbound is tagged (its own `ruleTag`, or a
+  node tag `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing only), and that outbound lists `{ruleTag, ip}` with
+  exactly those addresses. A value the panel sends in that field is replaced. Rules that send private ranges to
+  BLOCK, blackhole or any other non-freedom outbound never create an entry, nor do rules whose tag another rule
+  shares or that also match on a domain. The ranges the node's own guard already keeps user inbounds off (the local
+  host and link-local) are never listed.
+- Q: Why ask the router at dial time instead of copying the rule's conditions? (automated security review, MEDIUM,
+  2026-11-22: "authorization scope mismatch", "allowlist broader than routing semantics") → A: a list derived from
+  the rules alone cannot see rule order: a private route that an earlier rule blocks would still open its addresses
+  to any name that reaches the outbound through the domain pass. Asking xray's own router (all conditions, first
+  match, the address being dialed) keeps the allow exactly as wide as routing. The router is asked through
+  `MatchingRule`, which runs the rules without firing webhooks or picking balancer members.
 - Q: How does the canary in `backend/xray/freedom_private_target_nodeverify_test.go` (v0.8.25, `92a8aa57`) know that
   a build reporting 26.3.27 blocks? → A: by probing the binary, not by a version or path constant: the patched loader
   reads `privateAllow` and refuses an entry without an address list, which a stock v26.3.27 binary ignores, so
@@ -145,10 +154,13 @@ behaviour on a stock v26.3.27 binary.
 - A freedom outbound chained through `sockopt.dialerProxy` or `proxySettings`: its remote end is not visible after the
   dial (it reports the unspecified address), so it is checked on the literal or locally resolved address only.
 - IPv4-mapped IPv6 destinations are checked as IPv4.
-- A routing rule that conditions on anything other than address, inbound tag, network and port (a domain, user,
-  source, source port, protocol, attribute, local address or port, VLESS route or process), or targets a balancer,
-  gives no allow; the node logs it.
-- A routing rule that is shadowed by an earlier unconditional private block still gives an allow (residual).
+- A routing rule that also matches on a domain, targets a balancer or shares its `ruleTag` with another rule gives no
+  allow; the node logs it. Other conditions (inbound tag, user, source, network, port, protocol, local address) are
+  the router's to evaluate.
+- A routing rule that an earlier rule shadows (a block, or another outbound) gives no allow in practice: the router's
+  first match for the address is the earlier rule.
+- Rules added at run time through the RoutingService are not listed until the next render; a new earlier block still
+  wins, because the router is asked at dial time.
 - A stock v26.3.27 binary ignores the new fields and does not guard.
 
 ## Requirements *(mandatory)*
@@ -161,9 +173,12 @@ behaviour on a stock v26.3.27 binary.
   name resolved by the system before an AsIs dial, the remote address of the dialed connection, and each UDP datagram.
 - **FR-003**: The local host MUST stay refused whatever an allow says.
 - **FR-004**: The only allows are the outbound's `finalRules` (first match decides, `allow` or `block`) and its
-  `privateAllow` entries (address list, optional inbound tags, network and port).
+  `privateAllow` entries, each naming a routing rule and its explicit private addresses; an entry allows only when
+  the router's first match for the connection with the dialed address as target is that rule, sending to this
+  outbound.
 - **FR-005**: The node MUST write `privateAllow` into every freedom outbound of every config it renders, derived from
-  that config's routing rules as clarified above, and MUST replace a panel-supplied value.
+  that config's routing rules as clarified above, tag the rules it names in the rendered routing, and MUST replace a
+  panel-supplied value.
 - **FR-006**: SOCKS, HTTP and dokodemo-door inbounds, and connections without an inbound, MUST be unaffected.
 - **FR-007**: Interface-bound freedom outbounds MUST be guarded like any freedom outbound.
 - **FR-008**: A refused connection MUST be logged at warning with the inbound and the refused address, and no payload
@@ -176,7 +191,8 @@ behaviour on a stock v26.3.27 binary.
 
 - **Private set**: the 18 prefixes above.
 - **Guarded inbound**: an inbound whose name is one of the user inbound names above.
-- **privateAllow entry**: an address list with optional inbound tags, network and port, node-owned, per outbound.
+- **privateAllow entry**: the `ruleTag` of the routing rule it trusts and that rule's explicit private addresses,
+  node-owned, per outbound.
 - **finalRules entry**: `action`, `network`, `port`, `ip`, as upstream writes them.
 
 ## Success Criteria *(mandatory)*

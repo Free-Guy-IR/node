@@ -1590,13 +1590,17 @@ shipped.
 - **What:** for the inbounds the local-host patch guards, freedom refuses an address of `geoip:private` in the shipped
   geoip.dat (18 prefixes written into the patch) unless the outbound's `finalRules` (upstream's JSON shape, first match
   decides, read for private addresses only) or its `privateAllow` entries allow it; the local host stays refused
-  whatever an allow says. It checks a literal or freedom-resolved address before the dial, resolves an AsIs TCP name
-  with the system resolver and checks every answer before the dial, checks the remote end of the dialed connection
-  (except the unspecified address chained dials report) and drops UDP datagrams per packet. The node owns
-  `privateAllow`: `backend/xray/private_target_allow.go` writes it into every freedom outbound of every config it
-  renders, from routing rules that send literal private addresses to that outbound with no condition other than
-  inbound tag, network and port, minus the ranges the node's sibling guard keeps user inbounds off; the core 1 layout
-  gets `[{"ip": ["100.64.0.0/10"]}]` on `DIRECT` and nothing else.
+  whatever an allow says. A `privateAllow` entry names a routing rule and that rule's explicit private addresses, and
+  allows one of them only when xray's router, asked at dial time with that address as the target
+  (`(*Router).MatchingRule`, the rules' first match without their webhooks or balancer picks), lands on that rule and
+  the rule sends to this same outbound; an earlier block, another outbound or another inbound's, user's or source's
+  rule keeps the address refused. It checks a literal or freedom-resolved address before the dial, resolves an AsIs
+  TCP name with the system resolver and checks every answer before the dial, checks the remote end of the dialed
+  connection (except the unspecified address chained dials report) and drops UDP datagrams per packet. The node owns
+  `privateAllow`: `backend/xray/private_target_allow.go` tags each routing rule that sends literal private addresses
+  to a freedom outbound (its own `ruleTag`, or `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing) and lists
+  `{ruleTag, ip}` on that outbound, minus the ranges the node's sibling guard keeps user inbounds off; the core 1
+  layout gets `[{"ruleTag": "PG_NODE_PRIVATE_ALLOW_1", "ip": ["100.64.0.0/10"]}]` on `DIRECT` and nothing else.
 - **Upstream:** `310b764811aa` (`v26.4.15`, `ipsBlocked`), `4e87f59628ff` and `958eb9ea8f1c` (`v26.5.3`, `finalRules`
   and `blockDelay`), built on the geodata refactor 82624bc. Upstream's default set is wider than `geoip:private`
   (NAT64, 6to4, Teredo and others) and blackholes a blocked stream for 30 to 90 s; this patch refuses at once, as the
@@ -1606,13 +1610,16 @@ shipped.
   pass with the patch under `-race`; the built-in set equals `geoip:private` of the shipped geoip.dat. Through the
   node and a real `xray run` of a core 1 and a core 16 layout, a name that the core's DNS resolves to a private
   listener through an inbound-specific `DIRECT` rule, and a private literal of core 16, carry about 1.5 GB in one
-  second on the 28-patch build and nothing on the patched one, with no handshake. Seven freedom mutants and the
+  second on the 28-patch build and nothing on the patched one, with no handshake. A private route that an earlier
+  block shadows, and a route only one inbound's rule makes, stay closed to another inbound's names; dropping the
+  router check opens both (about 1.4 and 1.7 GB arrive). The first form of the allow, pushed as `7c1e0cab`, already
+  scoped entries by inbound but let the shadowed route through. Nine freedom mutants, the node mutants and the
   canary are each caught.
 - **Residual:** a DNS answer that changes between the pre-dial lookup and the dial reaches the after-dial check, which
   closes the connection after the handshake and before any payload; NAT64, 6to4 and Teredo prefixes are not refused;
-  a chained freedom is checked on its literal or locally resolved address only; a routing rule shadowed by an earlier
-  private block still gives an allow; each new TCP connection a user sends by name through an AsIs freedom costs one
-  extra system DNS lookup.
+  a chained freedom is checked on its literal or locally resolved address only; an allowing rule that also matches
+  on a domain never applies; rules added at run time through the RoutingService are not listed until the next
+  render; each new TCP connection a user sends by name through an AsIs freedom costs one extra system DNS lookup.
 - **Retire when:** the pin moves to `v26.5.3` or later; the node must then render the derived allows as `finalRules`,
   or the CGNAT route of core 1 breaks there.
 

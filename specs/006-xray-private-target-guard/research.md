@@ -44,17 +44,21 @@
   core runs consistent with its own rules, and `Clone` keeps the panel's outbounds untouched.
 - Alternatives: in `ApplyAPI` (would keep allows from rules the degraded start removed).
 
-## R5. Which routing rules give an allow
+## R5. Which routing rules give an allow, and who decides
 
-- Decision: a rule whose `outboundTag` is a freedom outbound and whose keys are only `type`, `ruleTag`, `outboundTag`,
-  `domainMatcher`, `webhook`, `ip`, `inboundTag`, `network` and `port`; only literal addresses or prefixes inside one
-  private prefix count, minus the node-guarded ranges; the entry keeps the rule's `inboundTag`, `network` and `port`.
-- Rationale: freedom can evaluate exactly those conditions, so the allow is never wider than the rule; catch-alls and
-  negations are not private intent; the node's sibling guard already keeps user inbounds off the local host and
-  link-local by address, so an allow there would contradict it.
-- Alternatives: intersecting broad prefixes with the private set (a catch-all would reopen everything); ignoring the
-  other conditions (a rule for one user or source would open the range for everyone); balancer targets (no production
-  rule uses one; skipped and logged).
+- Decision: a rule whose `outboundTag` is a freedom outbound lists `{ruleTag, ip}` on it, with only the literal
+  addresses or prefixes inside one private prefix, minus the node-guarded ranges; at dial time freedom asks the
+  router which rule decides for the connection with the dialed address as target (`MatchingRule`), and allows only
+  that rule's listed addresses on the outbound the rule sends to.
+- Rationale: two automated reviews (MEDIUM) found the first form, which copied a rule's inbound, network and port
+  into the entry, broader than routing: it ignored rule order, so a private route shadowed by an earlier block still
+  opened its addresses to names reaching the outbound through the domain pass (reproduced live on `7c1e0cab`). The
+  router's own first match carries every condition and the order; `MatchingRule` skips the webhook and balancer side
+  effects `PickRoute` has.
+- Alternatives: carrying the rule identity from the original routing decision (the decision for a name in the domain
+  pass is the catch-all inbound rule, so CGNAT by name would break while saying nothing about the address);
+  re-implementing rule matching in the node (every condition and shadowing by hand); catch-alls, negations and broad
+  prefixes (not private intent); balancer targets (skipped and logged).
 
 ## R6. How the canary tells a guarded build from stock
 
@@ -81,7 +85,8 @@
   handshake, before any payload.
 - A chained freedom outbound (`dialerProxy`, `proxySettings`) is checked on its literal or locally resolved address
   only; none exists in production.
-- A rule shadowed by an earlier unconditional private block still gives an allow; production's order (CGNAT before
-  the private block) is not affected.
+- An allowing rule that also matches on a domain never applies, because the router is asked with the address as
+  target; the node skips such rules and logs them.
+- Rules added at run time through the RoutingService are not listed until the next render.
 - Datagrams that private hosts send back on a full-cone UDP flow are not filtered (upstream filters them); a guarded
   user cannot open such a flow to a private host in the first place.

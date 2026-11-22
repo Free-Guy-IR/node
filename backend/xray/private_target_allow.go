@@ -1,13 +1,18 @@
 package xray
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
 	"net/netip"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/xtls/xray-core/infra/conf"
 )
 
 const privateAllowKey = "privateAllow"
@@ -45,18 +50,12 @@ var nodeGuardedPrefixes = func() []netip.Prefix {
 	return prefixes
 }()
 
-var privateAllowRuleKeys = map[string]struct{}{
-	"type":          {},
-	"ruletag":       {},
-	"outboundtag":   {},
-	"balancertag":   {},
-	"domainmatcher": {},
-	"webhook":       {},
-	"ip":            {},
-	"inboundtag":    {},
-	"network":       {},
-	"port":          {},
+var allowingRuleNeverMatchesAnAddress = map[string]struct{}{
+	"domain":  {},
+	"domains": {},
 }
+
+const privateAllowRuleTagStem = "PG_NODE_PRIVATE_ALLOW_"
 
 func isFreedomProtocol(value any) bool {
 	protocol, _ := value.(string)
@@ -129,30 +128,69 @@ func describeRule(index int, fields map[string]any) string {
 	return fmt.Sprintf("routing rule #%d", index)
 }
 
-func (c *Config) privateAllowsByOutbound(freedomTags map[string]struct{}) map[string][]any {
+func decodeRule(raw json.RawMessage) (map[string]any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var rule map[string]any
+	if err := decoder.Decode(&rule); err != nil || rule == nil {
+		return nil, false
+	}
+	return rule, true
+}
+
+func foldedFields(rule map[string]any) (map[string]any, bool) {
+	fields := make(map[string]any, len(rule))
+	duplicated := false
+	for key, value := range rule {
+		folded := strings.ToLower(key)
+		if _, dup := fields[folded]; dup {
+			duplicated = true
+		}
+		fields[folded] = value
+	}
+	return fields, duplicated
+}
+
+func ruleTagOf(fields map[string]any) string {
+	tag, _ := fields["ruletag"].(string)
+	return tag
+}
+
+func withRuleTag(rule map[string]any, tag string) (json.RawMessage, error) {
+	tagged := make(map[string]any, len(rule)+1)
+	for key, value := range rule {
+		if !strings.EqualFold(key, "ruleTag") {
+			tagged[key] = value
+		}
+	}
+	tagged["ruleTag"] = tag
+	raw, err := json.Marshal(tagged)
+	return json.RawMessage(raw), err
+}
+
+func (c *Config) taggedAllowingRules(freedomTags map[string]struct{}) (*conf.RouterConfig, map[string][]any) {
 	allows := make(map[string][]any)
 	if c.RouterConfig == nil {
-		return allows
+		return nil, allows
 	}
+	tagCount := make(map[string]int)
+	for _, raw := range c.RouterConfig.RuleList {
+		if rule, ok := decodeRule(raw); ok {
+			fields, _ := foldedFields(rule)
+			if tag := ruleTagOf(fields); tag != "" {
+				tagCount[tag]++
+			}
+		}
+	}
+	rules := slices.Clone(c.RouterConfig.RuleList)
 	seen := make(map[string]map[string]struct{})
+	ordinal := 0
 	for index, raw := range c.RouterConfig.RuleList {
-		var rule map[string]any
-		if err := json.Unmarshal(raw, &rule); err != nil {
+		rule, ok := decodeRule(raw)
+		if !ok {
 			continue
 		}
-		fields := make(map[string]any, len(rule))
-		duplicated := false
-		var others []string
-		for key, value := range rule {
-			folded := strings.ToLower(key)
-			if _, dup := fields[folded]; dup {
-				duplicated = true
-			}
-			fields[folded] = value
-			if _, known := privateAllowRuleKeys[folded]; !known {
-				others = append(others, key)
-			}
-		}
+		fields, duplicated := foldedFields(rule)
 		private := explicitPrivateAddresses(fields["ip"])
 		if len(private) == 0 {
 			continue
@@ -167,17 +205,38 @@ func (c *Config) privateAllowsByOutbound(freedomTags map[string]struct{}) map[st
 		if _, freedom := freedomTags[target]; !freedom {
 			continue
 		}
-		if duplicated || len(others) > 0 {
-			sort.Strings(others)
-			log.Printf("xray config: %s sends private addresses %v to the freedom outbound %q but also matches on %v, so freedom gets no allow for them", describeRule(index, fields), private, target, others)
-			continue
-		}
-		entry := map[string]any{"ip": private}
-		for _, key := range []string{"inboundTag", "network", "port"} {
-			if value, ok := fields[strings.ToLower(key)]; ok {
-				entry[key] = value
+		var unreachable []string
+		for key := range rule {
+			if _, never := allowingRuleNeverMatchesAnAddress[strings.ToLower(key)]; never {
+				unreachable = append(unreachable, key)
 			}
 		}
+		if duplicated || len(unreachable) > 0 {
+			sort.Strings(unreachable)
+			log.Printf("xray config: %s sends private addresses %v to the freedom outbound %q but repeats a key or also matches on %v, so freedom gets no allow for them", describeRule(index, fields), private, target, unreachable)
+			continue
+		}
+		tag := ruleTagOf(fields)
+		if tag != "" && tagCount[tag] > 1 {
+			log.Printf("xray config: %s sends private addresses %v to the freedom outbound %q under the ruleTag %q that other rules share, so freedom gets no allow for them", describeRule(index, fields), private, target, tag)
+			continue
+		}
+		if tag == "" {
+			for {
+				ordinal++
+				tag = privateAllowRuleTagStem + strconv.Itoa(ordinal)
+				if tagCount[tag] == 0 {
+					break
+				}
+			}
+			tagCount[tag]++
+			tagged, err := withRuleTag(rule, tag)
+			if err != nil {
+				continue
+			}
+			rules[index] = tagged
+		}
+		entry := map[string]any{"ruleTag": tag, "ip": private}
 		canonical, err := json.Marshal(entry)
 		if err != nil {
 			continue
@@ -191,7 +250,9 @@ func (c *Config) privateAllowsByOutbound(freedomTags map[string]struct{}) map[st
 		seen[target][string(canonical)] = struct{}{}
 		allows[target] = append(allows[target], entry)
 	}
-	return allows
+	routed := *c.RouterConfig
+	routed.RuleList = rules
+	return &routed, allows
 }
 
 func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
@@ -232,10 +293,10 @@ func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
 	return copied
 }
 
-func (c *Config) outboundsWithPrivateAllow() any {
+func (c *Config) privateTargetRendering() (*conf.RouterConfig, any) {
 	outbounds, ok := c.OutboundConfigs.([]any)
 	if !ok {
-		return c.OutboundConfigs
+		return c.RouterConfig, c.OutboundConfigs
 	}
 	freedomTags := make(map[string]struct{})
 	for _, outbound := range outbounds {
@@ -245,9 +306,9 @@ func (c *Config) outboundsWithPrivateAllow() any {
 		}
 	}
 	if len(freedomTags) == 0 {
-		return c.OutboundConfigs
+		return c.RouterConfig, c.OutboundConfigs
 	}
-	allows := c.privateAllowsByOutbound(freedomTags)
+	routerConfig, allows := c.taggedAllowingRules(freedomTags)
 	rendered := make([]any, 0, len(outbounds))
 	for _, outbound := range outbounds {
 		obj, isMap := outbound.(map[string]any)
@@ -258,5 +319,5 @@ func (c *Config) outboundsWithPrivateAllow() any {
 		tag, _ := obj["tag"].(string)
 		rendered = append(rendered, withPrivateAllow(obj, allows[tag]))
 	}
-	return rendered
+	return routerConfig, rendered
 }

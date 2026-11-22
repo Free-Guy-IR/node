@@ -68,12 +68,16 @@ loadable by stock v26.3.27.
 ### Xray patch (`patches/xray-freedom-private-guard.patch`)
 
 - `proxy/freedom/config.proto` and `config.pb.go`: message `PrivateTargetRule` (`block`, `networks`, `port_list`,
-  `ip` as `xray.app.router.GeoIP`, `inbound_tags`) and `Config` fields `final_rules = 100`, `private_allow = 101`
-  (high numbers so a later port of upstream's `final_rules = 8` cannot collide).
+  `ip` as `xray.app.router.GeoIP`, `inbound_tags`, `rule_tag`) and `Config` fields `final_rules = 100`,
+  `private_allow = 101` (high numbers so a later port of upstream's `final_rules = 8` cannot collide).
+- `app/router/private_target_match.go` (new): `(*Router).MatchingRule(routing.Context)` returns the first matching
+  rule's `ruleTag` and target tag through `pickRouteInternal`, without the webhook `PickRoute` fires or a balancer
+  pick.
 - `proxy/freedom/private_target.go` (new): the 18-prefix private set built from bytes, the rule matcher (network,
-  port, inbound tag, router GeoIP matcher), `initTargetRules`, `refusesPrivateTarget` (guarded inbound, private
-  address, `finalRules` first match, then `privateAllow`, else refuse) and `refusedResolvedTarget` (system resolver
-  lookup before an AsIs TCP dial; any local-host or refused private answer refuses).
+  port, inbound tag, router GeoIP matcher), `initWithFeatures` (takes the router through `RequireFeatures`),
+  `initTargetRules`, `refusesPrivateTarget` (guarded inbound, private address, `finalRules` first match, then a
+  `privateAllow` entry whose rule the router's first match for the dialed address confirms on this outbound, else
+  refuse) and `refusedResolvedTarget` (system resolver lookup before an AsIs TCP dial).
 - `proxy/freedom/freedom.go`: `Handler` gets the two rule lists; `Init` ends with `return h.initTargetRules(config)`;
   `Process` refuses before the dial (literal or freedom-resolved address, then the pre-dial lookup for TCP names) and
   after the dial (remote address, skipping the unspecified address chained dials report); `PacketWriter` gets a
@@ -82,7 +86,8 @@ loadable by stock v26.3.27.
 - `infra/conf/freedom.go`: `FreedomConfig` gets `FinalRules []*FreedomFinalRule` (`finalRules`) and
   `PrivateAllow []*FreedomPrivateAllow` (`privateAllow`); `Build` calls `c.buildPrivateTargetRules(config)`.
 - `infra/conf/freedom_private_target.go` (new): `finalRules` entries need `action` `allow` or `block`; `privateAllow`
-  entries need a non-empty `ip`; `ip` lists go through `ToCidrList`, so they accept what routing accepts.
+  entries need a `ruleTag` and a non-empty `ip`; `ip` lists go through `ToCidrList`, so they accept what routing
+  accepts.
 - Tests: `proxy/freedom/private_target_refusal_test.go`, `infra/conf/freedom_private_target_test.go`.
 
 ### Node (`backend/xray`)
@@ -91,13 +96,12 @@ loadable by stock v26.3.27.
   (`apiGuardDestinationCIDRs`); `(*Config).outboundsWithPrivateAllow()` returns a copy of the outbounds in which every
   freedom (`freedom` or `direct`, any case) outbound's settings carry the derived `privateAllow`, every key that folds
   to `privateAllow` removed first, and the field dropped when nothing is derived.
-- Derivation: for each routing rule, in order, whose `outboundTag` names a freedom outbound and whose keys (compared
-  case-insensitively) are only `type`, `ruleTag`, `outboundTag`, `domainMatcher`, `webhook`, `ip`, `inboundTag`,
-  `network` and `port`, each literal address or prefix of `ip` that lies inside one private prefix and outside the
-  node-guarded ranges becomes part of one entry `{ip, inboundTag, network, port}` with the rule's own values. A rule
-  that would give an allow but also carries another condition, a `balancerTag` only, or duplicate keys is skipped and
-  logged.
-- `config.go`: `ToBytes` marshals the snapshot with `OutboundConfigs` replaced by `outboundsWithPrivateAllow()`, so
+- Derivation: for each routing rule whose `outboundTag` names a freedom outbound, the literal addresses and prefixes
+  of `ip` that lie inside one private prefix and outside the node-guarded ranges become one entry `{ruleTag, ip}`;
+  the rule keeps its own `ruleTag`, or gets `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing. A rule with a
+  `balancerTag` only, a domain condition, a repeated key or a `ruleTag` another rule shares is skipped and logged.
+- `config.go`: `ToBytes` marshals the snapshot with the tagged routing and the outbounds of
+  `privateTargetRendering()`, so
   every config the core runs (start, restart, sync clones, the degraded restart without content-filter rules,
   `restorePreviousConfig`) carries an allow derived from its own rules; `Clone` keeps the panel's outbounds.
 

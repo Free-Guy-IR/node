@@ -97,6 +97,19 @@ other inbounds stay refused.
 - [ ] T033 Write the fleet-impact statement and log every step to the knowledge graph
 - [ ] T034 Hand the diff to the main session for the independent hostile review the constitution's Development Workflow requires (the owner waived the external model gate for PasarGuard on 2026-11-04; the author does not grade its own fix)
 
+## Phase 8: Review round (two automated security reviews, MEDIUM, 2026-11-22)
+
+**Findings**: "authorization scope mismatch" and "allowlist broader than routing semantics" on
+`backend/xray/private_target_allow.go`: an allow derived from the rules alone ignores rule order and match semantics.
+
+- [X] T035 RED against `7c1e0cab` (the first push), real xray: a private route that an earlier `geoip:private` block shadows opens its address to a `direct-in` name through `DIRECT` (about 1.5 GB arrives); the reviewers' inbound example (an `egress-in`-only route reached by `direct-in` by name) does not leak there, because the first form scoped entries by inbound tag (`S/pguard/evidence/live-v3-red-on-7c1e0cab-mac.log`)
+- [X] T036 Add `(*Router).MatchingRule` in `XS/app/router/private_target_match.go` (first match through `pickRouteInternal`, no webhook, no balancer pick) and its test `XS/app/router/private_target_match_test.go` (PickRoute fires the webhook, MatchingRule does not)
+- [X] T037 In `XS/proxy/freedom/private_target.go`: take the router through `RequireFeatures`, and allow a `privateAllow` entry only when the router's first match for the connection with the dialed address as target is the entry's `ruleTag` on this outbound; `XS/proxy/freedom/config.proto` gets `rule_tag = 6`; `XS/infra/conf/freedom_private_target.go` reads `{ruleTag, ip}`
+- [X] T038 In `backend/xray/private_target_allow.go`: tag each allowing rule (its own `ruleTag`, or `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing), list `{ruleTag, ip}`, skip balancer, domain-conditioned, repeated-key and shared-tag rules
+- [X] T039 Tests: `TestPrivateAllowFollowsTheRoutersFirstMatchForTheResolvedAddress` (shadowing, inbound restriction, another outbound, a mixed rule, CGNAT for two inbounds); live core 1 shadow, inbound-restricted and shared-tag cases; CGNAT literal from every inbound
+- [X] T040 Mutants: allowing by an entry's address without asking the router (patch test and both live cases RED), no outbound check (RED), the earlier freedom and node mutants on the new code
+- [ ] T041 Push the second commit to `ci-v0826-private-guard` and verify every run of the exact commit
+
 ## Dependencies & Execution Order
 
 - Phase 1 then Phase 2; Phase 2 blocks every story.

@@ -8,8 +8,11 @@ the node needs on v26.3.27: a connection whose inbound is vless, vmess, trojan, 
 shadowsocks inbound, the inbounds xray-freedom-local-host.patch guards, may not reach an address of the
 geoip:private list of the geoip.dat the image ships, written here as 18 explicit prefixes so no asset is read,
 unless the freedom outbound's finalRules (upstream's JSON shape: action allow or block, network, port and ip, the
-first match decides) or its privateAllow entries (ip, inboundTag, network and port, any match allows) allow it.
-The local host stays refused whatever an allow says. finalRules decide private destinations only, so public
+first match decides) allow it, or a privateAllow entry (ruleTag and ip) covers it and the router's first match for
+the connection with that address as its target is the routing rule with that ruleTag, sending to this same
+outbound. The router check runs app/router's rules without their webhooks or balancers (MatchingRule), so an
+earlier rule that blocks the address, or a rule for another inbound, user, source or outbound, keeps the address
+refused. The local host stays refused whatever an allow says. finalRules decide private destinations only, so public
 destinations and the dokodemo-door, socks and http inbounds behave as before, and a stock v26.3.27 loads the same
 config without guarding it.
 
@@ -18,10 +21,110 @@ resolve itself (AsIs) after one system resolver lookup, refused when any answer 
 private address, so the handshake never reaches the private host, through a sockopt.interface tunnel either; the
 remote address of the dialed connection, except the unspecified address that dialerProxy and proxySettings
 connections report; and each UDP datagram after per-packet resolution, which is dropped. A refused connection
-ends with "it is the private address" at warning. privateAllow is node-owned: the PasarGuard node derives it from
-the core's routing rules. infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and their tests
-are fork code.
+ends with "it is the private address" at warning. privateAllow is node-owned: the PasarGuard node tags the routing
+rules that send explicit private addresses to a freedom outbound and lists them there.
+app/router/private_target_match.go, infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and
+their tests are fork code.
 
+diff --git a/app/router/private_target_match.go b/app/router/private_target_match.go
+new file mode 100644
+index 0000000..b0cbb2d
+--- /dev/null
++++ b/app/router/private_target_match.go
+@@ -0,0 +1,13 @@
++package router
++
++import (
++	"github.com/xtls/xray-core/features/routing"
++)
++
++func (r *Router) MatchingRule(ctx routing.Context) (string, string, bool) {
++	rule, _, err := r.pickRouteInternal(ctx)
++	if err != nil || rule == nil {
++		return "", "", false
++	}
++	return rule.RuleTag, rule.Tag, true
++}
+diff --git a/app/router/private_target_match_test.go b/app/router/private_target_match_test.go
+new file mode 100644
+index 0000000..d061ef0
+--- /dev/null
++++ b/app/router/private_target_match_test.go
+@@ -0,0 +1,74 @@
++package router_test
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
++)
++
++func TestMatchingRuleNamesTheFirstMatchWithoutFiringItsWebhook(t *testing.T) {
++	var hooks atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		hooks.Add(1)
++	}))
++	defer server.Close()
++
++	r := new(router.Router)
++	config := &router.Config{Rule: []*router.RoutingRule{
++		{
++			TargetTag: &router.RoutingRule_Tag{Tag: "BLOCK"},
++			RuleTag:   "hooked",
++			Geoip:     []*router.GeoIP{{Cidr: []*router.CIDR{{Ip: []byte{10, 0, 0, 0}, Prefix: 8}}}},
++			Webhook:   &router.WebhookConfig{Url: server.URL},
++		},
++		{
++			TargetTag: &router.RoutingRule_Tag{Tag: "DIRECT"},
++			RuleTag:   "cgnat",
++			Geoip:     []*router.GeoIP{{Cidr: []*router.CIDR{{Ip: []byte{100, 64, 0, 0}, Prefix: 10}}}},
++		},
++	}}
++	if err := r.Init(context.Background(), config, nil, nil, nil); err != nil {
++		t.Fatal(err)
++	}
++	defer r.Close()
++	routed := func(ip []byte) *routing_session.Context {
++		ctx := session.ContextWithOutbounds(context.Background(), []*session.Outbound{{Target: net.TCPDestination(net.IPAddress(ip), 443)}})
++		return routing_session.AsRoutingContext(ctx).(*routing_session.Context)
++	}
++
++	for range 5 {
++		ruleTag, outboundTag, matched := r.MatchingRule(routed([]byte{10, 1, 2, 3}))
++		if !matched || ruleTag != "hooked" || outboundTag != "BLOCK" {
++			t.Fatalf("MatchingRule gave %q %q %v, want the hooked rule to BLOCK", ruleTag, outboundTag, matched)
++		}
++	}
++	if ruleTag, outboundTag, matched := r.MatchingRule(routed([]byte{100, 64, 0, 1})); !matched || ruleTag != "cgnat" || outboundTag != "DIRECT" {
++		t.Fatalf("MatchingRule gave %q %q %v, want the cgnat rule to DIRECT", ruleTag, outboundTag, matched)
++	}
++	if _, _, matched := r.MatchingRule(routed([]byte{1, 1, 1, 1})); matched {
++		t.Fatal("MatchingRule matched a target no rule covers")
++	}
++	time.Sleep(300 * time.Millisecond)
++	if n := hooks.Load(); n != 0 {
++		t.Fatalf("MatchingRule fired the rule's webhook %d times", n)
++	}
++
++	if _, err := r.PickRoute(routed([]byte{10, 1, 2, 3})); err != nil {
++		t.Fatal(err)
++	}
++	deadline := time.Now().Add(2 * time.Second)
++	for hooks.Load() == 0 && time.Now().Before(deadline) {
++		time.Sleep(20 * time.Millisecond)
++	}
++	if hooks.Load() == 0 {
++		t.Fatal("PickRoute never fired the webhook, so this test cannot tell MatchingRule from it")
++	}
++}
 diff --git a/infra/conf/freedom.go b/infra/conf/freedom.go
 index 82d2c9a..02e3c31 100644
 --- a/infra/conf/freedom.go
@@ -48,10 +151,10 @@ index 82d2c9a..02e3c31 100644
  
 diff --git a/infra/conf/freedom_private_target.go b/infra/conf/freedom_private_target.go
 new file mode 100644
-index 0000000..c8d70e9
+index 0000000..f22e93f
 --- /dev/null
 +++ b/infra/conf/freedom_private_target.go
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,71 @@
 +package conf
 +
 +import (
@@ -69,10 +172,8 @@ index 0000000..c8d70e9
 +}
 +
 +type FreedomPrivateAllow struct {
-+	IP         *StringList  `json:"ip"`
-+	InboundTag *StringList  `json:"inboundTag"`
-+	Network    *NetworkList `json:"network"`
-+	Port       *PortList    `json:"port"`
++	RuleTag string      `json:"ruleTag"`
++	IP      *StringList `json:"ip"`
 +}
 +
 +func (c *FreedomConfig) buildPrivateTargetRules(config *freedom.Config) error {
@@ -97,12 +198,12 @@ index 0000000..c8d70e9
 +		if entry == nil || entry.IP == nil || len(*entry.IP) == 0 {
 +			return errors.New("a privateAllow entry needs an ip list")
 +		}
-+		rule := &freedom.PrivateTargetRule{}
-+		if err := fillPrivateTargetRule(rule, entry.Network, entry.Port, entry.IP); err != nil {
-+			return errors.New("invalid privateAllow entry").Base(err)
++		if entry.RuleTag == "" {
++			return errors.New("a privateAllow entry needs the ruleTag of the routing rule that sends its ip list to this outbound")
 +		}
-+		if entry.InboundTag != nil {
-+			rule.InboundTags = append(rule.InboundTags, *entry.InboundTag...)
++		rule := &freedom.PrivateTargetRule{RuleTag: entry.RuleTag}
++		if err := fillPrivateTargetRule(rule, nil, nil, entry.IP); err != nil {
++			return errors.New("invalid privateAllow entry").Base(err)
 +		}
 +		config.PrivateAllow = append(config.PrivateAllow, rule)
 +	}
@@ -127,7 +228,7 @@ index 0000000..c8d70e9
 +}
 diff --git a/infra/conf/freedom_private_target_test.go b/infra/conf/freedom_private_target_test.go
 new file mode 100644
-index 0000000..26c24a4
+index 0000000..3a8197b
 --- /dev/null
 +++ b/infra/conf/freedom_private_target_test.go
 @@ -0,0 +1,92 @@
@@ -135,7 +236,6 @@ index 0000000..26c24a4
 +
 +import (
 +	"encoding/json"
-+	"strings"
 +	"testing"
 +
 +	"github.com/xtls/xray-core/common/net"
@@ -165,8 +265,8 @@ index 0000000..26c24a4
 +			{"action": "ALLOW"}
 +		],
 +		"privateAllow": [
-+			{"ip": ["100.64.0.0/10"]},
-+			{"ip": "10.8.0.0/16,10.9.0.1", "inboundTag": ["relay-in", "relay-out"], "network": "udp", "port": "53,1000-2000"}
++			{"ruleTag": "PG_NODE_PRIVATE_ALLOW_1", "ip": ["100.64.0.0/10"]},
++			{"ruleTag": "lan", "ip": "10.8.0.0/16,10.9.0.1", "inboundTag": ["relay-in"], "network": "udp", "port": "53"}
 +		]
 +	}`)
 +	if err != nil {
@@ -188,19 +288,19 @@ index 0000000..26c24a4
 +	if len(third.Ip) != 0 || third.Networks != nil || third.PortList != nil {
 +		t.Errorf("an allow without conditions carries %v %v %v", third.Ip, third.Networks, third.PortList)
 +	}
-+	scoped := config.PrivateAllow[1]
-+	if strings.Join(scoped.InboundTags, ",") != "relay-in,relay-out" || len(scoped.Networks) != 1 || scoped.Networks[0] != net.Network_UDP || len(scoped.PortList.Range) != 2 {
-+		t.Errorf("the scoped privateAllow entry is %v", scoped)
++	lan := config.PrivateAllow[1]
++	if config.PrivateAllow[0].RuleTag != "PG_NODE_PRIVATE_ALLOW_1" || lan.RuleTag != "lan" {
++		t.Errorf("privateAllow rule tags %q %q", config.PrivateAllow[0].RuleTag, lan.RuleTag)
++	}
++	if len(lan.InboundTags) != 0 || lan.Networks != nil || lan.PortList != nil || lan.Block {
++		t.Errorf("a privateAllow entry carries conditions of its own: %v", lan)
 +	}
 +	cidrs := 0
-+	for _, geoip := range scoped.Ip {
++	for _, geoip := range lan.Ip {
 +		cidrs += len(geoip.Cidr)
 +	}
 +	if cidrs != 2 {
-+		t.Errorf("the scoped privateAllow entry holds %d prefixes, want 2", cidrs)
-+	}
-+	if len(config.PrivateAllow[0].InboundTags) != 0 {
-+		t.Errorf("an entry without inboundTag is scoped to %v", config.PrivateAllow[0].InboundTags)
++		t.Errorf("the lan privateAllow entry holds %d prefixes, want 2", cidrs)
 +	}
 +}
 +
@@ -211,9 +311,10 @@ index 0000000..26c24a4
 +		`{"finalRules": [null]}`,
 +		`{"finalRules": [{"action": "allow", "ip": ["10.0.0.0/33"]}]}`,
 +		`{"privateAllow": [{}]}`,
-+		`{"privateAllow": [{"ip": []}]}`,
++		`{"privateAllow": [{"ruleTag": "lan", "ip": []}]}`,
++		`{"privateAllow": [{"ip": ["10.0.0.0/8"]}]}`,
 +		`{"privateAllow": [null]}`,
-+		`{"privateAllow": [{"ip": ["not-an-address"]}]}`,
++		`{"privateAllow": [{"ruleTag": "lan", "ip": ["not-an-address"]}]}`,
 +	} {
 +		if _, err := buildFreedom(t, raw); err == nil {
 +			t.Errorf("%s was accepted", raw)
@@ -224,7 +325,7 @@ index 0000000..26c24a4
 +	}
 +}
 diff --git a/proxy/freedom/config.pb.go b/proxy/freedom/config.pb.go
-index f39abcf..74f3e61 100644
+index f39abcf..87ff5ba 100644
 --- a/proxy/freedom/config.pb.go
 +++ b/proxy/freedom/config.pb.go
 @@ -1,12 +1,14 @@
@@ -243,7 +344,7 @@ index f39abcf..74f3e61 100644
  	protocol "github.com/xtls/xray-core/common/protocol"
  	internet "github.com/xtls/xray-core/transport/internet"
  	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-@@ -251,6 +253,82 @@ func (x *Noise) GetApplyTo() string {
+@@ -251,6 +253,90 @@ func (x *Noise) GetApplyTo() string {
  	return ""
  }
  
@@ -254,6 +355,7 @@ index f39abcf..74f3e61 100644
 +	PortList      *net.PortList          `protobuf:"bytes,3,opt,name=port_list,json=portList,proto3" json:"port_list,omitempty"`
 +	Ip            []*router.GeoIP        `protobuf:"bytes,4,rep,name=ip,proto3" json:"ip,omitempty"`
 +	InboundTags   []string               `protobuf:"bytes,5,rep,name=inbound_tags,json=inboundTags,proto3" json:"inbound_tags,omitempty"`
++	RuleTag       string                 `protobuf:"bytes,6,opt,name=rule_tag,json=ruleTag,proto3" json:"rule_tag,omitempty"`
 +	unknownFields protoimpl.UnknownFields
 +	sizeCache     protoimpl.SizeCache
 +}
@@ -323,10 +425,17 @@ index f39abcf..74f3e61 100644
 +	return nil
 +}
 +
++func (x *PrivateTargetRule) GetRuleTag() string {
++	if x != nil {
++		return x.RuleTag
++	}
++	return ""
++}
++
  type Config struct {
  	state               protoimpl.MessageState  `protogen:"open.v1"`
  	DomainStrategy      internet.DomainStrategy `protobuf:"varint,1,opt,name=domain_strategy,json=domainStrategy,proto3,enum=xray.transport.internet.DomainStrategy" json:"domain_strategy,omitempty"`
-@@ -259,13 +337,15 @@ type Config struct {
+@@ -259,13 +345,15 @@ type Config struct {
  	Fragment            *Fragment               `protobuf:"bytes,5,opt,name=fragment,proto3" json:"fragment,omitempty"`
  	ProxyProtocol       uint32                  `protobuf:"varint,6,opt,name=proxy_protocol,json=proxyProtocol,proto3" json:"proxy_protocol,omitempty"`
  	Noises              []*Noise                `protobuf:"bytes,7,rep,name=noises,proto3" json:"noises,omitempty"`
@@ -343,7 +452,7 @@ index f39abcf..74f3e61 100644
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -277,7 +357,7 @@ func (x *Config) String() string {
+@@ -277,7 +365,7 @@ func (x *Config) String() string {
  func (*Config) ProtoMessage() {}
  
  func (x *Config) ProtoReflect() protoreflect.Message {
@@ -352,7 +461,7 @@ index f39abcf..74f3e61 100644
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -290,7 +370,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
+@@ -290,7 +378,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
  
  // Deprecated: Use Config.ProtoReflect.Descriptor instead.
  func (*Config) Descriptor() ([]byte, []int) {
@@ -361,7 +470,7 @@ index f39abcf..74f3e61 100644
  }
  
  func (x *Config) GetDomainStrategy() internet.DomainStrategy {
-@@ -335,11 +415,25 @@ func (x *Config) GetNoises() []*Noise {
+@@ -335,11 +423,25 @@ func (x *Config) GetNoises() []*Noise {
  	return nil
  }
  
@@ -388,22 +497,23 @@ index f39abcf..74f3e61 100644
  	"\x13DestinationOverride\x12<\n" +
  	"\x06server\x18\x01 \x01(\v2$.xray.common.protocol.ServerEndpointR\x06server\"\x98\x02\n" +
  	"\bFragment\x12!\n" +
-@@ -362,7 +456,13 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
+@@ -362,7 +464,14 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
  	"\tdelay_min\x18\x03 \x01(\x04R\bdelayMin\x12\x1b\n" +
  	"\tdelay_max\x18\x04 \x01(\x04R\bdelayMax\x12\x16\n" +
  	"\x06packet\x18\x05 \x01(\fR\x06packet\x12\x19\n" +
 -	"\bapply_to\x18\x06 \x01(\tR\aapplyTo\"\xe9\x02\n" +
-+	"\bapply_to\x18\x06 \x01(\tR\aapplyTo\"\xe2\x01\n" +
++	"\bapply_to\x18\x06 \x01(\tR\aapplyTo\"\xfd\x01\n" +
 +	"\x11PrivateTargetRule\x12\x14\n" +
 +	"\x05block\x18\x01 \x01(\bR\x05block\x124\n" +
 +	"\bnetworks\x18\x02 \x03(\x0e2\x18.xray.common.net.NetworkR\bnetworks\x126\n" +
 +	"\tport_list\x18\x03 \x01(\v2\x19.xray.common.net.PortListR\bportList\x12&\n" +
 +	"\x02ip\x18\x04 \x03(\v2\x16.xray.app.router.GeoIPR\x02ip\x12!\n" +
-+	"\finbound_tags\x18\x05 \x03(\tR\vinboundTags\"\xfd\x03\n" +
++	"\finbound_tags\x18\x05 \x03(\tR\vinboundTags\x12\x19\n" +
++	"\brule_tag\x18\x06 \x01(\tR\aruleTag\"\xfd\x03\n" +
  	"\x06Config\x12P\n" +
  	"\x0fdomain_strategy\x18\x01 \x01(\x0e2'.xray.transport.internet.DomainStrategyR\x0edomainStrategy\x12Z\n" +
  	"\x14destination_override\x18\x03 \x01(\v2'.xray.proxy.freedom.DestinationOverrideR\x13destinationOverride\x12\x1d\n" +
-@@ -370,7 +470,10 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
+@@ -370,7 +479,10 @@ const file_proxy_freedom_config_proto_rawDesc = "" +
  	"user_level\x18\x04 \x01(\rR\tuserLevel\x128\n" +
  	"\bfragment\x18\x05 \x01(\v2\x1c.xray.proxy.freedom.FragmentR\bfragment\x12%\n" +
  	"\x0eproxy_protocol\x18\x06 \x01(\rR\rproxyProtocol\x121\n" +
@@ -415,7 +525,7 @@ index f39abcf..74f3e61 100644
  	"\x16com.xray.proxy.freedomP\x01Z'github.com/xtls/xray-core/proxy/freedom\xaa\x02\x12Xray.Proxy.Freedomb\x06proto3"
  
  var (
-@@ -385,26 +488,35 @@ func file_proxy_freedom_config_proto_rawDescGZIP() []byte {
+@@ -385,26 +497,35 @@ func file_proxy_freedom_config_proto_rawDescGZIP() []byte {
  	return file_proxy_freedom_config_proto_rawDescData
  }
  
@@ -465,7 +575,7 @@ index f39abcf..74f3e61 100644
  }
  
  func init() { file_proxy_freedom_config_proto_init() }
-@@ -418,7 +530,7 @@ func file_proxy_freedom_config_proto_init() {
+@@ -418,7 +539,7 @@ func file_proxy_freedom_config_proto_init() {
  			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
  			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proxy_freedom_config_proto_rawDesc), len(file_proxy_freedom_config_proto_rawDesc)),
  			NumEnums:      0,
@@ -475,7 +585,7 @@ index f39abcf..74f3e61 100644
  			NumServices:   0,
  		},
 diff --git a/proxy/freedom/config.proto b/proxy/freedom/config.proto
-index fd0547d..f77ed9f 100644
+index fd0547d..fbb6567 100644
 --- a/proxy/freedom/config.proto
 +++ b/proxy/freedom/config.proto
 @@ -8,6 +8,9 @@ option java_multiple_files = true;
@@ -488,7 +598,7 @@ index fd0547d..f77ed9f 100644
  
  message DestinationOverride {
    xray.common.protocol.ServerEndpoint server = 1;
-@@ -32,6 +35,14 @@ message Noise {
+@@ -32,6 +35,15 @@ message Noise {
    string apply_to = 6;
  }
  
@@ -498,12 +608,13 @@ index fd0547d..f77ed9f 100644
 +  xray.common.net.PortList port_list = 3;
 +  repeated xray.app.router.GeoIP ip = 4;
 +  repeated string inbound_tags = 5;
++  string rule_tag = 6;
 +}
 +
  message Config {
    xray.transport.internet.DomainStrategy domain_strategy = 1;
    DestinationOverride destination_override = 3;
-@@ -39,4 +50,6 @@ message Config {
+@@ -39,4 +51,6 @@ message Config {
    Fragment fragment = 5;
    uint32 proxy_protocol = 6;
    repeated Noise noises = 7;
@@ -511,15 +622,27 @@ index fd0547d..f77ed9f 100644
 +  repeated PrivateTargetRule private_allow = 101;
  }
 diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
-index 3179cc7..4890bb2 100644
+index 3179cc7..53bfcfa 100644
 --- a/proxy/freedom/freedom.go
 +++ b/proxy/freedom/freedom.go
-@@ -53,13 +53,15 @@ func init() {
+@@ -34,9 +34,7 @@ var useSplice bool
+ func init() {
+ 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+ 		h := new(Handler)
+-		if err := core.RequireFeatures(ctx, func(pm policy.Manager) error {
+-			return h.Init(config.(*Config), pm)
+-		}); err != nil {
++		if err := core.RequireFeatures(ctx, h.initWithFeatures(config.(*Config))); err != nil {
+ 			return nil, err
+ 		}
+ 		return h, nil
+@@ -53,13 +51,16 @@ func init() {
  type Handler struct {
  	policyManager policy.Manager
  	config        *Config
 +	finalRules    []*targetRule
 +	privateAllow  []*targetRule
++	router        privateRuleMatcher
  }
  
  // Init initializes the Handler with necessary parameters.
@@ -531,7 +654,7 @@ index 3179cc7..4890bb2 100644
  }
  
  func (h *Handler) policy() policy.Session {
-@@ -142,6 +144,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -142,6 +143,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  
  	var conn stat.Connection
  	var refused *net.Destination
@@ -539,11 +662,11 @@ index 3179cc7..4890bb2 100644
  	err := retry.ExponentialBackoff(5, 100).On(func() error {
  		dialDest := destination
  		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
-@@ -170,6 +173,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -170,6 +172,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
-+		if h.refusesPrivateTarget(inbound, dialDest) {
++		if h.refusesPrivateTarget(ctx, inbound, dialDest) {
 +			refused, refusedKind = &dialDest, "private"
 +			return nil
 +		}
@@ -558,11 +681,11 @@ index 3179cc7..4890bb2 100644
  		rawConn, err := dialer.Dial(ctx, dialDest)
  		if err != nil {
  			return err
-@@ -182,6 +197,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -182,6 +196,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
-+		if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(inbound, remote) {
++		if remote, ok := remoteTarget(rawConn); ok && h.refusesPrivateTarget(ctx, inbound, remote) {
 +			rawConn.Close()
 +			refused, refusedKind = &remote, "private"
 +			return nil
@@ -571,7 +694,7 @@ index 3179cc7..4890bb2 100644
  		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
  			version := byte(h.config.ProxyProtocol)
  			srcAddr := inbound.Source.RawNetAddr()
-@@ -200,7 +221,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -200,7 +220,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  		return errors.New("failed to open connection to ", destination).Base(err)
  	}
  	if refused != nil {
@@ -580,15 +703,15 @@ index 3179cc7..4890bb2 100644
  	}
  	defer conn.Close()
  	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
-@@ -239,6 +260,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -239,6 +259,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			writer = NewPacketWriter(conn, h, UDPOverride, destination)
  			if pw, ok := writer.(*PacketWriter); ok {
  				pw.RefuseLocalHost = refuseLocalHost
-+				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(inbound, dest) }
++				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }
  			}
  			if h.config.Noises != nil {
  				errors.LogDebug(ctx, "NOISE", h.config.Noises)
-@@ -400,6 +422,7 @@ type PacketWriter struct {
+@@ -400,6 +421,7 @@ type PacketWriter struct {
  	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
  	LocalAddr       net.Address
  	RefuseLocalHost bool
@@ -596,7 +719,7 @@ index 3179cc7..4890bb2 100644
  }
  
  func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-@@ -454,6 +477,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -454,6 +476,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
  				b.Release()
  				continue
  			}
@@ -609,10 +732,10 @@ index 3179cc7..4890bb2 100644
  				b.Release()
 diff --git a/proxy/freedom/private_target.go b/proxy/freedom/private_target.go
 new file mode 100644
-index 0000000..236fb25
+index 0000000..e1d022c
 --- /dev/null
 +++ b/proxy/freedom/private_target.go
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,193 @@
 +package freedom
 +
 +import (
@@ -624,7 +747,14 @@ index 0000000..236fb25
 +	"github.com/xtls/xray-core/common/errors"
 +	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/policy"
++	"github.com/xtls/xray-core/features/routing"
++	routing_session "github.com/xtls/xray-core/features/routing/session"
 +)
++
++type privateRuleMatcher interface {
++	MatchingRule(ctx routing.Context) (string, string, bool)
++}
 +
 +func v4Prefix(a, b, c, d byte, bits int) netip.Prefix {
 +	return netip.PrefixFrom(netip.AddrFrom4([4]byte{a, b, c, d}), bits)
@@ -674,6 +804,7 @@ index 0000000..236fb25
 +	ports       net.MemoryPortList
 +	ip          router.GeoIPMatcher
 +	inboundTags []string
++	ruleTag     string
 +}
 +
 +func buildTargetRules(configs []*PrivateTargetRule) ([]*targetRule, error) {
@@ -683,6 +814,7 @@ index 0000000..236fb25
 +			block:       config.GetBlock(),
 +			networks:    config.GetNetworks(),
 +			inboundTags: config.GetInboundTags(),
++			ruleTag:     config.GetRuleTag(),
 +		}
 +		if config.GetPortList() != nil {
 +			rule.ports = net.PortListFromProto(config.GetPortList())
@@ -697,6 +829,13 @@ index 0000000..236fb25
 +		rules = append(rules, rule)
 +	}
 +	return rules, nil
++}
++
++func (h *Handler) initWithFeatures(config *Config) func(policy.Manager, routing.Router) error {
++	return func(pm policy.Manager, r routing.Router) error {
++		h.router, _ = r.(privateRuleMatcher)
++		return h.Init(config, pm)
++	}
 +}
 +
 +func (h *Handler) initTargetRules(config *Config) error {
@@ -723,7 +862,7 @@ index 0000000..236fb25
 +	return r.ip == nil || r.ip.Match(dest.Address.IP())
 +}
 +
-+func (h *Handler) refusesPrivateTarget(inbound *session.Inbound, dest net.Destination) bool {
++func (h *Handler) refusesPrivateTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) bool {
 +	if !refusesLocalHost(inbound) || !isPrivateTarget(dest.Address) {
 +		return false
 +	}
@@ -732,12 +871,35 @@ index 0000000..236fb25
 +			return rule.block
 +		}
 +	}
++	return !h.routedHereByAnAllowingRule(ctx, dest)
++}
++
++func (h *Handler) routedHereByAnAllowingRule(ctx context.Context, dest net.Destination) bool {
++	if h.router == nil {
++		return false
++	}
++	var tags []string
 +	for _, rule := range h.privateAllow {
-+		if rule.matches(inbound, dest) {
-+			return false
++		if rule.ruleTag != "" && rule.matches(nil, dest) {
++			tags = append(tags, rule.ruleTag)
 +		}
 +	}
-+	return true
++	outbounds := session.OutboundsFromContext(ctx)
++	if len(tags) == 0 || len(outbounds) == 0 {
++		return false
++	}
++	own := outbounds[len(outbounds)-1]
++	ruleTag, outboundTag, matched := h.router.MatchingRule(privateRoutingContext(ctx, outbounds, dest))
++	return matched && outboundTag == own.Tag && slices.Contains(tags, ruleTag)
++}
++
++func privateRoutingContext(ctx context.Context, outbounds []*session.Outbound, dest net.Destination) routing.Context {
++	routed := slices.Clone(outbounds)
++	target := *routed[len(routed)-1]
++	target.Target = dest
++	target.RouteTarget = net.Destination{}
++	routed[len(routed)-1] = &target
++	return routing_session.AsRoutingContext(session.ContextWithOutbounds(ctx, routed))
 +}
 +
 +func (h *Handler) refusedResolvedTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) (*net.Destination, string) {
@@ -751,7 +913,7 @@ index 0000000..236fb25
 +		if isLocalHostAddress(resolved.Address) {
 +			return &resolved, "local host"
 +		}
-+		if h.refusesPrivateTarget(inbound, resolved) {
++		if h.refusesPrivateTarget(ctx, inbound, resolved) {
 +			return &resolved, "private"
 +		}
 +	}
@@ -1206,10 +1368,10 @@ index 0000000..f83374b
 +}
 diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go
 new file mode 100644
-index 0000000..c9151eb
+index 0000000..5fda55d
 --- /dev/null
 +++ b/proxy/freedom/private_target_rules_test.go
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,384 @@
 +package freedom
 +
 +import (
@@ -1223,9 +1385,13 @@ index 0000000..c9151eb
 +	"time"
 +
 +	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/buf"
 +	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
 +	"github.com/xtls/xray-core/transport/internet/stat"
++	"github.com/xtls/xray-core/transport/pipe"
 +	"google.golang.org/protobuf/proto"
 +)
 +
@@ -1344,59 +1510,141 @@ index 0000000..c9151eb
 +		{"allow on the port", []*PrivateTargetRule{{PortList: &net.PortList{Range: []*net.PortRange{{From: 400, To: 500}}}}}, false},
 +	} {
 +		h := newHandler(t, &Config{FinalRules: c.rules})
-+		if got := h.refusesPrivateTarget(inbound, target); got != c.refused {
++		if got := h.refusesPrivateTarget(context.Background(), inbound, target); got != c.refused {
 +			t.Errorf("%s: %s refused %v, want %v", c.name, target, got, c.refused)
 +		}
 +	}
 +	h := newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(true, "1.1.1.1/32"), {Block: true}}})
-+	if h.refusesPrivateTarget(inbound, net.TCPDestination(net.IPAddress([]byte{1, 1, 1, 1}), 443)) {
++	if h.refusesPrivateTarget(context.Background(), inbound, net.TCPDestination(net.IPAddress([]byte{1, 1, 1, 1}), 443)) {
 +		t.Error("finalRules refused a public target")
 +	}
-+	if h.refusesPrivateTarget(&session.Inbound{Name: "socks"}, target) {
++	if h.refusesPrivateTarget(context.Background(), &session.Inbound{Name: "socks"}, target) {
 +		t.Error("finalRules refused a private target of a socks inbound")
 +	}
 +}
 +
-+func TestPrivateAllowEntriesOpenOnlyWhatTheyName(t *testing.T) {
-+	cgnat := cidrRule(false, "100.64.0.0/10")
-+	scoped := cidrRule(false, "10.8.0.0/16")
-+	scoped.InboundTags = []string{"relay-in"}
-+	scoped.Networks = []net.Network{net.Network_TCP}
-+	scoped.PortList = &net.PortList{Range: []*net.PortRange{{From: 22, To: 22}}}
-+	h := newHandler(t, &Config{PrivateAllow: []*PrivateTargetRule{cgnat, scoped}})
++func allowEntry(ruleTag string, cidrs ...string) *PrivateTargetRule {
++	rule := cidrRule(false, cidrs...)
++	rule.RuleTag = ruleTag
++	return rule
++}
++
++func routingRule(ruleTag, outbound string, inboundTags []string, cidrs ...string) *router.RoutingRule {
++	rule := &router.RoutingRule{TargetTag: &router.RoutingRule_Tag{Tag: outbound}, RuleTag: ruleTag, InboundTag: inboundTags}
++	if len(cidrs) > 0 {
++		rule.Geoip = cidrRule(false, cidrs...).Ip
++	}
++	return rule
++}
++
++func routerOf(t *testing.T, rules ...*router.RoutingRule) *router.Router {
++	t.Helper()
++	r := new(router.Router)
++	if err := r.Init(context.Background(), &router.Config{Rule: rules}, nil, nil, nil); err != nil {
++		t.Fatal(err)
++	}
++	return r
++}
++
++func handlerRoutedBy(t *testing.T, r *router.Router, entries ...*PrivateTargetRule) *Handler {
++	t.Helper()
++	h := newHandler(t, &Config{PrivateAllow: entries})
++	h.router = r
++	return h
++}
++
++func sessionContext(inbound *session.Inbound, target net.Destination, outboundTag string) context.Context {
++	return session.ContextWithOutbounds(session.ContextWithInbound(context.Background(), inbound), []*session.Outbound{{Target: target, Tag: outboundTag}})
++}
++
++func TestPrivateAllowFollowsTheRoutersFirstMatchForTheResolvedAddress(t *testing.T) {
++	r := routerOf(t,
++		routingRule("block-ten", "BLOCK", nil, "10.0.0.0/8"),
++		routingRule("shadowed", "DIRECT", nil, "10.1.0.0/16"),
++		routingRule("cgnat", "DIRECT", nil, "100.64.0.0/10"),
++		routingRule("relay-only", "DIRECT", []string{"relay-in"}, "172.16.0.0/12"),
++		routingRule("egress-lan", "egress", nil, "192.168.0.0/16"),
++		routingRule("documentation-and-public", "DIRECT", nil, "192.0.2.0/24", "0.0.0.0/0"),
++		routingRule("users-direct", "DIRECT", []string{"users", "relay-in"}),
++	)
++	direct := handlerRoutedBy(t, r,
++		allowEntry("shadowed", "10.1.0.0/16"),
++		allowEntry("cgnat", "100.64.0.0/10"),
++		allowEntry("relay-only", "172.16.0.0/12"),
++		allowEntry("documentation-and-public", "192.0.2.0/24"),
++		allowEntry("users-direct", "10.0.0.0/8", "192.168.0.0/16"),
++	)
++	egress := handlerRoutedBy(t, r, allowEntry("egress-lan", "192.168.0.0/16"))
 +	for _, c := range []struct {
-+		tag     string
-+		dest    net.Destination
-+		refused bool
++		name     string
++		h        *Handler
++		outbound string
++		inbound  string
++		address  []byte
++		refused  bool
 +	}{
-+		{"users", net.TCPDestination(net.IPAddress([]byte{100, 64, 0, 1}), 443), false},
-+		{"users", net.UDPDestination(net.IPAddress([]byte{100, 127, 255, 254}), 53), false},
-+		{"users", net.TCPDestination(net.IPAddress([]byte{10, 0, 0, 1}), 443), true},
-+		{"users", net.TCPDestination(net.IPAddress([]byte{192, 168, 1, 1}), 443), true},
-+		{"users", net.TCPDestination(net.ParseAddress("fd00::1"), 443), true},
-+		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), false},
-+		{"users", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), true},
-+		{"relay-in", net.UDPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 22), true},
-+		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 8, 1, 1}), 443), true},
-+		{"relay-in", net.TCPDestination(net.IPAddress([]byte{10, 9, 1, 1}), 22), true},
++		{"an earlier block shadows the allowing rule", direct, "DIRECT", "users", []byte{10, 1, 2, 3}, true},
++		{"the CGNAT rule for one inbound", direct, "DIRECT", "users", []byte{100, 64, 0, 1}, false},
++		{"the CGNAT rule for another inbound", direct, "DIRECT", "relay-in", []byte{100, 127, 255, 254}, false},
++		{"an inbound-restricted rule for its inbound", direct, "DIRECT", "relay-in", []byte{172, 16, 0, 1}, false},
++		{"an inbound-restricted rule for another inbound", direct, "DIRECT", "users", []byte{172, 16, 0, 1}, true},
++		{"a rule for another outbound", direct, "DIRECT", "users", []byte{192, 168, 1, 1}, true},
++		{"that rule on its own outbound", egress, "egress", "users", []byte{192, 168, 1, 1}, false},
++		{"an allow of this outbound on a connection of another", direct, "egress", "users", []byte{100, 64, 0, 1}, true},
++		{"the explicit private part of a mixed rule", direct, "DIRECT", "users", []byte{192, 0, 2, 1}, false},
++		{"another private address the same mixed rule catches", direct, "DIRECT", "users", []byte{198, 51, 100, 1}, true},
++		{"a catch-all rule listed by mistake", direct, "DIRECT", "users", []byte{169, 254, 169, 254}, true},
 +	} {
-+		if got := h.refusesPrivateTarget(&session.Inbound{Name: "vless", Tag: c.tag}, c.dest); got != c.refused {
-+			t.Errorf("inbound %s to %s refused %v, want %v", c.tag, c.dest, got, c.refused)
++		dest := net.TCPDestination(net.IPAddress(c.address), 443)
++		inbound := &session.Inbound{Name: "vless", Tag: c.inbound}
++		got := c.h.refusesPrivateTarget(sessionContext(inbound, dest, c.outbound), inbound, dest)
++		if got != c.refused {
++			t.Errorf("%s: %s from %s through %s refused %v, want %v", c.name, dest, c.inbound, c.outbound, got, c.refused)
 +		}
++	}
++	unrouted := newHandler(t, &Config{PrivateAllow: []*PrivateTargetRule{allowEntry("cgnat", "100.64.0.0/10")}})
++	dest := net.TCPDestination(net.IPAddress([]byte{100, 64, 0, 1}), 443)
++	users := &session.Inbound{Name: "vless", Tag: "users"}
++	if !unrouted.refusesPrivateTarget(sessionContext(users, dest, "DIRECT"), users, dest) {
++		t.Error("a privateAllow entry opened a private target without a router to confirm the rule")
 +	}
 +}
 +
++func processPayloadThrough(h *Handler, inbound *session.Inbound, target net.Destination, outboundTag string, dialer internet.Dialer, payload []byte) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, inbound)
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: target, Tag: outboundTag}})
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	if len(payload) > 0 {
++		b := buf.New()
++		b.Write(payload)
++		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	}
++	uplinkWriter.Close()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	return h.Process(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter}, dialer)
++}
++
 +func TestAnAllowNeverOpensTheLocalHost(t *testing.T) {
-+	for _, config := range []*Config{
-+		{FinalRules: []*PrivateTargetRule{cidrRule(false, "127.0.0.1/8", "::1/128")}},
-+		{PrivateAllow: []*PrivateTargetRule{cidrRule(false, "127.0.0.1/8", "::1/128")}},
-+		{FinalRules: []*PrivateTargetRule{{}}},
++	loopbackRouter := routerOf(t, routingRule("loopback", "DIRECT", nil, "127.0.0.1/8", "::1/128"))
++	for _, h := range []*Handler{
++		newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(false, "127.0.0.1/8", "::1/128")}}),
++		newHandler(t, &Config{FinalRules: []*PrivateTargetRule{{}}}),
++		handlerRoutedBy(t, loopbackRouter, allowEntry("loopback", "127.0.0.1/8", "::1/128")),
 +	} {
 +		for _, address := range []net.Address{net.LocalHostIP, net.LocalHostIPv6} {
 +			dialer := &recordingDialer{}
-+			err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(address, 8080), dialer, nil)
++			err := processPayloadThrough(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(address, 8080), "DIRECT", dialer, nil)
 +			if err == nil || !strings.Contains(err.Error(), "local host address") || dialer.count() != 0 {
-+				t.Errorf("%v to %s: %v after %d dials, want the local host refused", config, address, err, dialer.count())
++				t.Errorf("to %s: %v after %d dials, want the local host refused", address, err, dialer.count())
 +			}
 +		}
 +	}
@@ -1405,16 +1653,16 @@ index 0000000..c9151eb
 +func TestAnAllowCarriesDataToThePrivateListener(t *testing.T) {
 +	for _, name := range []string{"finalRules", "privateAllow", "block first"} {
 +		listener := listenOnPrivateHost(t)
-+		config := &Config{}
++		h := newHandler(t, &Config{})
 +		switch name {
 +		case "finalRules":
-+			config.FinalRules = []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}
++			h = newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}})
 +		case "privateAllow":
-+			config.PrivateAllow = []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}
++			h = handlerRoutedBy(t, routerOf(t, routingRule("lan-host", "DIRECT", nil, hostCIDR(listener.ip))), allowEntry("lan-host", hostCIDR(listener.ip)))
 +		case "block first":
-+			config.FinalRules = []*PrivateTargetRule{cidrRule(true, hostCIDR(listener.ip)), cidrRule(false, hostCIDR(listener.ip))}
++			h = newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(true, hostCIDR(listener.ip)), cidrRule(false, hostCIDR(listener.ip))}})
 +		}
-+		err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), systemDialer{}, []byte("payload"))
++		err := processPayloadThrough(h, &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), "DIRECT", systemDialer{}, []byte("payload"))
 +		if name == "block first" {
 +			time.Sleep(100 * time.Millisecond)
 +			if !refusedAsPrivate(err, "vless") || listener.accepted.Load() != 0 {
@@ -1467,8 +1715,12 @@ index 0000000..c9151eb
 +		}
 +		return &reportedRemote{Conn: conn, remote: &gonet.TCPAddr{IP: dest.Address.IP(), Port: int(dest.Port)}}, nil
 +	}}
-+	h := newHandler(t, &Config{PrivateAllow: []*PrivateTargetRule{cidrRule(false, "100.64.0.0/10")}})
-+	err = processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.IPAddress(cgnat), 9000), dialer, []byte("cgnat"))
++	h := handlerRoutedBy(t, routerOf(t,
++		routingRule("cgnat", "DIRECT", nil, "100.64.0.0/10"),
++		routingRule("private", "BLOCK", nil, "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"),
++	), allowEntry("cgnat", "100.64.0.0/10"))
++	users := &session.Inbound{Name: "vless", Tag: "users"}
++	err = processPayloadThrough(h, users, net.TCPDestination(net.IPAddress(cgnat), 9000), "DIRECT", dialer, []byte("cgnat"))
 +	if refusedAsPrivate(err, "vless") {
 +		t.Fatalf("vless to the CGNAT address was refused: %v", err)
 +	}
@@ -1482,7 +1734,7 @@ index 0000000..c9151eb
 +	}
 +	for _, other := range [][]byte{{10, 0, 0, 7}, {172, 16, 0, 7}, {192, 168, 0, 7}, {169, 254, 169, 254}} {
 +		before := dialer.count()
-+		err := processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.IPAddress(other), 9000), dialer, []byte("leak"))
++		err := processPayloadThrough(h, users, net.TCPDestination(net.IPAddress(other), 9000), "DIRECT", dialer, []byte("leak"))
 +		if !refusedAsPrivate(err, "vless") || dialer.count() != before {
 +			t.Errorf("the CGNAT allow let vless reach %v: %v", gonet.IP(other), err)
 +		}
@@ -1494,7 +1746,7 @@ index 0000000..c9151eb
 +		}
 +		return &reportedRemote{Conn: conn, remote: &gonet.TCPAddr{IP: gonet.IPv4(10, 0, 0, 7), Port: 9000}}, nil
 +	}
-+	err = processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("cgnat-or-not.pgtest"), 9000), dialer, []byte("rebound"))
++	err = processPayloadThrough(h, users, net.TCPDestination(net.DomainAddress("cgnat-or-not.pgtest"), 9000), "DIRECT", dialer, []byte("rebound"))
 +	if !refusedAsPrivate(err, "vless") {
 +		t.Errorf("a connection whose remote end is outside the CGNAT allow was kept: %v", err)
 +	}
