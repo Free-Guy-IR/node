@@ -68,12 +68,23 @@ def parse_question(data):
     return qid, flags, ".".join(labels).lower(), qtype, data[12:pos + 4]
 
 
-def build_reply(qid, flags, question, rcode, ips, ttl):
+def encode_name(name):
+    out = b""
+    for label in name.strip(".").split("."):
+        out += bytes([len(label)]) + label.encode()
+    return out + b"\x00"
+
+
+def build_reply(qid, flags, question, rcode, ips, ttl, negative_ttl=0):
     rflags = 0x8000 | 0x0400 | (flags & 0x0100) | 0x0080 | (rcode & 0xF)
-    out = struct.pack("!HHHHHH", qid, rflags, 1, len(ips), 0, 0) + question
+    authority = b""
+    if not ips:
+        rdata = encode_name("ns.pgtest") + encode_name("hostmaster.pgtest") + struct.pack("!IIIII", 1, 3600, 600, 86400, negative_ttl)
+        authority = encode_name("pgtest") + struct.pack("!HHIH", 6, 1, negative_ttl, len(rdata)) + rdata
+    out = struct.pack("!HHHHHH", qid, rflags, 1, len(ips), 1 if authority else 0, 0) + question
     for ip in ips:
         out += struct.pack("!HHHIH", 0xC00C, TYPE_A, 1, ttl, 4) + socket.inet_aton(ip)
-    return out
+    return out + authority
 
 
 class DNSServer:
@@ -109,10 +120,11 @@ class DNSServer:
         if self.delay:
             time.sleep(self.delay)
         rcode, ips, ttl = self.decide(name, qtype)
+        negative_ttl = self.perf_ttl if (name.endswith(".perf.pgtest") or name.startswith("public")) else 0
         with self.lock:
             self.log.append((time.time(), name, qtype, rcode, tuple(ips)))
         try:
-            self.sock.sendto(build_reply(qid, flags, question, rcode, ips, ttl), peer)
+            self.sock.sendto(build_reply(qid, flags, question, rcode, ips, ttl, negative_ttl), peer)
         except OSError:
             pass
 
@@ -559,10 +571,12 @@ async def one_request(port, host, dport):
             await reader.readexactly((await reader.readexactly(1))[0] + 2)
         writer.write(("GET / HTTP/1.0\r\nHost: %s\r\n\r\n" % host).encode())
         await writer.drain()
-        data = await reader.read()
+        first = await reader.read(1)
+        first_byte = time.perf_counter() - start
+        data = first + await reader.read()
     finally:
         writer.close()
-    return time.perf_counter() - start, data.startswith(b"HTTP/1.0 200")
+    return first_byte, data.startswith(b"HTTP/1.0 200")
 
 
 async def bench(port, count, concurrency, prefix):
@@ -605,6 +619,7 @@ def perf_phase(resolver, binaries, out, dns, delays, plan):
                 row = {
                     "resolver": resolver, "binary": label, "dns_delay_ms": delay, "concurrency": concurrency, "requests": count,
                     "failed": failed, "wall_s": round(wall, 3),
+                    "metric": "time to first response byte",
                     "median_ms": round(1000 * statistics.median(ok), 2) if ok else None,
                     "p90_ms": round(1000 * percentile(ok, 0.90), 2) if ok else None,
                     "p99_ms": round(1000 * percentile(ok, 0.99), 2) if ok else None,
@@ -678,13 +693,13 @@ def main():
         security_phase(label, binary, args.out, sinks, direct_dns, guarded)
 
     say("######## performance phase, non-caching system resolver")
-    perf_phase("direct", (("base", args.base), ("guard", args.guard)), args.out, direct_dns, (0, 20), ((1, 60), (32, 256), (128, 512)))
+    perf_phase("direct", (("base", args.base), ("guard", args.guard)), args.out, direct_dns, (0, 20), ((1, 40), (32, 256)))
 
     say("######## systemd-resolved caching stub as the system resolver")
     sd_dns = DNSServer(5354, uplink_ns, 53, 60)
     os.makedirs("/etc/systemd/resolved.conf.d", exist_ok=True)
     with open("/etc/systemd/resolved.conf.d/hr1.conf", "w") as handle:
-        handle.write("[Resolve]\nDNS=%s:5354\nDomains=~pgtest\nDNSSEC=no\n" % LOOP)
+        handle.write("[Resolve]\nDNS=%s:5354\nDomains=~pgtest\nDNSSEC=no\nCache=yes\nCacheFromLocalhost=yes\n" % LOOP)
     run(["systemctl", "restart", "systemd-resolved"])
     time.sleep(2)
     set_resolv(stub_content)
@@ -698,7 +713,7 @@ def main():
         say("######## security phase through systemd-resolved, guard")
         security_phase("guard-resolved", args.guard, args.out, sinks, sd_dns, True)
         say("######## performance phase through systemd-resolved (perf names TTL 60)")
-        perf_phase("resolved", (("base", args.base), ("guard", args.guard)), args.out, sd_dns, (20,), ((1, 60), (32, 256)))
+        perf_phase("resolved", (("base", args.base), ("guard", args.guard)), args.out, sd_dns, (20,), ((1, 40), (32, 256)))
 
     say("######## SUMMARY")
     say(json.dumps(RESULTS, indent=1))
