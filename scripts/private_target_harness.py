@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import faulthandler
 import json
 import os
 import socket
@@ -33,10 +34,37 @@ PRIVATE_CIDRS = [
 
 NODE_PORTS = {"india": 20001, "egypt": 20002, "plain": 20003}
 CLIENT_PORTS = {"india": 10801, "egypt": 10802, "plain": 10803}
+CURRENT = ["starting"]
 
 
 def say(*parts):
     print(time.strftime("%H:%M:%S"), " ".join(str(p) for p in parts), flush=True)
+
+
+def step(text):
+    CURRENT[0] = text
+    say("==", text)
+
+
+def print_core_logs(out):
+    for name in sorted(os.listdir(out)):
+        if name.endswith(".log"):
+            with open(os.path.join(out, name)) as handle:
+                say("==== last lines of", name)
+                print("".join(handle.readlines()[-40:]), flush=True)
+
+
+def watchdog(budget, out):
+    started = time.time()
+    while True:
+        time.sleep(60)
+        elapsed = time.time() - started
+        say("watchdog: %.0f s in, at %s" % (elapsed, CURRENT[0]))
+        if elapsed > budget:
+            say("watchdog: over the %d s budget, every thread's stack and the core logs follow" % budget)
+            faulthandler.dump_traceback(all_threads=True)
+            print_core_logs(out)
+            os._exit(3)
 
 
 def run(cmd, check=True):
@@ -219,7 +247,7 @@ def socks_address(host, port):
         return b"\x03" + bytes([len(encoded)]) + encoded + struct.pack("!H", port)
 
 
-def socks_get(socks_port, host, port, host_header, timeout):
+def socks_get(socks_port, host, port, timeout, host_header=None):
     start = time.perf_counter()
     body, error = b"", ""
     try:
@@ -233,7 +261,7 @@ def socks_get(socks_port, host, port, host_header, timeout):
         sock.sendall(b"\x05\x01\x00" + socks_address(host, port))
         head = recv_exact(sock, 4)
         recv_exact(sock, {1: 6, 4: 18}.get(head[3]) or recv_exact(sock, 1)[0] + 2)
-        sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % host_header).encode())
+        sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % (host_header or host)).encode())
         while True:
             chunk = sock.recv(4096)
             if not chunk:
@@ -416,65 +444,88 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, link_local)
         ok = not exposed if guarded else (exposed or not base_must_expose)
         results.record(label, check, outcome, ok, detail)
 
+    step("%s: starting the node and client cores" % label)
     with XrayPair(label, binary, out):
+        check = "control: a name of the private listener through the AsIs freedom"
+        step(label + " " + check)
         before = private.snapshot()
-        took, body, err = socks_get(CLIENT_PORTS["plain"], "private-control.%s" % ZONE, 8080, "private-control", 8)
+        took, body, err = socks_get(CLIENT_PORTS["plain"], "private-control.%s" % ZONE, 8080, 8)
         after = private.snapshot()
-        judge("control: a name of the private listener through the AsIs freedom", reached(before, after) > 0, "%d handshakes, %.2fs, %s" % (reached(before, after), took, err or body[:12]))
+        judge(check, reached(before, after) > 0, "%d handshakes, %.2fs, %s" % (reached(before, after), took, err or body[:12]))
 
+        check = "A1: a rebinding name (public, then private) through the AsIs freedom"
+        step(label + " " + check)
         before = private.snapshot()
-        took, body, err = socks_get(CLIENT_PORTS["plain"], "rebind-a1.%s" % ZONE, 8080, "rebind-a1", 8)
+        socks_get(CLIENT_PORTS["plain"], "rebind-a1.%s" % ZONE, 8080, 8)
         time.sleep(0.5)
         after = private.snapshot()
-        judge("A1: a rebinding name (public, then private) through the AsIs freedom", reached(before, after) > 0, "%d handshakes, DNS %s" % (reached(before, after), dns.queries("rebind-a1")))
+        judge(check, reached(before, after) > 0, "%d handshakes, DNS %s" % (reached(before, after), dns.queries("rebind-a1")))
 
+        check = "A3: control, a name of the tunnel's private address through the interface-bound freedom"
+        step(label + " " + check)
         before = control_tunnel.packets()
-        socks_get(CLIENT_PORTS["india"], "tunnel-a3.%s" % ZONE, control_tunnel.port, "tunnel-a3", 6)
+        socks_get(CLIENT_PORTS["india"], "tunnel-a3.%s" % ZONE, control_tunnel.port, 6)
         time.sleep(1.0)
         sent = control_tunnel.packets() - before
-        judge("A3: control, a name of the tunnel's private address through the interface-bound freedom", sent > 0, "%d TCP packets out of %s toward %s:%d" % (sent, TUNNEL_DEV, TUNNEL_TARGET, control_tunnel.port))
+        judge(check, sent > 0, "%d TCP packets out of %s toward %s:%d" % (sent, TUNNEL_DEV, TUNNEL_TARGET, control_tunnel.port))
 
+        check = "A2: a rebinding name through the interface-bound freedom, counted for 20 s so a second attempt is seen"
+        step(label + " " + check)
         before = rebind_tunnel.packets()
         started = time.time()
-        socks_get(CLIENT_PORTS["india"], "rebind-tunnel-a2.%s" % ZONE, rebind_tunnel.port, "rebind-tunnel-a2", 6)
+        socks_get(CLIENT_PORTS["india"], "rebind-tunnel-a2.%s" % ZONE, rebind_tunnel.port, 6)
         time.sleep(max(0.0, 20.0 - (time.time() - started)))
         sent = rebind_tunnel.packets() - before
-        judge("A2: a rebinding name through the interface-bound freedom, counted for 20 s so a second attempt is seen", sent > 0, "%d TCP packets out of %s toward %s:%d, DNS %s" % (sent, TUNNEL_DEV, TUNNEL_TARGET, rebind_tunnel.port, dns.queries("rebind-tunnel-a2")))
+        judge(check, sent > 0, "%d TCP packets out of %s toward %s:%d, DNS %s" % (sent, TUNNEL_DEV, TUNNEL_TARGET, rebind_tunnel.port, dns.queries("rebind-tunnel-a2")))
 
+        check = "A4: a name whose first lookup fails, then resolves to the private listener"
+        step(label + " " + check)
         before = private.snapshot()
-        socks_get(CLIENT_PORTS["plain"], "failfirst-a4.%s" % ZONE, 8080, "failfirst-a4", 8)
+        socks_get(CLIENT_PORTS["plain"], "failfirst-a4.%s" % ZONE, 8080, 8)
         time.sleep(0.5)
         after = private.snapshot()
-        judge("A4: a name whose first lookup fails, then resolves to the private listener", reached(before, after) > 0, "%d handshakes, DNS %s" % (reached(before, after), dns.queries("failfirst-a4")))
+        judge(check, reached(before, after) > 0, "%d handshakes, DNS %s" % (reached(before, after), dns.queries("failfirst-a4")))
 
-        open_took, _, open_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5open.%s" % ZONE, 8080, "a5", 10)
-        closed_took, _, closed_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5closed.%s" % ZONE, 8090, "a5", 10)
-        judge("A5: an open and a closed private port behind rebinding names", abs(closed_took - open_took) > 0.3, "open %.3fs (%s), closed %.3fs (%s)" % (open_took, open_err or "closed", closed_took, closed_err or "closed"))
+        check = "A5: an open and a closed private port behind rebinding names"
+        step(label + " " + check)
+        open_took, _, open_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5open.%s" % ZONE, 8080, 10)
+        closed_took, _, closed_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5closed.%s" % ZONE, 8090, 10)
+        judge(check, abs(closed_took - open_took) > 0.3, "open %.3fs (%s), closed %.3fs (%s)" % (open_took, open_err or "closed", closed_took, closed_err or "closed"))
 
         if link_local:
+            check = "H2: a sniffed Host [[[%s]]] carrying a zoned link-local literal" % link_local
+            step(label + " " + check)
             before = link_sink.snapshot()
-            socks_get(CLIENT_PORTS["plain"], PUBLIC, 8443, "[[[%s]]]" % link_local, 8)
+            socks_get(CLIENT_PORTS["plain"], PUBLIC, 8443, 8, host_header="[[[%s]]]" % link_local)
             time.sleep(0.5)
             after = link_sink.snapshot()
-            judge("H2: a sniffed Host [[[%s]]] carrying a zoned link-local literal" % link_local, reached(before, after) > 0, "%d handshakes with %s" % (reached(before, after), link_sink.name))
+            judge(check, reached(before, after) > 0, "%d handshakes with %s" % (reached(before, after), link_sink.name))
         else:
             results.record(label, "H2: a sniffed zoned link-local Host", "not run", False, "the runner has no IPv6 link-local address")
 
+        check = "U1: UDP-over-TCP (sp.v2.udp-over-tcp.arpa) to the private UDP listener"
+        step(label + " " + check)
         before = udp_sink.count()
         frame = b"\x01\x01" + socket.inet_aton(PRIVATE) + struct.pack("!H", 9999) + struct.pack("!H", 8) + b"datagram"
         err = socks_stream(CLIENT_PORTS["plain"], "sp.v2.udp-over-tcp.arpa", 1, frame, 1.0)
         time.sleep(0.5)
         delivered = udp_sink.count() - before
-        judge("U1: UDP-over-TCP (sp.v2.udp-over-tcp.arpa) to the private UDP listener", delivered > 0, "%d datagrams at %s %s" % (delivered, udp_sink.name, err))
+        judge(check, delivered > 0, "%d datagrams at %s %s" % (delivered, udp_sink.name, err))
 
-        took, body, err = socks_get(CLIENT_PORTS["egypt"], CGNAT, 8082, CGNAT, 8)
-        results.record(label, "B3: the CGNAT literal through rule#2 and DIRECT, the deliberate allow", "served" if b"200 OK" in body else "refused", b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]))
+        check = "B3: the CGNAT literal through rule#2 and DIRECT, the deliberate allow"
+        step(label + " " + check)
+        took, body, err = socks_get(CLIENT_PORTS["egypt"], CGNAT, 8082, 8)
+        results.record(label, check, "served" if b"200 OK" in body else "refused", b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]))
 
-        took, body, err = socks_get(CLIENT_PORTS["plain"], "public-b4.%s" % ZONE, 8081, "public-b4", 8)
-        results.record(label, "B4: a public name through the AsIs freedom", "served" if b"200 OK" in body else "refused", b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]))
+        check = "B4: a public name through the AsIs freedom"
+        step(label + " " + check)
+        took, body, err = socks_get(CLIENT_PORTS["plain"], "public-b4.%s" % ZONE, 8081, 8)
+        results.record(label, check, "served" if b"200 OK" in body else "refused", b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]))
 
-        took, body, err = socks_get(CLIENT_PORTS["egypt"], "private-b2.%s" % ZONE, 8080, "private-b2", 8)
-        judge("note: a private name through egypt_wireguard, which no rule allows", b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]), base_must_expose=False)
+        check = "note: a private name through egypt_wireguard, which no rule allows"
+        step(label + " " + check)
+        took, body, err = socks_get(CLIENT_PORTS["egypt"], "private-b2.%s" % ZONE, 8080, 8)
+        judge(check, b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]), base_must_expose=False)
 
 
 async def timed_get(port, host):
@@ -487,6 +538,7 @@ async def timed_get(port, host):
         head = await reader.readexactly(4)
         await reader.readexactly({1: 6, 4: 18}.get(head[3]) or (await reader.readexactly(1))[0] + 2)
         writer.write(("GET / HTTP/1.0\r\nHost: %s\r\n\r\n" % host).encode())
+        writer.write_eof()
         first = await reader.read(1)
         elapsed = time.perf_counter() - start
         rest = await reader.read()
@@ -520,6 +572,7 @@ def perf_phase(results, builds, out, dns, plan):
             for delay, concurrency, count in plan:
                 dns.delay = delay / 1000.0
                 prefix = "perf-%s-d%d-c%d-" % (label, delay, concurrency)
+                step("perf %s: DNS delay %d ms, concurrency %d, %d requests" % (label, delay, concurrency, count))
                 names = ["%s%d.%s" % (prefix, i, ZONE) for i in range(count)]
                 timings = asyncio.run(bench(CLIENT_PORTS["plain"], names, concurrency))
                 good = [elapsed for elapsed, ok in timings if ok]
@@ -604,6 +657,8 @@ def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.geteuid() != 0 or not sys.platform.startswith("linux"):
         raise SystemExit("this harness rewrites the runner's addresses and /etc/resolv.conf: run it as root on a GitHub Actions Linux runner only")
     os.makedirs(args.out, exist_ok=True)
+    threading.Thread(target=watchdog, args=(900, args.out), daemon=True).start()
+    step("preparing the runner")
     dns = prepare_runner()
     link_local = link_local_address()
     link_sink = Sink(socket.AF_INET6, link_local, 8443) if link_local else None
@@ -614,18 +669,14 @@ def main():
     results = Results()
     security_phase(results, "guarded", args.guarded, True, args.out, dns, sinks, link_local)
     security_phase(results, "base", args.base, False, args.out, dns, sinks, link_local)
-    plan = [(0, 1, 40), (0, 32, 256), (20, 1, 40), (20, 32, 256)]
+    plan = [(0, 1, 30), (0, 32, 128), (20, 1, 30), (20, 32, 128)]
     table = perf_phase(results, [("base", args.base), ("guarded", args.guarded)], args.out, dns, plan)
     judge_perf(results, table, "guarded", "base")
     write_summary(results, table, os.environ.get("GITHUB_STEP_SUMMARY"))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump({"rows": results.rows, "perf": list(table.values()), "failures": results.failures}, handle, indent=1)
     if results.failures:
-        for name in sorted(os.listdir(args.out)):
-            if name.endswith(".log"):
-                with open(os.path.join(args.out, name)) as handle:
-                    say("==== last lines of", name)
-                    print("".join(handle.readlines()[-40:]), flush=True)
+        print_core_logs(args.out)
         say("%d checks failed:" % len(results.failures))
         for failure in results.failures:
             say("  " + failure)
