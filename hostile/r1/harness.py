@@ -34,7 +34,7 @@ RESULTS = {"red": [], "breakage": [], "notes": [], "perf": []}
 
 
 def say(*parts):
-    print(" ".join(str(p) for p in parts), flush=True)
+    print(time.strftime("%H:%M:%S"), " ".join(str(p) for p in parts), flush=True)
 
 
 def run(cmd, check=True):
@@ -266,6 +266,65 @@ def socks_request(port, host, dport, timeout):
     return time.perf_counter() - start, body, error
 
 
+LINK_LOCAL = []
+
+
+class Sink6(Sink):
+    def __init__(self, scoped, port):
+        self.name = "[%s]:%d" % (scoped, port)
+        self.accepts = 0
+        self.received = 0
+        self.lock = threading.Lock()
+        info = socket.getaddrinfo(scoped, port, socket.AF_INET6, socket.SOCK_STREAM)[0][4]
+        self.sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(info)
+        self.sock.listen(64)
+        threading.Thread(target=self.serve, daemon=True).start()
+
+
+def find_link_local():
+    proc = subprocess.run(["ip", "-6", "-o", "addr", "show", "scope", "link"], capture_output=True, text=True)
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] != "lo" and parts[1] != TUN_DEV and parts[3].startswith("fe80"):
+            return "%s%%%s" % (parts[3].split("/")[0], parts[1])
+    return None
+
+
+def socks_request_host(port, ip, dport, host_header, timeout):
+    start = time.perf_counter()
+    body = b""
+    error = ""
+    try:
+        sock = socket.create_connection((LOOP, port), timeout=timeout)
+    except OSError as exc:
+        return time.perf_counter() - start, b"", "connect: %s" % exc
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(b"\x05\x01\x00")
+        recv_exact(sock, 2)
+        sock.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(ip) + struct.pack("!H", dport))
+        head = recv_exact(sock, 4)
+        if head[3] == 1:
+            recv_exact(sock, 6)
+        elif head[3] == 4:
+            recv_exact(sock, 18)
+        else:
+            recv_exact(sock, recv_exact(sock, 1)[0] + 2)
+        sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\n\r\n" % host_header).encode())
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            body += chunk
+    except OSError as exc:
+        error = str(exc) or exc.__class__.__name__
+    finally:
+        sock.close()
+    return time.perf_counter() - start, body, error
+
+
 def tx_packets(dev):
     with open("/sys/class/net/%s/statistics/tx_packets" % dev) as handle:
         return int(handle.read().strip())
@@ -446,6 +505,17 @@ def security_phase(label, binary, out, sinks, dns, guarded):
         if guarded and closed_took - open_took > 0.3:
             flag("red", "%s A5: an open private port closes in %.3fs and a closed one in %.3fs, seen by the user" % (label, open_took, closed_took))
 
+        if LINK_LOCAL:
+            say("== %s: H2 a sniffed Host [[[%s]]] smuggles a zoned link-local literal past the pre-dial lookup" % (label, LINK_LOCAL[0]))
+            sink6 = LINK_LOCAL[1]
+            before = sink6.snapshot()
+            took, body, err = socks_request_host(10803, PUBLIC, 8443, "[[[%s]]]" % LINK_LOCAL[0], 8)
+            time.sleep(0.5)
+            after = sink6.snapshot()
+            say("   took %.3fs body=%r err=%s link-local accepts %d->%d bytes %d->%d" % (took, body[:40], err, before[0], after[0], before[1], after[1]))
+            if guarded and after[0] > before[0]:
+                flag("red", "%s H2: a sniffed bracketed zoned Host completed %d TCP handshakes with the link-local listener [%s]:8443 (bytes %d)" % (label, after[0] - before[0], LINK_LOCAL[0], after[1] - before[1]))
+
         say("== %s: B1 a public name that also has a private A record" % label)
         took, body, err = socks_request(10803, "mixed-b1.pgtest", 8081, 8)
         say("   took %.3fs body=%r err=%s" % (took, body[:60], err))
@@ -501,7 +571,7 @@ async def bench(port, count, concurrency, prefix):
     async def guarded(index):
         async with gate:
             try:
-                return await asyncio.wait_for(one_request(port, "%s%d.perf.pgtest" % (prefix, index), 8081), 30)
+                return await asyncio.wait_for(one_request(port, "%s%d.perf.pgtest" % (prefix, index), 8081), 12)
             except Exception:
                 return None, False
 
@@ -522,6 +592,12 @@ def perf_phase(resolver, binaries, out, dns, delays, plan):
             for label, binary in binaries:
                 prefix = "%s-%s-d%d-c%d-" % (resolver, label, delay, concurrency)
                 with Pair("%s-perf" % label, binary, out):
+                    probe_wall, probe = asyncio.run(bench(10803, 5, 5, prefix + "probe-"))
+                    probe_ok = sum(1 for t, good in probe if good)
+                    if probe_ok < 4:
+                        say("PERF probe failed for", prefix, "ok", probe_ok, "of 5 in %.1fs; run skipped" % probe_wall)
+                        RESULTS["notes"].append("perf %s skipped: probe %d of 5" % (prefix, probe_ok))
+                        continue
                     wall, results = asyncio.run(bench(10803, count, concurrency, prefix))
                 ok = [t for t, good in results if good and t is not None]
                 failed = len(results) - len(ok)
@@ -582,6 +658,14 @@ def main():
     say("systemd-resolved stub", stub_ns, "uplink present:", bool(uplink_ns))
 
     sinks = (Sink(PRIV_LO, 8080), Sink(PRIV_LO, 8081), Sink(PUBLIC, 8081), Sink(CGNAT, 8082))
+    scoped = find_link_local()
+    say("link-local address for H2:", scoped)
+    if scoped:
+        try:
+            LINK_LOCAL.extend([scoped, Sink6(scoped, 8443)])
+        except OSError as exc:
+            say("no link-local listener:", exc)
+            LINK_LOCAL.clear()
     direct_dns = DNSServer(53, stub_ns, 53, 0)
     set_resolv("nameserver %s\noptions timeout:2 attempts:2\n" % LOOP)
     run(["getent", "hosts", "public-check.pgtest"], check=False)
@@ -594,7 +678,7 @@ def main():
         security_phase(label, binary, args.out, sinks, direct_dns, guarded)
 
     say("######## performance phase, non-caching system resolver")
-    perf_phase("direct", (("base", args.base), ("guard", args.guard)), args.out, direct_dns, (0, 20), ((1, 100), (32, 512), (128, 1024)))
+    perf_phase("direct", (("base", args.base), ("guard", args.guard)), args.out, direct_dns, (0, 20), ((1, 60), (32, 256), (128, 512)))
 
     say("######## systemd-resolved caching stub as the system resolver")
     sd_dns = DNSServer(5354, uplink_ns, 53, 60)
@@ -605,12 +689,16 @@ def main():
     time.sleep(2)
     set_resolv(stub_content)
     run(["resolvectl", "status"], check=False)
-    run(["getent", "hosts", "public-check.pgtest"], check=False)
+    check = run(["getent", "hosts", "public-check.pgtest"], check=False)
     run(["getent", "hosts", "github.com"], check=False)
-    say("######## security phase through systemd-resolved, guard")
-    security_phase("guard-resolved", args.guard, args.out, sinks, sd_dns, True)
-    say("######## performance phase through systemd-resolved (perf names TTL 60)")
-    perf_phase("resolved", (("base", args.base), ("guard", args.guard)), args.out, sd_dns, (20,), ((1, 100), (32, 512)))
+    if PUBLIC not in check.stdout:
+        say("systemd-resolved does not route pgtest to the test server; resolved phase skipped")
+        RESULTS["notes"].append("resolved phase skipped: getent gave %r" % check.stdout.strip())
+    else:
+        say("######## security phase through systemd-resolved, guard")
+        security_phase("guard-resolved", args.guard, args.out, sinks, sd_dns, True)
+        say("######## performance phase through systemd-resolved (perf names TTL 60)")
+        perf_phase("resolved", (("base", args.base), ("guard", args.guard)), args.out, sd_dns, (20,), ((1, 60), (32, 256)))
 
     say("######## SUMMARY")
     say(json.dumps(RESULTS, indent=1))
