@@ -13,18 +13,28 @@
 
 ## R2. Where and when to check
 
-- Decision: in freedom, on the address actually dialed. Before the dial: a literal address, a freedom-resolved name,
-  and a TCP name under AsIs after one system lookup (every answer is checked). After the dial: the remote address,
-  except the unspecified address that `dialerProxy` and `proxySettings` connections report. Per UDP datagram after
-  per-packet resolution.
+- Decision: on the address actually connected to. Before the dial: a literal address and a freedom-resolved name. On
+  the default system dialer path (no `proxySettings`, no `dialerProxy`, the raw TCP transport for TCP, no alternative
+  system dialer; `app/proxyman/outbound`'s `AppliesConnectCheck`): a connect check in the dial context, which
+  `DefaultSystemDialer` runs first in `net.Dialer.Control` before every connect attempt on the exact address, and on
+  a UDP destination after `net.ResolveUDPAddr`; freedom resolves nothing itself there. Off that path: one system
+  lookup, every answer checked, a failed or empty lookup refused, and only the checked addresses dialed. After the
+  dial: the remote address, except the unspecified address that `dialerProxy` and `proxySettings` connections report.
+  Per UDP datagram after per-packet resolution, and per UDP-over-TCP datagram through `CheckedPacketConn`.
 - Rationale: routing cannot see the resolved address of a name matched in the domain pass, so only the dial sees it.
   At the pin an AsIs TCP dial resolves and completes the handshake inside `net.Dialer.DialContext`
   (`transport/internet/system_dialer.go`), so an after-dial check alone lets the SYN reach the private host, through
-  the WireGuard tunnel on production's interface-bound outbounds. UDP needs no pre-dial lookup: the UDP dial resolves
-  with `net.ResolveUDPAddr` and sends nothing, and the after-dial check sees the resolved address first.
-- Alternatives: the brief's after-dial-only check (rejected for TCP names, see above); dialing the pre-resolved address
-  directly (removes the second lookup but changes the dialer's address order and fallback for dual-stack names);
-  a routing-level guard rule (cannot see names matched in the domain pass).
+  the WireGuard tunnel on production's interface-bound outbounds. The first two pushes resolved the name in freedom
+  and let the dialer resolve it again; hostile review round 1 on `6597d6e1` showed what that gap allows (rebinding
+  names, a failed first lookup that let the dial go on, a zoned link-local name the resolver rejects but the dialer
+  parses, SYNs into the tunnel, a port oracle through freedom's retries, a second lookup per connection). Only the
+  dialer sees the address it connects to, and `Control` runs before `connect(2)` for every attempt Go makes
+  (`TcpRaceDial` and a `sockopt.domainStrategy` retarget included). Off the system path freedom cannot see the
+  connect, so it dials what it checked.
+- Alternatives: the brief's after-dial-only check (rejected for TCP names, see above); the pre-dial lookup of the first
+  two pushes (rejected, see above); resolving once and dialing the checked addresses on every path (it would bypass
+  `sockopt.domainStrategy`, Go's dual-stack fallback and the UDP-over-TCP names on the path production takes); a
+  routing-level guard rule (cannot see names matched in the domain pass).
 
 ## R3. What may still be reached
 
@@ -81,10 +91,11 @@
 - Translation and tunnelling prefixes outside `geoip:private` (NAT64 `64:ff9b::/96`, 6to4, Teredo) are not refused;
   reaching a private IPv4 through them needs a translator on the path, which no fleet host is known to have
   (unproven).
-- A DNS answer that changes between the pre-dial lookup and the dial reaches the after-dial check: closed after the
-  handshake, before any payload.
-- A chained freedom outbound (`dialerProxy`, `proxySettings`) is checked on its literal or locally resolved address
-  only; none exists in production.
+- A chained freedom outbound (`dialerProxy`, `proxySettings`), another TCP transport or an alternative system dialer
+  gets a checked address instead of the name, so the far end no longer resolves it itself; none exists in
+  production. UDP-over-TCP under `proxySettings` is refused, since the magic name does not resolve.
+- On the system path a name with a public and a private answer may still connect to the public one; the private one
+  never gets a SYN.
 - An allowing rule that also matches on a domain never applies, because the router is asked with the address as
   target; the node skips such rules and logs them.
 - Rules added at run time through the RoutingService are not listed until the next render.

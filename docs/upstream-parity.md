@@ -1594,9 +1594,15 @@ shipped.
   allows one of them only when xray's router, asked at dial time with that address as the target
   (`(*Router).MatchingRule`, the rules' first match without their webhooks or balancer picks), lands on that rule and
   the rule sends to this same outbound; an earlier block, another outbound or another inbound's, user's or source's
-  rule keeps the address refused. It checks a literal or freedom-resolved address before the dial, resolves an AsIs
-  TCP name with the system resolver and checks every answer before the dial, checks the remote end of the dialed
-  connection (except the unspecified address chained dials report) and drops UDP datagrams per packet. The node owns
+  rule keeps the address refused. It checks a literal or freedom-resolved address before the dial. On the path every
+  production freedom takes (the default system dialer directly) it resolves nothing itself: a connect check in the
+  dial context runs first in `DefaultSystemDialer`'s `net.Dialer.Control` before every connect attempt, on the exact
+  address (zone stripped, IPv4-mapped unmapped, an unparsable address refused), and on a UDP destination after its
+  one resolution; a refusal there ends the dial without retries. Off that path (`proxySettings`, `dialerProxy`,
+  another TCP transport, an alternative system dialer) it resolves a name once, refuses on any refused answer or a
+  failed lookup, and dials only the checked addresses. It checks the remote end of the dialed connection (except the
+  unspecified address chained dials report), drops UDP datagrams per packet, and the outbound handler's
+  UDP-over-TCP socket drops refused datagrams through the same check. A refusal is logged at warning. The node owns
   `privateAllow`: `backend/xray/private_target_allow.go` tags each routing rule that sends literal private addresses
   to a freedom outbound (its own `ruleTag`, or `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing) and lists
   `{ruleTag, ip}` on that outbound, minus the ranges the node's sibling guard keeps user inbounds off; the core 1
@@ -1613,13 +1619,17 @@ shipped.
   second on the 28-patch build and nothing on the patched one, with no handshake. A private route that an earlier
   block shadows, and a route only one inbound's rule makes, stay closed to another inbound's names; dropping the
   router check opens both (about 1.4 and 1.7 GB arrive). The first form of the allow, pushed as `7c1e0cab`, already
-  scoped entries by inbound but let the shadowed route through. Nine freedom mutants, the node mutants and the
-  canary are each caught.
-- **Residual:** a DNS answer that changes between the pre-dial lookup and the dial reaches the after-dial check, which
-  closes the connection after the handshake and before any payload; NAT64, 6to4 and Teredo prefixes are not refused;
-  a chained freedom is checked on its literal or locally resolved address only; an allowing rule that also matches
-  on a domain never applies; rules added at run time through the RoutingService are not listed until the next
-  render; each new TCP connection a user sends by name through an AsIs freedom costs one extra system DNS lookup.
+  scoped entries by inbound but let the shadowed route through. Hostile review round 1 on `6597d6e1` (BLOCK) showed
+  that its pre-dial lookup and the dialer resolved separately: a rebinding name, a failed first lookup and a zoned
+  link-local name in brackets reached private listeners, SYNs went into an interface-bound tunnel, a closed private
+  port answered a second later than an open one, and each connection paid a second lookup; porting those tests also
+  found that UDP-over-TCP reached any address. The 22 new freedom tests fail on `6597d6e1` where it was exposed (15)
+  and pass on the fix; 26 mutants of the new code are caught; the CI harness job compares the guarded core with the
+  same core built without the guard on Linux (rebinding, a dummy tunnel, the zoned Host, UDP-over-TCP, latency).
+- **Residual:** NAT64, 6to4 and Teredo prefixes are not refused; a chained freedom, another TCP transport or an
+  alternative system dialer is handed a checked address instead of the name; on the system path a name with a public
+  and a private answer may still connect to the public one; an allowing rule that also matches on a non-empty domain
+  list never applies; rules added at run time through the RoutingService are not listed until the next render.
 - **Retire when:** the pin moves to `v26.5.3` or later; the node must then render the derived allows as `finalRules`,
   or the CGNAT route of core 1 breaks there.
 

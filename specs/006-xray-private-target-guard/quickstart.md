@@ -32,6 +32,22 @@ Expected locally: the live cases that need the CI test addresses skip with a rea
 `PG_NODE_PRIVATE_GUARD_REQUIRED=1` step turns those skips into failures, and the CGNAT, public and AsIs-by-name cases
 run.
 
+## The harness (CI only)
+
+`scripts/private_target_harness.py` needs root on a throwaway Linux runner: it adds lo aliases and a dummy tunnel,
+binds port 53 and points `/etc/resolv.conf` at its scripted DNS server until it exits, so it refuses to run outside
+GitHub Actions. The `private-target-harness` job builds the patched core and the same core without this patch and
+runs it:
+
+```sh
+sudo -n env GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+  timeout --kill-after=30 1200 python3 -u -I scripts/private_target_harness.py \
+  --guarded "$RUNNER_TEMP/xray-guarded" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/private-target-harness" </dev/null
+```
+
+Expected: every security check refused on the guarded core and exposed on the base, the CGNAT allow and the public
+name served on both, and the latency rows within the bounds of SC-006; the tables land in the job summary.
+
 ## CI
 
 Push the branch and read every run for the exact commit with `python3 -I S/pgupd/ci_status.py Free-Guy-IR/node@<sha>`.

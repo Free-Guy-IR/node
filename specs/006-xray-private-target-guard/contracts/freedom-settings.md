@@ -22,9 +22,10 @@
 - An entry allows only when the router's first match for the connection, with the dialed address as target, is the
   named rule and that rule sends to this outbound; an earlier rule (a block, another outbound, another inbound's
   rule) keeps the address refused.
-- A refused connection ends with a warning
+- A refused connection is logged at warning by freedom and ends with the same error
   `refused <target> from the <inbound> inbound: it is the private address <address>`; a local-host refusal keeps its
-  existing `... it is the local host address <address>` text.
+  existing `... it is the local host address <address>` text, and an address the connect check cannot parse reads
+  `... it is the unparsable address <address>`. A refused UDP or UDP-over-TCP datagram is dropped without a log line.
 - Config check failures: `finalRules` with an unknown `action`; `privateAllow` entry without `ruleTag` or `ip`; an
   `ip` entry that routing would also reject.
 - A stock v26.3.27 binary ignores both fields, so the same config loads there and is not guarded.

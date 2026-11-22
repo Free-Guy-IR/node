@@ -206,8 +206,8 @@ func (c *Config) taggedAllowingRules(freedomTags map[string]struct{}) (*conf.Rou
 			continue
 		}
 		var unreachable []string
-		for key := range rule {
-			if _, never := allowingRuleNeverMatchesAnAddress[strings.ToLower(key)]; never {
+		for key, value := range rule {
+			if _, never := allowingRuleNeverMatchesAnAddress[strings.ToLower(key)]; never && len(ruleEntries(value)) > 0 {
 				unreachable = append(unreachable, key)
 			}
 		}
@@ -276,7 +276,8 @@ func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
 		return outbound
 	}
 	if settingsKeys > 1 || (settings == nil && outbound[settingsKey] != nil) {
-		log.Printf("xray config: the freedom outbound %v has settings the node cannot edit, so it gets no privateAllow", outbound["tag"])
+		tag, _ := foldedField(outbound, "tag")
+		log.Printf("xray config: the freedom outbound %v has settings the node cannot edit, so it gets no privateAllow", tag)
 		return outbound
 	}
 	next := make(map[string]any, len(settings)+1)
@@ -293,6 +294,36 @@ func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
 	return copied
 }
 
+func foldedField(object map[string]any, name string) (any, int) {
+	var value any
+	keys := 0
+	for key, v := range object {
+		if strings.EqualFold(key, name) {
+			value = v
+			keys++
+		}
+	}
+	return value, keys
+}
+
+func freedomOutbound(outbound any) (map[string]any, string, bool) {
+	obj, isMap := outbound.(map[string]any)
+	if !isMap {
+		return nil, "", false
+	}
+	protocol, keys := foldedField(obj, "protocol")
+	if keys != 1 || !isFreedomProtocol(protocol) {
+		return nil, "", false
+	}
+	value, keys := foldedField(obj, "tag")
+	if keys > 1 {
+		log.Printf("xray config: a freedom outbound repeats its tag key in another letter case, so it gets no privateAllow")
+		return nil, "", false
+	}
+	tag, _ := value.(string)
+	return obj, tag, true
+}
+
 func (c *Config) privateTargetRendering() (*conf.RouterConfig, any) {
 	outbounds, ok := c.OutboundConfigs.([]any)
 	if !ok {
@@ -300,8 +331,7 @@ func (c *Config) privateTargetRendering() (*conf.RouterConfig, any) {
 	}
 	freedomTags := make(map[string]struct{})
 	for _, outbound := range outbounds {
-		if obj, isMap := outbound.(map[string]any); isMap && isFreedomProtocol(obj["protocol"]) {
-			tag, _ := obj["tag"].(string)
+		if _, tag, freedom := freedomOutbound(outbound); freedom {
 			freedomTags[tag] = struct{}{}
 		}
 	}
@@ -311,12 +341,11 @@ func (c *Config) privateTargetRendering() (*conf.RouterConfig, any) {
 	routerConfig, allows := c.taggedAllowingRules(freedomTags)
 	rendered := make([]any, 0, len(outbounds))
 	for _, outbound := range outbounds {
-		obj, isMap := outbound.(map[string]any)
-		if !isMap || !isFreedomProtocol(obj["protocol"]) {
+		obj, tag, freedom := freedomOutbound(outbound)
+		if !freedom {
 			rendered = append(rendered, outbound)
 			continue
 		}
-		tag, _ := obj["tag"].(string)
 		rendered = append(rendered, withPrivateAllow(obj, allows[tag]))
 	}
 	return routerConfig, rendered

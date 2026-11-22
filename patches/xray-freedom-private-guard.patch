@@ -16,16 +16,170 @@ refused. The local host stays refused whatever an allow says. finalRules decide 
 destinations and the dokodemo-door, socks and http inbounds behave as before, and a stock v26.3.27 loads the same
 config without guarding it.
 
-Freedom checks the address it dials: a literal or freedom-resolved address before the dial; a TCP name it does not
-resolve itself (AsIs) after one system resolver lookup, refused when any answer is the local host or a refused
-private address, so the handshake never reaches the private host, through a sockopt.interface tunnel either; the
+Where freedom checks: a literal or freedom-resolved address before the dial. When the outbound reaches the default
+system dialer directly (no proxySettings, no dialerProxy, the raw TCP transport for TCP, no alternative system
+dialer: app/proxyman/outbound's AppliesConnectCheck), freedom does no lookup of its own and puts a connect check in
+the dial context instead: DefaultSystemDialer runs it first in net.Dialer.Control before every connect attempt,
+with the address Go resolved and is about to connect to (Go's own resolution, TcpRaceDial, a
+sockopt.domainStrategy retarget, a sockopt.interface tunnel included), and on a UDP destination after
+its one resolution. The check parses that exact address (netip.ParseAddrPort, zone stripped, IPv4-mapped
+unmapped) and refuses the local host, a refused private address and anything it cannot parse, so the socket never
+sends a SYN there; a refusal ends the dial without the retries, so an open and a closed private port look the same.
+On every other path (proxySettings, dialerProxy, another TCP transport, an alternative system dialer, a dialer
+freedom cannot classify) freedom resolves a name once with the system resolver, refuses when any answer is the
+local host or a refused private address, refuses without dialing when the lookup fails or is empty, and dials only
+the checked addresses, so nothing resolves the name again. app/proxyman/outbound's UDP-over-TCP server (the sing
+uot magic names) writes its datagrams through the same check, which drops a refused one. Freedom also checks the
 remote address of the dialed connection, except the unspecified address that dialerProxy and proxySettings
-connections report; and each UDP datagram after per-packet resolution, which is dropped. A refused connection
-ends with "it is the private address" at warning. privateAllow is node-owned: the PasarGuard node tags the routing
-rules that send explicit private addresses to a freedom outbound and lists them there.
-app/router/private_target_match.go, infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and
-their tests are fork code.
+connections report, and each UDP datagram after per-packet resolution, which is dropped. A refused connection is
+logged at warning with "it is the private address" (or "local host", "unparsable"). privateAllow is node-owned: the
+PasarGuard node tags the routing rules that send explicit private addresses to a freedom outbound and lists them
+there. app/router/private_target_match.go, app/proxyman/outbound/connect_check.go,
+transport/internet/connect_check.go, infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and
+their tests are fork code; freedom.go, system_dialer.go and uot.go carry the hooks.
 
+diff --git a/app/proxyman/outbound/connect_check.go b/app/proxyman/outbound/connect_check.go
+new file mode 100644
+index 0000000..5e993f3
+--- /dev/null
++++ b/app/proxyman/outbound/connect_check.go
+@@ -0,0 +1,37 @@
++package outbound
++
++import (
++	"github.com/sagernet/sing/common/uot"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/transport/internet"
++)
++
++func (h *Handler) AppliesConnectCheck(dest net.Destination) bool {
++	if h.senderSettings != nil && h.senderSettings.ProxySettings.HasTag() {
++		return false
++	}
++	if isUoTDestination(dest) {
++		return true
++	}
++	if h.streamSettings == nil {
++		return false
++	}
++	if sockopt := h.streamSettings.SocketSettings; sockopt != nil && len(sockopt.DialerProxy) > 0 {
++		return false
++	}
++	if dest.Network == net.Network_TCP && h.streamSettings.ProtocolName != "tcp" {
++		return false
++	}
++	return internet.SystemDialerAppliesConnectChecks()
++}
++
++func isUoTDestination(dest net.Destination) bool {
++	if dest.Address == nil || !dest.Address.Family().IsDomain() {
++		return false
++	}
++	switch dest.Address.Domain() {
++	case uot.MagicAddress, uot.LegacyMagicAddress:
++		return true
++	}
++	return false
++}
+diff --git a/app/proxyman/outbound/connect_check_test.go b/app/proxyman/outbound/connect_check_test.go
+new file mode 100644
+index 0000000..14d3e71
+--- /dev/null
++++ b/app/proxyman/outbound/connect_check_test.go
+@@ -0,0 +1,79 @@
++package outbound_test
++
++import (
++	"context"
++	gonet "net"
++	"testing"
++
++	"github.com/sagernet/sing/common/uot"
++	"github.com/xtls/xray-core/app/proxyman"
++	. "github.com/xtls/xray-core/app/proxyman/outbound"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++	core "github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/proxy/freedom"
++	"github.com/xtls/xray-core/transport/internet"
++	_ "github.com/xtls/xray-core/transport/internet/tcp"
++	"github.com/xtls/xray-core/transport/internet/websocket"
++)
++
++func freedomHandler(t *testing.T, sender *proxyman.SenderConfig) *Handler {
++	t.Helper()
++	v, err := core.New(&core.Config{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	v.AddFeature((outbound.Manager)(new(Manager)))
++	ctx := context.WithValue(context.Background(), xrayKey, v)
++	h, err := NewHandler(ctx, &core.OutboundHandlerConfig{Tag: "DIRECT", SenderSettings: serial.ToTypedMessage(sender), ProxySettings: serial.ToTypedMessage(&freedom.Config{})})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return h.(*Handler)
++}
++
++type resolvingSystemDialer struct{}
++
++func (resolvingSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *internet.SocketConfig) (gonet.Conn, error) {
++	var d gonet.Dialer
++	return d.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
++}
++
++func (resolvingSystemDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func TestAnOutboundAppliesTheConnectCheckOnlyWhenEverySocketGoesThroughTheDefaultSystemDialer(t *testing.T) {
++	name := net.DomainAddress("example.pgtest")
++	tcp, udp := net.TCPDestination(name, 443), net.UDPDestination(name, 443)
++	magic := net.TCPDestination(net.DomainAddress(uot.MagicAddress), 0)
++	legacy := net.TCPDestination(net.DomainAddress(uot.LegacyMagicAddress), 0)
++	chain := &internet.StreamConfig{SocketSettings: &internet.SocketConfig{DialerProxy: "chain"}}
++	for _, c := range []struct {
++		name   string
++		sender *proxyman.SenderConfig
++		want   map[net.Destination]bool
++	}{
++		{"a plain freedom", &proxyman.SenderConfig{}, map[net.Destination]bool{tcp: true, udp: true, magic: true, legacy: true}},
++		{"a freedom bound to an interface", &proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{SocketSettings: &internet.SocketConfig{Interface: "pgtun0"}}}, map[net.Destination]bool{tcp: true, udp: true}},
++		{"a freedom behind a dialerProxy chain", &proxyman.SenderConfig{StreamSettings: chain}, map[net.Destination]bool{tcp: false, udp: false, magic: true, legacy: true}},
++		{"a freedom behind proxySettings", &proxyman.SenderConfig{ProxySettings: &internet.ProxyConfig{Tag: "chain"}}, map[net.Destination]bool{tcp: false, udp: false, magic: false, legacy: false}},
++		{"a freedom over a websocket transport", &proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{ProtocolName: "websocket", TransportSettings: []*internet.TransportConfig{{ProtocolName: "websocket", Settings: serial.ToTypedMessage(&websocket.Config{})}}}}, map[net.Destination]bool{tcp: false, udp: true}},
++	} {
++		h := freedomHandler(t, c.sender)
++		for dest, want := range c.want {
++			if got := h.AppliesConnectCheck(dest); got != want {
++				t.Errorf("%s to %v applies the connect check: %v, want %v", c.name, dest, got, want)
++			}
++		}
++	}
++	internet.UseAlternativeSystemDialer(resolvingSystemDialer{})
++	defer internet.UseAlternativeSystemDialer(nil)
++	h := freedomHandler(t, &proxyman.SenderConfig{})
++	for dest, want := range map[net.Destination]bool{tcp: false, udp: false, magic: true} {
++		if got := h.AppliesConnectCheck(dest); got != want {
++			t.Errorf("a plain freedom over an alternative system dialer to %v applies the connect check: %v, want %v", dest, got, want)
++		}
++	}
++}
+diff --git a/app/proxyman/outbound/uot.go b/app/proxyman/outbound/uot.go
+index 659f65a..f48aae3 100644
+--- a/app/proxyman/outbound/uot.go
++++ b/app/proxyman/outbound/uot.go
+@@ -30,6 +30,9 @@ func (h *Handler) getUoTConnection(ctx context.Context, dest net.Destination) (s
+ 	if err != nil {
+ 		return nil, errors.New("unable to listen socket").Base(err)
+ 	}
++	if check := internet.ConnectCheckFromContext(ctx); check != nil {
++		packetConn = internet.CheckedPacketConn(packetConn, check)
++	}
+ 	conn := uot.NewServerConn(packetConn, uotVersion)
+ 	return h.getStatCouterConnection(conn), nil
+ }
 diff --git a/app/router/private_target_match.go b/app/router/private_target_match.go
 new file mode 100644
 index 0000000..b0cbb2d
@@ -622,7 +776,7 @@ index fd0547d..fbb6567 100644
 +  repeated PrivateTargetRule private_allow = 101;
  }
 diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
-index 3179cc7..53bfcfa 100644
+index 3179cc7..bf3af31 100644
 --- a/proxy/freedom/freedom.go
 +++ b/proxy/freedom/freedom.go
 @@ -34,9 +34,7 @@ var useSplice bool
@@ -662,26 +816,43 @@ index 3179cc7..53bfcfa 100644
  	err := retry.ExponentialBackoff(5, 100).On(func() error {
  		dialDest := destination
  		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
-@@ -170,6 +172,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -170,8 +172,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
+-		rawConn, err := dialer.Dial(ctx, dialDest)
 +		if h.refusesPrivateTarget(ctx, inbound, dialDest) {
 +			refused, refusedKind = &dialDest, "private"
 +			return nil
 +		}
 +
-+		if refuseLocalHost && dialDest.Network == net.Network_TCP && dialDest.Address.Family().IsDomain() {
-+			if target, kind := h.refusedResolvedTarget(ctx, inbound, dialDest); target != nil {
-+				refused, refusedKind = target, kind
-+				return nil
++		dialCtx, candidates, connect := ctx, []net.Destination{dialDest}, &connectRefusal{}
++		if refuseLocalHost {
++			if appliesConnectCheck(dialer, dialDest) {
++				dialCtx = internet.ContextWithConnectCheck(ctx, h.connectCheck(ctx, inbound, dialDest.Network, connect))
++			} else if dialDest.Address.Family().IsDomain() {
++				resolved, target, kind, err := h.resolveOnce(ctx, inbound, dialDest)
++				if target != nil {
++					refused, refusedKind = target, kind
++					return nil
++				}
++				if err != nil {
++					return err
++				}
++				candidates = resolved
 +			}
 +		}
 +
- 		rawConn, err := dialer.Dial(ctx, dialDest)
++		rawConn, err := dialFirst(dialCtx, dialer, candidates)
  		if err != nil {
++			if target, kind := connect.result(); target != nil {
++				refused, refusedKind = target, kind
++				return nil
++			}
  			return err
-@@ -182,6 +196,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 		}
+ 
+@@ -182,6 +210,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
@@ -694,16 +865,18 @@ index 3179cc7..53bfcfa 100644
  		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
  			version := byte(h.config.ProxyProtocol)
  			srcAddr := inbound.Source.RawNetAddr()
-@@ -200,7 +220,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -200,7 +234,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  		return errors.New("failed to open connection to ", destination).Base(err)
  	}
  	if refused != nil {
 -		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the local host address ", *refused).AtWarning()
-+		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the ", refusedKind, " address ", *refused).AtWarning()
++		refusal := []interface{}{"refused ", destination, " from the ", inbound.Name, " inbound: it is the ", refusedKind, " address ", *refused}
++		errors.LogWarning(ctx, refusal...)
++		return errors.New(refusal...).AtWarning()
  	}
  	defer conn.Close()
  	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
-@@ -239,6 +259,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -239,6 +275,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			writer = NewPacketWriter(conn, h, UDPOverride, destination)
  			if pw, ok := writer.(*PacketWriter); ok {
  				pw.RefuseLocalHost = refuseLocalHost
@@ -711,7 +884,7 @@ index 3179cc7..53bfcfa 100644
  			}
  			if h.config.Noises != nil {
  				errors.LogDebug(ctx, "NOISE", h.config.Noises)
-@@ -400,6 +421,7 @@ type PacketWriter struct {
+@@ -400,6 +437,7 @@ type PacketWriter struct {
  	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
  	LocalAddr       net.Address
  	RefuseLocalHost bool
@@ -719,7 +892,7 @@ index 3179cc7..53bfcfa 100644
  }
  
  func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-@@ -454,6 +476,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -454,6 +492,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
  				b.Release()
  				continue
  			}
@@ -732,16 +905,17 @@ index 3179cc7..53bfcfa 100644
  				b.Release()
 diff --git a/proxy/freedom/private_target.go b/proxy/freedom/private_target.go
 new file mode 100644
-index 0000000..e1d022c
+index 0000000..cb19d54
 --- /dev/null
 +++ b/proxy/freedom/private_target.go
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,276 @@
 +package freedom
 +
 +import (
 +	"context"
 +	"net/netip"
 +	"slices"
++	"sync"
 +
 +	"github.com/xtls/xray-core/app/router"
 +	"github.com/xtls/xray-core/common/errors"
@@ -750,6 +924,8 @@ index 0000000..e1d022c
 +	"github.com/xtls/xray-core/features/policy"
 +	"github.com/xtls/xray-core/features/routing"
 +	routing_session "github.com/xtls/xray-core/features/routing/session"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
 +)
 +
 +type privateRuleMatcher interface {
@@ -786,10 +962,10 @@ index 0000000..e1d022c
 +		return false
 +	}
 +	ip, ok := netip.AddrFromSlice(addr.IP())
-+	if !ok {
-+		return false
-+	}
-+	ip = ip.Unmap()
++	return ok && isPrivateIP(ip.Unmap())
++}
++
++func isPrivateIP(ip netip.Addr) bool {
 +	for _, prefix := range privateTargetPrefixes {
 +		if prefix.Contains(ip) {
 +			return true
@@ -902,24 +1078,6 @@ index 0000000..e1d022c
 +	return routing_session.AsRoutingContext(session.ContextWithOutbounds(ctx, routed))
 +}
 +
-+func (h *Handler) refusedResolvedTarget(ctx context.Context, inbound *session.Inbound, dest net.Destination) (*net.Destination, string) {
-+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, dest.Address.Domain())
-+	if err != nil {
-+		errors.LogInfoInner(ctx, err, "failed to resolve ", dest.Address.Domain(), " before dialing it")
-+		return nil, ""
-+	}
-+	for _, addr := range addrs {
-+		resolved := net.Destination{Network: dest.Network, Address: net.IPAddress(addr.IP), Port: dest.Port}
-+		if isLocalHostAddress(resolved.Address) {
-+			return &resolved, "local host"
-+		}
-+		if h.refusesPrivateTarget(ctx, inbound, resolved) {
-+			return &resolved, "private"
-+		}
-+	}
-+	return nil, ""
-+}
-+
 +func remoteTarget(conn net.Conn) (net.Destination, bool) {
 +	switch addr := conn.RemoteAddr().(type) {
 +	case *net.TCPAddr:
@@ -928,6 +1086,157 @@ index 0000000..e1d022c
 +		return net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), len(addr.IP) > 0 && !addr.IP.IsUnspecified()
 +	}
 +	return net.Destination{}, false
++}
++
++type connectCheckedDialer interface {
++	AppliesConnectCheck(dest net.Destination) bool
++}
++
++func appliesConnectCheck(dialer internet.Dialer, dest net.Destination) bool {
++	checked, ok := dialer.(connectCheckedDialer)
++	return ok && checked.AppliesConnectCheck(dest)
++}
++
++type connectRefusal struct {
++	mu     sync.Mutex
++	target *net.Destination
++	kind   string
++}
++
++func (r *connectRefusal) refuse(target net.Destination, kind string) error {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.target == nil {
++		r.target, r.kind = &target, kind
++	}
++	return errors.New("refused to connect to the ", kind, " address ", target)
++}
++
++func (r *connectRefusal) result() (*net.Destination, string) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return r.target, r.kind
++}
++
++func connectTarget(network net.Network, address string) (net.Destination, netip.Addr, bool) {
++	parsed, err := netip.ParseAddrPort(address)
++	if err != nil {
++		return net.Destination{}, netip.Addr{}, false
++	}
++	ip := parsed.Addr().WithZone("").Unmap()
++	return net.Destination{Network: network, Address: net.IPAddress(ip.AsSlice()), Port: net.Port(parsed.Port())}, ip, true
++}
++
++func (h *Handler) refusedKind(ctx context.Context, inbound *session.Inbound, target net.Destination, ip netip.Addr) string {
++	if ip.IsLoopback() || ip.IsUnspecified() {
++		return "local host"
++	}
++	if isPrivateIP(ip) && h.refusesPrivateTarget(ctx, inbound, target) {
++		return "private"
++	}
++	return ""
++}
++
++func (h *Handler) connectCheck(ctx context.Context, inbound *session.Inbound, network net.Network, refusal *connectRefusal) internet.ConnectCheck {
++	return func(_, address string) error {
++		target, ip, ok := connectTarget(network, address)
++		if !ok {
++			return refusal.refuse(net.Destination{Network: network, Address: net.DomainAddress(address)}, "unparsable")
++		}
++		if kind := h.refusedKind(ctx, inbound, target, ip); kind != "" {
++			return refusal.refuse(target, kind)
++		}
++		return nil
++	}
++}
++
++func (h *Handler) resolveOnce(ctx context.Context, inbound *session.Inbound, dest net.Destination) ([]net.Destination, *net.Destination, string, error) {
++	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, dest.Address.Domain())
++	if err != nil {
++		return nil, nil, "", errors.New("cannot resolve ", dest.Address.Domain(), " to check it, so it is not dialed").Base(err)
++	}
++	if len(addrs) == 0 {
++		return nil, nil, "", errors.New(dest.Address.Domain(), " resolves to no address, so it is not dialed")
++	}
++	checked := make([]net.Destination, 0, len(addrs))
++	for _, addr := range addrs {
++		ip, ok := netip.AddrFromSlice(addr.IP)
++		if !ok {
++			unparsable := net.Destination{Network: dest.Network, Address: net.DomainAddress(addr.String()), Port: dest.Port}
++			return nil, &unparsable, "unparsable", nil
++		}
++		ip = ip.Unmap()
++		target := net.Destination{Network: dest.Network, Address: net.IPAddress(ip.AsSlice()), Port: dest.Port}
++		if kind := h.refusedKind(ctx, inbound, target, ip); kind != "" {
++			return nil, &target, kind, nil
++		}
++		checked = append(checked, target)
++	}
++	return checked, nil, "", nil
++}
++
++func dialFirst(ctx context.Context, dialer internet.Dialer, candidates []net.Destination) (stat.Connection, error) {
++	var err error
++	for _, candidate := range candidates {
++		var conn stat.Connection
++		if conn, err = dialer.Dial(ctx, candidate); err == nil {
++			return conn, nil
++		}
++	}
++	return nil, err
++}
+diff --git a/proxy/freedom/private_target_connect_test.go b/proxy/freedom/private_target_connect_test.go
+new file mode 100644
+index 0000000..657f2d3
+--- /dev/null
++++ b/proxy/freedom/private_target_connect_test.go
+@@ -0,0 +1,47 @@
++package freedom
++
++import (
++	"testing"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++)
++
++func TestTheConnectCheckJudgesTheExactAddressTheSocketConnectsTo(t *testing.T) {
++	h := handlerRoutedBy(t, routerOf(t, routingRule("cgnat", "DIRECT", nil, "100.64.0.0/10")), allowEntry("cgnat", "100.64.0.0/10"))
++	users := &session.Inbound{Name: "vless", Tag: "users"}
++	ctx := sessionContext(users, net.TCPDestination(net.DomainAddress("target.pgtest"), 80), "DIRECT")
++	for address, want := range map[string]string{
++		"10.0.0.1:80":           "private",
++		"[fe80::1%lo0]:80":      "private",
++		"[fe80::1%2]:80":        "private",
++		"[fd00::1%eth0]:80":     "private",
++		"[::ffff:10.0.0.1]:80":  "private",
++		"127.0.0.1:80":          "local host",
++		"[::1]:80":              "local host",
++		"[::1%lo0]:80":          "local host",
++		"0.0.0.0:80":            "local host",
++		"[::]:80":               "local host",
++		"[::ffff:127.0.0.1]:80": "local host",
++		"100.64.0.1:80":         "",
++		"[2001:db8::1]:80":      "",
++		"target.pgtest:80":      "unparsable",
++		":80":                   "unparsable",
++		"10.0.0.1":              "unparsable",
++		"":                      "unparsable",
++	} {
++		refusal := &connectRefusal{}
++		err := h.connectCheck(ctx, users, net.Network_TCP, refusal)("tcp", address)
++		target, kind := refusal.result()
++		if kind != want || (err != nil) != (want != "") || (target != nil) != (want != "") {
++			t.Errorf("the connect check on %q: %v, recorded %v %q; want %q", address, err, target, kind, want)
++		}
++	}
++	refusal := &connectRefusal{}
++	check := h.connectCheck(ctx, users, net.Network_TCP, refusal)
++	check("tcp", "10.0.0.1:80")
++	check("tcp", "127.0.0.1:80")
++	if target, kind := refusal.result(); kind != "private" || target.Address.String() != "10.0.0.1" {
++		t.Errorf("the first refusal of a dial is the one reported, got %v %q", target, kind)
++	}
 +}
 diff --git a/proxy/freedom/private_target_handler_test.go b/proxy/freedom/private_target_handler_test.go
 new file mode 100644
@@ -2615,3 +2924,325 @@ index 0000000..aef4042
 +	case <-time.After(300 * time.Millisecond):
 +	}
 +}
+diff --git a/transport/internet/connect_check.go b/transport/internet/connect_check.go
+new file mode 100644
+index 0000000..a7bae91
+--- /dev/null
++++ b/transport/internet/connect_check.go
+@@ -0,0 +1,41 @@
++package internet
++
++import (
++	"context"
++
++	"github.com/xtls/xray-core/common/net"
++)
++
++type ConnectCheck func(network, address string) error
++
++type connectCheckKey struct{}
++
++func ContextWithConnectCheck(ctx context.Context, check ConnectCheck) context.Context {
++	return context.WithValue(ctx, connectCheckKey{}, check)
++}
++
++func ConnectCheckFromContext(ctx context.Context) ConnectCheck {
++	check, _ := ctx.Value(connectCheckKey{}).(ConnectCheck)
++	return check
++}
++
++func SystemDialerAppliesConnectChecks() bool {
++	_, ok := effectiveSystemDialer.(*DefaultSystemDialer)
++	return ok
++}
++
++type checkedPacketConn struct {
++	net.PacketConn
++	check ConnectCheck
++}
++
++func CheckedPacketConn(conn net.PacketConn, check ConnectCheck) net.PacketConn {
++	return &checkedPacketConn{PacketConn: conn, check: check}
++}
++
++func (c *checkedPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
++	if addr == nil || c.check(addr.Network(), addr.String()) != nil {
++		return len(p), nil
++	}
++	return c.PacketConn.WriteTo(p, addr)
++}
+diff --git a/transport/internet/connect_check_test.go b/transport/internet/connect_check_test.go
+new file mode 100644
+index 0000000..706ce67
+--- /dev/null
++++ b/transport/internet/connect_check_test.go
+@@ -0,0 +1,234 @@
++package internet_test
++
++import (
++	"context"
++	"errors"
++	gonet "net"
++	"slices"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/features/dns"
++	. "github.com/xtls/xray-core/transport/internet"
++)
++
++type connectChecks struct {
++	mu      sync.Mutex
++	seen    []string
++	refuses bool
++}
++
++var errRefusedByTheCheck = errors.New("refused by the connect check")
++
++func (c *connectChecks) check(network, address string) error {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.seen = append(c.seen, network+" "+address)
++	if c.refuses {
++		return errRefusedByTheCheck
++	}
++	return nil
++}
++
++func (c *connectChecks) addresses() []string {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return slices.Clone(c.seen)
++}
++
++func countingListener(t *testing.T) (net.Port, *atomic.Int32) {
++	t.Helper()
++	ln, err := gonet.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++	accepted := new(atomic.Int32)
++	go func() {
++		for {
++			conn, err := ln.Accept()
++			if err != nil {
++				return
++			}
++			accepted.Add(1)
++			conn.Close()
++		}
++	}()
++	return net.Port(ln.Addr().(*gonet.TCPAddr).Port), accepted
++}
++
++func TestTheSystemDialerRunsTheConnectCheckBeforeEveryTCPConnect(t *testing.T) {
++	port, accepted := countingListener(t)
++	for _, sockopt := range []*SocketConfig{nil, {TcpKeepAliveIdle: 30}} {
++		checks := &connectChecks{refuses: true}
++		conn, err := DialSystem(ContextWithConnectCheck(context.Background(), checks.check), net.TCPDestination(net.LocalHostIP, port), sockopt)
++		if err == nil {
++			conn.Close()
++		}
++		time.Sleep(100 * time.Millisecond)
++		if !errors.Is(err, errRefusedByTheCheck) || accepted.Load() != 0 {
++			t.Errorf("sockopt %v: a refusing connect check gave %v and the listener accepted %d connections, want the check's error and no handshake", sockopt, err, accepted.Load())
++		}
++		if want := []string{"tcp4 127.0.0.1:" + port.String()}; !slices.Equal(checks.addresses(), want) {
++			t.Errorf("sockopt %v: the check saw %v, want %v", sockopt, checks.addresses(), want)
++		}
++	}
++	checks := &connectChecks{}
++	conn, err := DialSystem(ContextWithConnectCheck(context.Background(), checks.check), net.TCPDestination(net.LocalHostIP, port), nil)
++	if err != nil {
++		t.Fatalf("a connect check that allows the address: %v", err)
++	}
++	conn.Close()
++	if len(checks.addresses()) != 1 {
++		t.Errorf("an allowed connect was checked %d times, want once", len(checks.addresses()))
++	}
++}
++
++func TestTheConnectCheckSeesTheAddressAResolvedNameConnectsTo(t *testing.T) {
++	port, accepted := countingListener(t)
++	checks := &connectChecks{refuses: true}
++	_, err := DialSystem(ContextWithConnectCheck(context.Background(), checks.check), net.TCPDestination(net.DomainAddress("localhost"), port), nil)
++	time.Sleep(100 * time.Millisecond)
++	if !errors.Is(err, errRefusedByTheCheck) || accepted.Load() != 0 {
++		t.Errorf("localhost through a refusing connect check: %v, %d accepted", err, accepted.Load())
++	}
++	seen := checks.addresses()
++	if len(seen) == 0 {
++		t.Fatal("the connect check never ran for a name")
++	}
++	for _, entry := range seen {
++		if entry != "tcp4 127.0.0.1:"+port.String() && entry != "tcp6 [::1]:"+port.String() {
++			t.Errorf("the connect check saw %q, want the resolved loopback address and port", entry)
++		}
++	}
++}
++
++type answeringDNS struct {
++	answers map[string][]net.IP
++}
++
++func (d *answeringDNS) Type() interface{} { return dns.ClientType() }
++func (d *answeringDNS) Start() error      { return nil }
++func (d *answeringDNS) Close() error      { return nil }
++func (d *answeringDNS) LookupIP(domain string, option dns.IPOption) ([]net.IP, uint32, error) {
++	if ips, ok := d.answers[domain]; ok {
++		return ips, 0, nil
++	}
++	return nil, 0, dns.ErrEmptyResponse
++}
++
++func TestEveryRacedConnectAndEveryResolvedRetargetIsChecked(t *testing.T) {
++	port, accepted := countingListener(t)
++	InitSystemDialer(&answeringDNS{answers: map[string][]net.IP{"raced.pgtest": {net.LocalHostIP.IP(), {127, 0, 0, 1}}, "retarget.pgtest": {net.LocalHostIP.IP()}}}, nil)
++	t.Cleanup(func() { InitSystemDialer(nil, nil) })
++	for _, c := range []struct {
++		name    string
++		sockopt *SocketConfig
++		want    int
++	}{
++		{"retarget.pgtest", &SocketConfig{DomainStrategy: DomainStrategy_USE_IP4}, 1},
++		{"raced.pgtest", &SocketConfig{DomainStrategy: DomainStrategy_USE_IP4, HappyEyeballs: &HappyEyeballsConfig{TryDelayMs: 20, MaxConcurrentTry: 4, Interleave: 1}}, 2},
++	} {
++		checks := &connectChecks{refuses: true}
++		_, err := DialSystem(ContextWithConnectCheck(context.Background(), checks.check), net.TCPDestination(net.DomainAddress(c.name), port), c.sockopt)
++		time.Sleep(100 * time.Millisecond)
++		if err == nil || accepted.Load() != 0 {
++			t.Errorf("%s through a refusing connect check: %v, %d accepted", c.name, err, accepted.Load())
++		}
++		if got := len(checks.addresses()); got != c.want {
++			t.Errorf("%s: the connect check ran %d times (%v), want %d", c.name, got, checks.addresses(), c.want)
++		}
++	}
++}
++
++func TestTheSystemDialerChecksTheResolvedUDPDestination(t *testing.T) {
++	listener, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	port := net.Port(listener.LocalAddr().(*gonet.UDPAddr).Port)
++	checks := &connectChecks{refuses: true}
++	conn, err := DialSystem(ContextWithConnectCheck(context.Background(), checks.check), net.UDPDestination(net.DomainAddress("localhost"), port), nil)
++	if err == nil {
++		conn.Write([]byte("datagram"))
++		conn.Close()
++	}
++	if !errors.Is(err, errRefusedByTheCheck) {
++		t.Errorf("a UDP name through a refusing connect check: %v, want the check's error", err)
++	}
++	listener.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
++	if n, _, err := listener.ReadFrom(make([]byte, 64)); err == nil {
++		t.Errorf("the refused UDP destination received %d bytes", n)
++	}
++	for _, entry := range checks.addresses() {
++		if entry != "udp 127.0.0.1:"+port.String() && entry != "udp [::1]:"+port.String() {
++			t.Errorf("the UDP check saw %q, want the resolved loopback address and port", entry)
++		}
++	}
++}
++
++func TestACheckedPacketConnDropsOnlyTheRefusedDatagrams(t *testing.T) {
++	refused, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer refused.Close()
++	allowed, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer allowed.Close()
++	inner, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer inner.Close()
++	conn := CheckedPacketConn(inner, func(network, address string) error {
++		if address == refused.LocalAddr().String() {
++			return errRefusedByTheCheck
++		}
++		return nil
++	})
++	for _, to := range []gonet.Addr{refused.LocalAddr(), allowed.LocalAddr()} {
++		if n, err := conn.WriteTo([]byte("datagram"), to); n != len("datagram") || err != nil {
++			t.Errorf("WriteTo %v: %d, %v; a dropped datagram must look written so the flow goes on", to, n, err)
++		}
++	}
++	for listener, want := range map[gonet.PacketConn]bool{refused: false, allowed: true} {
++		listener.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
++		_, _, err := listener.ReadFrom(make([]byte, 64))
++		if got := err == nil; got != want {
++			t.Errorf("%v received a datagram: %v, want %v", listener.LocalAddr(), got, want)
++		}
++	}
++}
++
++type plainSystemDialer struct{}
++
++func (plainSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *SocketConfig) (gonet.Conn, error) {
++	var d gonet.Dialer
++	return d.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
++}
++
++func (plainSystemDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func TestOnlyTheDefaultSystemDialerAppliesConnectChecks(t *testing.T) {
++	if !SystemDialerAppliesConnectChecks() {
++		t.Fatal("the default system dialer does not report that it applies connect checks")
++	}
++	UseAlternativeSystemDialer(plainSystemDialer{})
++	alternative := SystemDialerAppliesConnectChecks()
++	UseAlternativeSystemDialer(nil)
++	if alternative {
++		t.Error("an alternative system dialer reports that it applies connect checks")
++	}
++	if !SystemDialerAppliesConnectChecks() {
++		t.Error("restoring the default system dialer did not restore the connect checks")
++	}
++}
+diff --git a/transport/internet/system_dialer.go b/transport/internet/system_dialer.go
+index 16b3e9b..df20b72 100644
+--- a/transport/internet/system_dialer.go
++++ b/transport/internet/system_dialer.go
+@@ -63,6 +63,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		if check := ConnectCheckFromContext(ctx); check != nil {
++			if err := check(destAddr.Network(), destAddr.String()); err != nil {
++				return nil, err
++			}
++		}
+ 		lc.Control = func(network, address string, c syscall.RawConn) error {
+ 			for _, ctl := range d.controllers {
+ 				if err := ctl(network, address, c); err != nil {
+@@ -116,11 +121,17 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
+ 		KeepAliveConfig: keepAliveConfig,
+ 	}
+ 
+-	if sockopt != nil || len(d.controllers) > 0 {
++	check := ConnectCheckFromContext(ctx)
++	if sockopt != nil || len(d.controllers) > 0 || check != nil {
+ 		if sockopt != nil && sockopt.TcpMptcp {
+ 			dialer.SetMultipathTCP(true)
+ 		}
+ 		dialer.Control = func(network, address string, c syscall.RawConn) error {
++			if check != nil {
++				if err := check(network, address); err != nil {
++					return err
++				}
++			}
+ 			for _, ctl := range d.controllers {
+ 				if err := ctl(network, address, c); err != nil {
+ 					errors.LogInfoInner(ctx, err, "failed to apply external controller")

@@ -21,6 +21,7 @@ TUNNEL_DEV = "pgtun0"
 TUNNEL_NET = "10.88.0.1/24"
 TUNNEL_TARGET = "10.88.0.5"
 ZONE = "pgtest"
+UOT_NAMES = ("sp.v2.udp-over-tcp.arpa", "sp.udp-over-tcp.arpa")
 
 TYPE_A = 1
 TYPE_AAAA = 28
@@ -145,7 +146,7 @@ class ScriptedDNS:
             qid, flags, name, qtype, question = read_question(packet)
         except (IndexError, struct.error):
             return
-        if not name.endswith("." + ZONE):
+        if not name.endswith("." + ZONE) and name not in UOT_NAMES:
             self.forward(packet, peer)
             return
         if self.delay:
@@ -186,18 +187,12 @@ class ScriptedDNS:
             if lookup == 1:
                 return RCODE_NXDOMAIN, []
             return RCODE_OK, [PRIVATE] if qtype == TYPE_A else []
-        if qtype == TYPE_AAAA:
-            return RCODE_OK, []
-        if label.startswith("rebind-tunnel-"):
-            return RCODE_OK, [PUBLIC if lookup % 2 == 1 else TUNNEL_TARGET]
-        if label.startswith("rebind-"):
-            return RCODE_OK, [PUBLIC if lookup % 2 == 1 else PRIVATE]
-        if label.startswith("private-"):
-            return RCODE_OK, [PRIVATE]
-        if label.startswith("tunnel-"):
-            return RCODE_OK, [TUNNEL_TARGET]
-        if label.startswith("public-") or label.startswith("perf-"):
-            return RCODE_OK, [PUBLIC]
+        for prefix, odd, even in (("rebind-tunnel-", PUBLIC, TUNNEL_TARGET), ("rebind-", PUBLIC, PRIVATE), ("private-", PRIVATE, PRIVATE),
+                                  ("tunnel-", TUNNEL_TARGET, TUNNEL_TARGET), ("public-", PUBLIC, PUBLIC), ("perf-", PUBLIC, PUBLIC)):
+            if label.startswith(prefix):
+                if qtype == TYPE_AAAA:
+                    return RCODE_OK, []
+                return RCODE_OK, [odd if lookup % 2 == 1 else even]
         return RCODE_NXDOMAIN, []
 
     def queries(self, prefix):
@@ -509,9 +504,10 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, link_local)
 
         check = "A5: an open and a closed private port behind rebinding names"
         step(label + " " + check)
-        open_took, _, open_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5open.%s" % ZONE, 8080, 10)
-        closed_took, _, closed_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5closed.%s" % ZONE, 8090, 10)
-        judge(check, abs(closed_took - open_took) > 0.3, "open %.3fs (%s), closed %.3fs (%s)" % (open_took, open_err or "closed", closed_took, closed_err or "closed"))
+        open_took, open_body, open_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5open.%s" % ZONE, 8080, 10)
+        closed_took, closed_body, closed_err = socks_get(CLIENT_PORTS["plain"], "rebind-a5closed.%s" % ZONE, 8090, 10)
+        told_apart = abs(closed_took - open_took) > 0.3 or bool(open_body) != bool(closed_body)
+        judge(check, told_apart, "open %.3fs %d bytes (%s), closed %.3fs %d bytes (%s)" % (open_took, len(open_body), open_err or "closed", closed_took, len(closed_body), closed_err or "closed"))
 
         if link_local:
             check = "H2: a sniffed Host [[[%s]]] carrying a zoned link-local literal" % link_local
@@ -528,7 +524,7 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, link_local)
         step(label + " " + check)
         before = udp_sink.count()
         frame = b"\x01\x01" + socket.inet_aton(PRIVATE) + struct.pack("!H", 9999) + struct.pack("!H", 8) + b"datagram"
-        err = socks_stream(CLIENT_PORTS["plain"], "sp.v2.udp-over-tcp.arpa", 1, frame, 1.0)
+        err = socks_stream(CLIENT_PORTS["plain"], UOT_NAMES[0], 1, frame, 3.0)
         time.sleep(0.5)
         delivered = udp_sink.count() - before
         judge(check, delivered > 0, "%d datagrams at %s %s" % (delivered, udp_sink.name, err))

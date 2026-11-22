@@ -36,18 +36,37 @@ private block at all. Production runs node v0.8.22 on the same Xray line, so the
   `vless`, `vmess`, `trojan`, `hysteria`, `wireguard` or any `shadowsocks` inbound. SOCKS, HTTP and dokodemo-door
   inbounds (the node's `API_INBOUND` among them) and connections with no inbound stay as they are. The pin has no
   MASQUE inbound.
-- Q: When is the destination checked? → A: at freedom's dial, on the address that is actually dialed: a literal
-  address and a freedom-resolved name before the dial; a name freedom does not resolve itself (AsIs) is resolved
-  with the system resolver before a TCP dial, and every resolved address is checked; the remote address of every
-  dialed connection is checked again before any payload; UDP datagrams are checked per packet after resolution.
+- Q: When is the destination checked? → A: at freedom's dial, on the address that is actually connected to: a
+  literal address and a freedom-resolved name before the dial. On the path every production freedom outbound takes
+  (the default system dialer directly: no `proxySettings`, no `dialerProxy`, the raw TCP transport for TCP, no
+  alternative system dialer), freedom resolves nothing itself and hands the dial a connect check that the default
+  system dialer runs inside `net.Dialer.Control` before every connect attempt, on the exact address Go is about to
+  connect to, and on a UDP destination after its one resolution. On every other path freedom resolves a name once
+  with the system resolver, refuses when any answer is the local host or a refused private address, refuses without
+  dialing when the lookup fails, and dials only the checked addresses. The remote address of every dialed connection
+  is checked again before any payload, and UDP datagrams are checked per packet after resolution.
 - Q: The brief accepted the local-host patch's AsIs handshake caveat. Does it hold for private ranges? → A: No.
   Production's interface-bound outbounds (`india_wireguard` on core 16, the `*_wireguard` outbounds on core 1) are
   AsIs freedoms with `sockopt.interface`. At the pin an AsIs TCP dial resolves the name and completes the handshake
   inside one call, so an after-dial check alone sends the SYN to the private host through the WireGuard tunnel before
-  it can refuse. That breaks the requirement that a refused private destination is never sent into a tunnel, so a TCP
-  name is resolved and checked before the dial. The cost is one extra system DNS lookup per new TCP connection that a
-  user inbound sends by name through an AsIs freedom. A DNS answer that changes between that lookup and the dial
-  still reaches the after-dial check, which closes the connection after the handshake and before any payload.
+  it can refuse. The connect check runs before the socket connects, so a refused private address never gets a SYN,
+  through a tunnel or otherwise.
+- Q: Why not resolve the name before the dial, as the first two pushes did? (hostile review round 1 on `6597d6e1`,
+  2026-11-22, BLOCK) → A: that check and the dial resolved the name separately. A rebinding name (public on the
+  first answer, private on the next), a name whose first lookup fails (the check then let the dial go on), and a
+  zoned link-local name in brackets that the resolver rejects but the dialer parses (a sniffed `Host:
+  [[[fe80::…%eth0]]]`, H2) all reached private listeners; the SYNs went into an interface-bound tunnel; a closed
+  private port answered a second later than an open one, through freedom's retries; and every new connection paid a
+  second A and AAAA lookup. Checking the connect address itself removes the gap and the extra lookup; off the
+  system path, one lookup whose answers are the only addresses dialed does the same. A refusal at connect time ends
+  the dial without freedom's retries, so open and closed private ports look the same. The refusal is logged at
+  warning by freedom itself: `6597d6e1` returned a warning-level error, which the outbound handler logged at info
+  only (L4).
+- Q: Does UDP-over-TCP bypass the guard? (found while porting the round-1 tests, 2026-11-22) → A: it did. The
+  outbound handler answers the sing `uot` magic names (`sp.v2.udp-over-tcp.arpa`, `sp.udp-over-tcp.arpa`) with its
+  own UDP socket, so a user inbound could send datagrams to any address, private or the local host, past every
+  freedom check, on the 28-patch build and on `6597d6e1` alike. That socket now writes each datagram through the same
+  connect check, which drops a refused one.
 - Q: What may still be reached? → A: the local host, never. Any other private destination only when the outbound's
   `finalRules` allow it (first matching rule decides, `allow` or `block`, on network, port and address, as upstream
   writes them), or when a `privateAllow` entry of that outbound names the routing rule that decides for it: the
@@ -74,8 +93,12 @@ private block at all. Production runs node v0.8.22 on the same Xray line, so the
   entry passes on both. A guarded build is expected to behave like v26.5.3 and later on all three canary paths; the
   stock paths keep every assertion they have.
 - Q: Do interface-bound freedom outbounds need the guard? → A: Yes. A refused private destination must not be sent
-  into a tunnel, so they are guarded like every other freedom outbound, and the pre-dial resolution above keeps the
-  SYN out of the tunnel.
+  into a tunnel, so they are guarded like every other freedom outbound, and the connect check keeps the SYN out of
+  the tunnel.
+- Q: Which outbound keys does the node read? (hostile review round 1, L5 and L6) → A: Xray reads JSON keys in any
+  letter case, so the node finds `protocol`, `tag` and `settings` in any letter case too, and leaves an outbound that
+  repeats one of them without `privateAllow`. A rule's `domain` or `domains` key is a condition only when its list is
+  not empty, as in Xray, so `"domain": []` still gives its addresses an allow.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -148,12 +171,17 @@ behaviour on a stock v26.3.27 binary.
 
 ## Edge Cases
 
-- A name with both public and private addresses is refused, because the dialer may pick either.
-- The system resolver fails before the dial: the dial proceeds and the after-dial check still applies.
-- A name whose answer changes between the check and the dial: closed after the handshake, before any payload.
-- A freedom outbound chained through `sockopt.dialerProxy` or `proxySettings`: its remote end is not visible after the
-  dial (it reports the unspecified address), so it is checked on the literal or locally resolved address only.
-- IPv4-mapped IPv6 destinations are checked as IPv4.
+- A name with both public and private addresses: on the system path every connect attempt is checked, so no private
+  answer is ever connected to and the dial may still use a public answer; off the system path the name is refused.
+- The resolver fails: on the system path the dial fails as it does today; off it the name is refused without a dial.
+- A name whose answer changes between lookups: on the system path the check sees the address of each connect; off it
+  only the addresses of the one lookup are dialed.
+- A freedom outbound chained through `sockopt.dialerProxy` or `proxySettings`: freedom resolves the name once and
+  hands the chain a checked address, so the chain never resolves the name itself; its remote end reports the
+  unspecified address and is not checked again after the dial.
+- IPv4-mapped IPv6 destinations are checked as IPv4; an IPv6 zone is stripped before the check; an address the check
+  cannot parse is refused.
+- UDP-over-TCP through freedom: each datagram's destination is checked; a refused one is dropped without a log line.
 - A routing rule that also matches on a domain, targets a balancer or shares its `ruleTag` with another rule gives no
   allow; the node logs it. Other conditions (inbound tag, user, source, network, port, protocol, local address) are
   the router's to evaluate.
@@ -169,8 +197,10 @@ behaviour on a stock v26.3.27 binary.
 
 - **FR-001**: For guarded inbounds, freedom MUST NOT open a connection to, or send a datagram to, an address in the
   private set unless FR-004 allows it.
-- **FR-002**: The check MUST apply to the address actually dialed: a literal address, a name freedom resolves, a TCP
-  name resolved by the system before an AsIs dial, the remote address of the dialed connection, and each UDP datagram.
+- **FR-002**: The check MUST apply to the address actually connected to: a literal address and a name freedom
+  resolves before the dial; on the default system dialer path every connect attempt, in `net.Dialer.Control`, and a
+  UDP destination after its resolution; off that path the answers of one system lookup, the only addresses dialed;
+  the remote address of the dialed connection; each UDP datagram; and each UDP-over-TCP datagram.
 - **FR-003**: The local host MUST stay refused whatever an allow says.
 - **FR-004**: The only allows are the outbound's `finalRules` (first match decides, `allow` or `block`) and its
   `privateAllow` entries, each naming a routing rule and its explicit private addresses; an entry allows only when
@@ -186,6 +216,10 @@ behaviour on a stock v26.3.27 binary.
 - **FR-009**: The image build MUST fail if the patch stops applying or loses any part (Dockerfile guards; the guard
   replay catches every dropped file).
 - **FR-010**: The configs the node renders MUST stay loadable by a stock v26.3.27 binary.
+- **FR-011**: On the default system dialer path the guard MUST NOT add a DNS lookup; off it, one lookup per attempt,
+  and a failed or empty lookup MUST refuse without a dial.
+- **FR-012**: A refusal at connect time MUST end the dial without retries, so an open and a closed private port look
+  the same to the user.
 
 ### Key Entities
 
@@ -206,7 +240,11 @@ behaviour on a stock v26.3.27 binary.
   change: private refused for user inbounds including by name in the domain pass, CGNAT through `DIRECT` carries data,
   public targets and SOCKS and dokodemo-door inbounds unaffected.
 - **SC-003**: Mutants are killed: without the dial-time check the name case fails; without the allow derivation the
-  CGNAT case fails; without the pre-dial resolution the AsIs listener sees a handshake.
+  CGNAT case fails; without the connect check, without the zone strip, with a failed lookup dialed anyway, or with
+  the name handed to a chain, a private listener sees a handshake (26 mutants, all killed, `tasks.md` T049).
+- **SC-006**: In the CI harness (`scripts/private_target_harness.py`) the guarded core sends as many DNS queries per
+  request as the same core without the guard, and its median time to the first byte with a 20 ms resolver is within
+  10 ms of it.
 - **SC-004**: The full node test suite passes on Linux in GitHub CI for the pushed commit.
 - **SC-005**: The fleet-impact statement names every production flow whose behaviour changes.
 
@@ -221,3 +259,22 @@ behaviour on a stock v26.3.27 binary.
 - The node ships the geoip.dat named above; the private set is fixed in code and does not follow later geo files.
 - `NodeVersion` and the image tag move in a separate release change.
 - The sing-box (Hysteria2), kernel WireGuard and L2TP backends do not route through xray freedom and are out of scope.
+
+## Fleet impact
+
+From the main session's read-only reads of the production panel on 2026-11-22 (9 cores, no freedom `redirect`, no
+MASQUE inbound, no freedom `finalRules`; VLESS and VMess outbounds are not under the freedom guard):
+
+- Cores 1, 17, 19 and 21 (`IPIfNonMatch`, rule#2 `100.64.0.0/10` to `DIRECT`, rule#3 `geoip:private` to `BLOCK`,
+  inbound rules after): a user's request by name that an inbound rule matches in the domain pass and that resolves
+  to a private address is refused, through `DIRECT` and through the interface-bound `*_wireguard` outbounds alike;
+  it reached the address before. A CGNAT literal or name through `DIRECT` keeps working, because the router's first
+  match for the address is rule#2, which the node tags and lists. A CGNAT name through any other freedom outbound is
+  refused, since rule#2 sends that address to `DIRECT`.
+- Core 16 (`AsIs`, no private block, `india` to `india_wireguard`): every private destination of a user is refused,
+  by literal or by name, and nothing is sent into the WireGuard tunnel for it. No allow is derived there.
+- Every core: UDP-over-TCP datagrams of users to private addresses and the local host are dropped; they were
+  delivered. Public destinations are dialed as before, with no extra DNS lookup on the default system dialer path,
+  which every production freedom outbound takes. Each refused connection writes one warning line to the core log.
+- Unchanged: the dokodemo-door, SOCKS and HTTP inbounds (the node's `API_INBOUND` among them), connections without
+  an inbound, public destinations, and the sing-box, kernel WireGuard and L2TP backends.

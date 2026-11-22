@@ -10,9 +10,10 @@
 
 A new Xray patch, `patches/xray-freedom-private-guard.patch`, applied right after `xray-freedom-local-host.patch`,
 gives freedom a private-target guard for the user inbounds the local-host refusal already guards, reads upstream's
-`finalRules` shape and a node-owned `privateAllow` list, and checks the address actually dialed: before the dial for
-literal and resolved addresses (TCP names under AsIs are resolved first), after the dial on the remote address, and
-per UDP datagram. The node derives `privateAllow` for every freedom outbound from the core's own routing rules and
+`finalRules` shape and a node-owned `privateAllow` list, and checks the address actually connected to: before the
+dial for literal and freedom-resolved addresses; at connect time inside the default system dialer on the path every
+production freedom takes (no lookup of its own there); off that path after one lookup whose checked answers are the
+only addresses dialed; after the dial on the remote address; per UDP datagram; and per UDP-over-TCP datagram. The node derives `privateAllow` for every freedom outbound from the core's own routing rules and
 writes it into the config it renders in `ToBytes`, so core 1's `100.64.0.0/10` route to `DIRECT` keeps working.
 
 ## Technical Context
@@ -25,16 +26,18 @@ writes it into the config it renders in `ToBytes`, so core 1's `100.64.0.0/10` r
 
 **Storage**: N/A.
 
-**Testing**: `go test` in the Xray tree (`proxy/freedom`, `infra/conf`) through `make test_xray_patches`; node
-`go test ./backend/xray` (config-level and live against a real `xray run`); `make test_xray_guards` (Dockerfile guard
-replay); GitHub Actions `run-tests.yml` on the pushed commit.
+**Testing**: `go test` in the Xray tree (`proxy/freedom`, `infra/conf`, `app/router`, `transport/internet`,
+`app/proxyman/outbound`) through `make test_xray_patches`; node `go test ./backend/xray` (config-level and live against
+a real `xray run`); `make test_xray_guards` (Dockerfile guard replay); the `private-target-harness` job
+(`scripts/private_target_harness.py`, root on the runner: rebinding DNS, a dummy tunnel, iptables counters, a latency
+table against the same core built without the guard); GitHub Actions `run-tests.yml` on the pushed commit.
 
 **Target Platform**: Linux (image for linux/amd64 and linux/arm64); development on darwin/arm64.
 
 **Project Type**: network daemon (node agent driving an Xray core).
 
-**Performance Goals**: no change for public destinations and non-user inbounds; one extra system DNS lookup per new
-TCP connection that a guarded inbound sends by name through an AsIs freedom outbound.
+**Performance Goals**: no change for public destinations and non-user inbounds: no extra DNS lookup on the default
+system dialer path; one lookup per attempt off it, in place of the dialer's own.
 
 **Constraints**: no code comments; the patch must apply in both the Makefile glob order and the Dockerfile order;
 every non-test file the patch touches is caught by a Dockerfile grep or by the build when dropped; the pre-push guard
@@ -50,7 +53,8 @@ loadable by stock v26.3.27.
 - I Committed Code Only: Linux evidence comes from GitHub CI on the pushed commit; local runs use the worktree, and no
   image is built here. PASS
 - II Fail Before, Pass After: patch tests RED on the 28 patches and GREEN with the patch; node tests RED on the base
-  build and GREEN on the change; mutants for the dial-time check, the pre-dial resolution and the allow derivation;
+  build and GREEN on the change; mutants for the dial-time check, the connect check, the zone strip, the
+  fail-closed lookup, the checked addresses on chains and the allow derivation;
   `-race` for the patch tests and the backend tests. PASS (planned, recorded in tasks.md)
 - III No Explanatory Comments: none added; the patch header is the patch description, as in every other patch. PASS
 - IV Strict Patch Versioning: `NodeVersion` and tags are not touched here. PASS
@@ -77,18 +81,36 @@ loadable by stock v26.3.27.
   port, inbound tag, router GeoIP matcher), `initWithFeatures` (takes the router through `RequireFeatures`),
   `initTargetRules`, `refusesPrivateTarget` (guarded inbound, private address, `finalRules` first match, then a
   `privateAllow` entry whose rule the router's first match for the dialed address confirms on this outbound, else
-  refuse) and `refusedResolvedTarget` (system resolver lookup before an AsIs TCP dial).
+  refuse), `connectCheck` (parses the connect address with `netip.ParseAddrPort`, strips the zone, unmaps IPv4-mapped
+  addresses, refuses the local host, a refused private address or anything unparsable, and records the first refusal
+  of the dial), `resolveOnce` (one system lookup off the system path, every answer checked, a failed or empty lookup
+  refused) and `dialFirst` (dials the checked addresses in order).
 - `proxy/freedom/freedom.go`: `Handler` gets the two rule lists; `Init` ends with `return h.initTargetRules(config)`;
-  `Process` refuses before the dial (literal or freedom-resolved address, then the pre-dial lookup for TCP names) and
-  after the dial (remote address, skipping the unspecified address chained dials report); `PacketWriter` gets a
-  `RefusesTarget` callback checked after per-packet resolution. The local-host checks and their messages stay first
-  and unchanged, so the local host is refused whatever an allow says.
+  `Process` refuses before the dial (literal or freedom-resolved address); when the dialer reports
+  `AppliesConnectCheck` it puts `connectCheck` into the dial context and resolves nothing, otherwise a name goes
+  through `resolveOnce`; a dial that failed after a connect refusal is refused without retries; after the dial the
+  remote address is checked (skipping the unspecified address chained dials report); a refusal is logged at warning;
+  `PacketWriter` gets a `RefusesTarget` callback checked after per-packet resolution. The local-host checks and their
+  messages stay first and unchanged, so the local host is refused whatever an allow says.
+- `transport/internet/connect_check.go` (new): `ConnectCheck`, `ContextWithConnectCheck`, `ConnectCheckFromContext`,
+  `SystemDialerAppliesConnectChecks` (the effective system dialer is the default one) and `CheckedPacketConn` (drops
+  a datagram whose destination the check refuses). `system_dialer.go`: `DefaultSystemDialer` installs
+  `net.Dialer.Control` when a check is in the context and runs the check first there, before any controller or socket
+  option, and checks a UDP destination after `net.ResolveUDPAddr`.
+- `app/proxyman/outbound/connect_check.go` (new): `(*Handler).AppliesConnectCheck(dest)` is false under
+  `proxySettings`, under `dialerProxy`, for TCP over a transport other than raw TCP and with an alternative system
+  dialer, and true for the UDP-over-TCP magic names; `uot.go` wraps the UDP-over-TCP socket in `CheckedPacketConn`
+  when a check is in the context.
 - `infra/conf/freedom.go`: `FreedomConfig` gets `FinalRules []*FreedomFinalRule` (`finalRules`) and
   `PrivateAllow []*FreedomPrivateAllow` (`privateAllow`); `Build` calls `c.buildPrivateTargetRules(config)`.
 - `infra/conf/freedom_private_target.go` (new): `finalRules` entries need `action` `allow` or `block`; `privateAllow`
   entries need a `ruleTag` and a non-empty `ip`; `ip` lists go through `ToCidrList`, so they accept what routing
   accepts.
-- Tests: `proxy/freedom/private_target_refusal_test.go`, `infra/conf/freedom_private_target_test.go`.
+- Tests: `proxy/freedom/private_target_refusal_test.go`, `private_target_rules_test.go`,
+  `private_target_rebind_test.go`, `private_target_paths_test.go`, `private_target_handler_test.go`,
+  `private_target_connect_test.go`, `infra/conf/freedom_private_target_test.go`,
+  `app/router/private_target_match_test.go`, `transport/internet/connect_check_test.go`,
+  `app/proxyman/outbound/connect_check_test.go`.
 
 ### Node (`backend/xray`)
 
@@ -99,7 +121,9 @@ loadable by stock v26.3.27.
 - Derivation: for each routing rule whose `outboundTag` names a freedom outbound, the literal addresses and prefixes
   of `ip` that lie inside one private prefix and outside the node-guarded ranges become one entry `{ruleTag, ip}`;
   the rule keeps its own `ruleTag`, or gets `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing. A rule with a
-  `balancerTag` only, a domain condition, a repeated key or a `ruleTag` another rule shares is skipped and logged.
+  `balancerTag` only, a non-empty domain condition, a repeated key or a `ruleTag` another rule shares is skipped and
+  logged. Outbound keys (`protocol`, `tag`, `settings`) are read in any letter case, as Xray reads them; an outbound
+  that repeats one is left without an allow.
 - `config.go`: `ToBytes` marshals the snapshot with the tagged routing and the outbounds of
   `privateTargetRendering()`, so
   every config the core runs (start, restart, sync clones, the degraded restart without content-filter rules,
@@ -107,9 +131,16 @@ loadable by stock v26.3.27.
 
 ### Tests
 
-- Patch level, package `freedom`, real sockets: a listener on a non-loopback private IPv4 of the host; a recording
-  dialer for IPv6 and CGNAT targets the host does not have; an in-process DNS server behind the shared system resolver
-  for AsIs names; a stub `dns.Client` through `internet.InitSystemDialer` for freedom-resolved names.
+- Patch level, package `freedom`, real sockets: a listener on a non-loopback private IPv4 of the host and on an IPv6
+  link-local address of it; a recording dialer for IPv6 and CGNAT targets the host does not have; a scripted DNS
+  server behind the shared system resolver (per-type answer sequences: public then private, a failed first lookup,
+  query counts); a stub `dns.Client` through `internet.InitSystemDialer` for freedom-resolved and socket-option
+  names; test dialers that report each dial path, a dialerProxy chain that resolves names itself, an alternative
+  system dialer, and a real `app/proxyman/outbound` freedom handler for the system path and UDP-over-TCP.
+- CI harness: `scripts/private_target_harness.py` in its own job runs a guarded and a base core behind a real VLESS
+  client, a scripted DNS server on 127.0.0.1:53 behind `/etc/resolv.conf`, lo aliases, a dummy tunnel `pgtun0` with
+  per-port iptables counters, and checks A1 to A5, H2 and UDP-over-TCP (guarded refuses, base exposes), the CGNAT
+  allow and a public name, and a latency table at 0 and 20 ms DNS delay and concurrency 1 and 32.
 - Node level, package `xray`: config-level checks of the rendered JSON; live tests through `New` (so `ApplyAPI` and
   `ToBytes` run) on a core 1 shape and a core 16 shape, with xray `dns.hosts` names for freedom-resolved outbounds and
   system names for AsIs outbounds. The installed binary (or `XRAY_EXECUTABLE_PATH`) must refuse; a stock binary that
@@ -157,11 +188,18 @@ backend/xray/
 ├── private_target_allow_test.go
 ├── private_target_live_test.go
 └── freedom_private_target_nodeverify_test.go
+scripts/
+├── private_target_harness.py
+└── workflow_gates.lock
 .github/workflows/run-tests.yml
-scripts/workflow_gates.lock
 Dockerfile
 Makefile
 ```
+
+The patch adds `app/router/private_target_match.go`, `app/proxyman/outbound/connect_check.go`,
+`transport/internet/connect_check.go`, `infra/conf/freedom_private_target.go`, `proxy/freedom/private_target.go` and
+their tests to the Xray tree, and hooks into `proxy/freedom/freedom.go`, `config.proto`, `config.pb.go`,
+`infra/conf/freedom.go`, `transport/internet/system_dialer.go` and `app/proxyman/outbound/uot.go`.
 
 **Structure Decision**: the node repository's existing layout; Xray changes ship as one patch file.
 
@@ -170,4 +208,7 @@ Makefile
 | Item | Why Needed | Simpler Alternative Rejected Because |
 |------|------------|-------------------------------------|
 | CI step that adds test addresses and names to the runner | the CGNAT allow, a public target and the AsIs-by-name case need real addresses and system names | skipping those cases would leave the CGNAT route and the AsIs path unproven on Linux |
-| Pre-dial system lookup for AsIs TCP names | without it the SYN reaches the private host, through the WireGuard tunnel on interface-bound outbounds | the brief's after-dial-only check contradicts its own tunnel requirement |
+| Connect check inside `DefaultSystemDialer` (`transport/internet`) | only the dialer sees the address it connects to; a check beside it resolves separately (hostile round 1: rebinding, failed lookups, zoned names, the port oracle, the extra lookup) | a pre-dial lookup in freedom (the first two pushes) |
+| One checked lookup off the system path | a chain, a transport or an alternative dialer would resolve the name again out of freedom's sight | refusing those paths outright would break chained freedoms that production does not use but the config allows |
+| UDP-over-TCP socket wrapped in `app/proxyman/outbound` | that socket is the handler's own, freedom never sees its datagrams | refusing the magic names would break UDP for clients that use UDP-over-TCP |
+| Root-only harness job | a dummy tunnel, iptables counters, port 53 and `/etc/resolv.conf` need root | unit tests alone cannot show the SYNs into a tunnel or the latency of the real binaries |
