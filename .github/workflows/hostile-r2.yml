@@ -1,0 +1,70 @@
+name: Hostile review round 2 repro
+
+on:
+  push:
+    branches:
+      - "ci-v0826-hostile-r2-*"
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.4"
+          check-latest: true
+
+      - name: Build the guarded Xray from every patch, as the image does
+        run: |
+          make build_xray XRAY_SRC="$RUNNER_TEMP/xray-guard-src" XRAY_OUTPUT="$RUNNER_TEMP/xray-guard"
+          "$RUNNER_TEMP/xray-guard" version
+          sha256sum patches/xray-freedom-private-guard.patch
+
+      - name: Build the base Xray from every patch except the private guard
+        run: |
+          commit="$(sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
+          src="$RUNNER_TEMP/xray-base-src"
+          git init -q "$src"
+          git -C "$src" remote add origin https://github.com/XTLS/Xray-core.git
+          git -C "$src" fetch -q --depth 1 origin "$commit"
+          git -C "$src" checkout -q FETCH_HEAD
+          for patch in patches/xray-*.patch; do
+            case "$patch" in
+              *xray-freedom-private-guard.patch) continue ;;
+            esac
+            git -C "$src" apply "$PWD/$patch"
+          done
+          (cd "$src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-base" ./main)
+          "$RUNNER_TEMP/xray-base" version
+          if grep -rq --include='*.go' AppliesConnectCheck "$src"; then echo "the base carries the guard"; exit 1; fi
+          grep -rq --include='*.go' AppliesConnectCheck "$RUNNER_TEMP/xray-guard-src"
+
+      - name: Hostile Go tests on the guarded source, Linux
+        run: |
+          cp hostile/r2/hostile_r2_test.go "$RUNNER_TEMP/xray-guard-src/proxy/freedom/"
+          cd "$RUNNER_TEMP/xray-guard-src"
+          set +e
+          GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -v -run 'TestHostileR2' ./proxy/freedom/ > "$RUNNER_TEMP/hr2-go.log" 2>&1
+          status=$?
+          grep -E '^(=== RUN|--- |    hostile_r2|PASS|FAIL|ok|WARNING: DATA RACE)' "$RUNNER_TEMP/hr2-go.log"
+          echo "go test exit status $status"
+
+      - name: Real-binary harness, base and guard
+        run: |
+          command -v iptables
+          uname -a
+          sudo -n env GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" timeout --kill-after=30 1600 python3 -u -I hostile/r2/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/hr2" --quic-hex hostile/r2/quic_initial_www_google_com.hex </dev/null
+
+      - name: Show the xray logs
+        if: always()
+        run: |
+          sudo sh -c 'for f in "$0"/*.log; do echo "==== $f"; grep -v " accepted " "$f" | tail -n 40; done' "$RUNNER_TEMP/hr2" || true
