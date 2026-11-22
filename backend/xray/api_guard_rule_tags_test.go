@@ -77,6 +77,7 @@ func TestApplyAPIGivesEveryGuardRuleItsOwnRuleTag(t *testing.T) {
 			for _, tag := range []string{
 				apiGuardIPRuleTag,
 				apiGuardDomainRuleTag,
+				apiGuardPortRuleTag,
 				siblingGuardIPRuleTag,
 				siblingGuardDomainRuleTag,
 			} {
@@ -109,6 +110,7 @@ func TestApplyAPIStripsAPanelSuppliedGuardRuleTag(t *testing.T) {
 		apiGuardRuleTag,
 		apiGuardIPRuleTag,
 		apiGuardDomainRuleTag,
+		apiGuardPortRuleTag,
 		siblingGuardRuleTag,
 		siblingGuardIPRuleTag,
 		siblingGuardDomainRuleTag,

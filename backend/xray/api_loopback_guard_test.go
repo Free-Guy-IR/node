@@ -467,8 +467,8 @@ func TestApplyAPIControlPortGuardLeavesOtherDestinationsAlone(t *testing.T) {
 	}
 
 	for _, q := range []destQuery{
-		{inbound: userInboundTag, isIP: true, value: "198.51.100.7", port: apiPort},
-		{inbound: userInboundTag, isIP: false, value: "example.com", port: apiPort},
+		{inbound: userInboundTag, isIP: true, value: "198.51.100.7", port: 443},
+		{inbound: userInboundTag, isIP: false, value: "example.com", port: metricPort + 1},
 		{inbound: userInboundTag, isIP: false, value: "example.com", port: 443},
 	} {
 		if tag, protocol := resolveOutbound(t, cfg, q); protocol != "freedom" {
