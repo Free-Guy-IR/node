@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import concurrent.futures
 import faulthandler
 import json
 import os
@@ -34,8 +35,8 @@ PRIVATE_CIDRS = [
     "203.0.113.0/24", "224.0.0.0/3", "::/127", "fc00::/7", "fe80::/10", "ff00::/8",
 ]
 
-NODE_PORTS = {"india": 20001, "egypt": 20002, "plain": 20003}
-CLIENT_PORTS = {"india": 10801, "egypt": 10802, "plain": 10803}
+NODE_PORTS = {"india": 20001, "egypt": 20002, "plain": 20003, "direct": 20004}
+CLIENT_PORTS = {"india": 10801, "egypt": 10802, "plain": 10803, "direct": 10804}
 CURRENT = ["starting"]
 RESOLV = "/etc/resolv.conf"
 CLEANUPS = []
@@ -187,12 +188,13 @@ class ScriptedDNS:
             if lookup == 1:
                 return RCODE_NXDOMAIN, []
             return RCODE_OK, [PRIVATE] if qtype == TYPE_A else []
-        for prefix, odd, even in (("rebind-tunnel-", PUBLIC, TUNNEL_TARGET), ("rebind-", PUBLIC, PRIVATE), ("private-", PRIVATE, PRIVATE),
-                                  ("tunnel-", TUNNEL_TARGET, TUNNEL_TARGET), ("public-", PUBLIC, PUBLIC), ("perf-", PUBLIC, PUBLIC)):
+        for prefix, odd, even in (("rebind-tunnel-", [PUBLIC], [TUNNEL_TARGET]), ("rebind-", [PUBLIC], [PRIVATE]), ("private-", [PRIVATE], [PRIVATE]),
+                                  ("tunnel-", [TUNNEL_TARGET], [TUNNEL_TARGET]), ("public-", [PUBLIC], [PUBLIC]), ("perf-", [PUBLIC], [PUBLIC]),
+                                  ("mixed-", [PUBLIC, PRIVATE], [PRIVATE, PUBLIC])):
             if label.startswith(prefix):
                 if qtype == TYPE_AAAA:
                     return RCODE_OK, []
-                return RCODE_OK, [odd if lookup % 2 == 1 else even]
+                return RCODE_OK, odd if lookup % 2 == 1 else even
         return RCODE_NXDOMAIN, []
 
     def queries(self, prefix):
@@ -307,6 +309,7 @@ class TunnelCounter:
 class UDPSink:
     def __init__(self, address, port):
         self.name = "%s:%d" % (address, port)
+        self.port = port
         self.lock = threading.Lock()
         self.datagrams = 0
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -325,6 +328,29 @@ class UDPSink:
     def count(self):
         with self.lock:
             return self.datagrams
+
+
+class SocksUDP:
+    def __init__(self, socks_port):
+        self.control = socket.create_connection((LOOP, socks_port), timeout=8)
+        self.control.sendall(b"\x05\x01\x00")
+        recv_exact(self.control, 2)
+        self.control.sendall(b"\x05\x03\x00\x01" + socket.inet_aton("0.0.0.0") + struct.pack("!H", 0))
+        head = recv_exact(self.control, 4)
+        if head[1] != 0 or head[3] != 1:
+            raise OSError("UDP ASSOCIATE answered %r" % head)
+        bound = recv_exact(self.control, 6)
+        relay_host = socket.inet_ntoa(bound[:4])
+        self.relay = (LOOP if relay_host == "0.0.0.0" else relay_host, struct.unpack("!H", bound[4:])[0])
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((LOOP, 0))
+
+    def send(self, host, port, payload):
+        self.sock.sendto(b"\x00\x00\x00" + socks_address(host, port) + payload, self.relay)
+
+    def close(self):
+        self.sock.close()
+        self.control.close()
 
 
 def socks_stream(socks_port, host, port, payload, hold):
@@ -392,6 +418,7 @@ def node_config(user):
             {"type": "field", "inboundTag": ["india"], "outboundTag": "india_wireguard"},
             {"type": "field", "inboundTag": ["egypt"], "outboundTag": "egypt_wireguard"},
             {"type": "field", "inboundTag": ["plain"], "outboundTag": "asis"},
+            {"type": "field", "inboundTag": ["direct"], "outboundTag": "DIRECT"},
         ]},
     }
 
@@ -399,7 +426,7 @@ def node_config(user):
 def client_config(user):
     return {
         "log": {"loglevel": "warning"},
-        "inbounds": [{"tag": "in-" + tag, "listen": LOOP, "port": port, "protocol": "socks", "settings": {"udp": False}} for tag, port in CLIENT_PORTS.items()],
+        "inbounds": [{"tag": "in-" + tag, "listen": LOOP, "port": port, "protocol": "socks", "settings": {"udp": True, "ip": LOOP}} for tag, port in CLIENT_PORTS.items()],
         "outbounds": [{"tag": "out-" + tag, "protocol": "vless", "settings": {"vnext": [{"address": LOOP, "port": NODE_PORTS[tag], "users": [{"id": user, "encryption": "none"}]}]}} for tag in CLIENT_PORTS],
         "routing": {"rules": [{"type": "field", "inboundTag": ["in-" + tag], "outboundTag": "out-" + tag} for tag in CLIENT_PORTS]},
     }
@@ -453,7 +480,7 @@ def reached(before, after):
 
 
 def security_phase(results, label, binary, guarded, out, dns, sinks, link_local):
-    private, public_sink, cgnat, link_sink, udp_sink, control_tunnel, rebind_tunnel = sinks
+    private, public_sink, cgnat, link_sink, udp_sink, control_tunnel, rebind_tunnel, private_8081, udp_public, udp_private, udp_cgnat = sinks
 
     def judge(check, exposed, detail, base_must_expose=True):
         outcome = "exposed" if exposed else "refused"
@@ -543,6 +570,45 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, link_local)
         step(label + " " + check)
         took, body, err = socks_get(CLIENT_PORTS["egypt"], "private-b2.%s" % ZONE, 8080, 8)
         judge(check, b"200 OK" in body, "%.2fs %s" % (took, err or body[:12]), base_must_expose=False)
+
+        for check, inbound in (("X1: an XUDP flow, a public datagram then a private one, through the AsIs freedom", "plain"),
+                               ("X2: an XUDP flow, a public datagram then a private one, through DIRECT", "direct")):
+            step(label + " " + check)
+            before_public, before_private = udp_public.count(), udp_private.count()
+            flow = SocksUDP(CLIENT_PORTS[inbound])
+            for _ in range(3):
+                flow.send(PUBLIC, udp_public.port, b"public")
+                time.sleep(0.2)
+                flow.send(PRIVATE, udp_private.port, b"private")
+                time.sleep(0.2)
+            time.sleep(1.0)
+            flow.close()
+            delivered_public, delivered_private = udp_public.count() - before_public, udp_private.count() - before_private
+            judge(check, delivered_private > 0, "%d datagrams at %s, %d at %s" % (delivered_public, udp_public.name, delivered_private, udp_private.name))
+
+        check = "C4: an XUDP flow to the CGNAT UDP listener through rule#2 and DIRECT, the deliberate allow"
+        step(label + " " + check)
+        before = udp_cgnat.count()
+        flow = SocksUDP(CLIENT_PORTS["plain"])
+        for _ in range(5):
+            flow.send(CGNAT, udp_cgnat.port, b"cgnat")
+            time.sleep(0.1)
+        time.sleep(1.0)
+        flow.close()
+        delivered = udp_cgnat.count() - before
+        results.record(label, check, "%d of 5 delivered" % delivered, delivered == 5, "datagrams at %s" % udp_cgnat.name)
+
+        check = "L3: a name with a public and a private answer through DIRECT, 20 requests"
+        step(label + " " + check)
+        before = private_8081.snapshot()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            replies = list(pool.map(lambda i: socks_get(CLIENT_PORTS["direct"], "mixed-l3-%d.%s" % (i, ZONE), 8081, 8), range(20)))
+        served = sum(1 for _, body, _ in replies if b"200 OK" in body)
+        to_private = private_8081.snapshot()[0] - before[0]
+        if guarded:
+            results.record(label, check, "%d served, %d on the private listener" % (served, to_private), served == 20 and to_private == 0, "a guarded DIRECT dials only the public answer")
+        else:
+            results.record(label, check, "%d served, %d on the private listener" % (served, to_private), served == 20 and to_private > 0, "the base dials a random answer, private ones included")
 
 
 async def timed_get(port, host):
@@ -693,7 +759,8 @@ def run_harness(args):
     link_local = link_local_address()
     link_sink = Sink(socket.AF_INET6, link_local, 8443) if link_local else None
     sinks = (Sink(socket.AF_INET, PRIVATE, 8080), Sink(socket.AF_INET, PUBLIC, 8081), Sink(socket.AF_INET, CGNAT, 8082), link_sink,
-             UDPSink(PRIVATE, 9999), TunnelCounter(8083), TunnelCounter(8084))
+             UDPSink(PRIVATE, 9999), TunnelCounter(8083), TunnelCounter(8084), Sink(socket.AF_INET, PRIVATE, 8081),
+             UDPSink(PUBLIC, 9996), UDPSink(PRIVATE, 9997), UDPSink(CGNAT, 9998))
     for binary in (args.guarded, args.base):
         run([binary, "version"])
     results = Results()

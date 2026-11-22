@@ -1240,10 +1240,10 @@ index 0000000..657f2d3
 +}
 diff --git a/proxy/freedom/private_target_handler_test.go b/proxy/freedom/private_target_handler_test.go
 new file mode 100644
-index 0000000..a3bf6b3
+index 0000000..3ed6086
 --- /dev/null
 +++ b/proxy/freedom/private_target_handler_test.go
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,127 @@
 +package freedom
 +
 +import (
@@ -1271,6 +1271,12 @@ index 0000000..a3bf6b3
 +
 +func realFreedomOutbound(t *testing.T, tag string, config *Config) (context.Context, outbound.Handler) {
 +	t.Helper()
++	ctx, handler, _ := realFreedomOutboundWith(t, tag, config, &proxyman.SenderConfig{})
++	return ctx, handler
++}
++
++func realFreedomOutboundWith(t *testing.T, tag string, config *Config, sender *proxyman.SenderConfig) (context.Context, outbound.Handler, *Handler) {
++	t.Helper()
 +	instance, err := core.New(&core.Config{})
 +	if err != nil {
 +		t.Fatal(err)
@@ -1279,11 +1285,11 @@ index 0000000..a3bf6b3
 +		t.Fatal(err)
 +	}
 +	ctx := context.WithValue(context.Background(), core.XrayKey(1), instance)
-+	handler, err := proxyoutbound.NewHandler(ctx, &core.OutboundHandlerConfig{Tag: tag, SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{}), ProxySettings: serial.ToTypedMessage(config)})
++	handler, err := proxyoutbound.NewHandler(ctx, &core.OutboundHandlerConfig{Tag: tag, SenderSettings: serial.ToTypedMessage(sender), ProxySettings: serial.ToTypedMessage(config)})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	return ctx, handler
++	return ctx, handler, handler.(*proxyoutbound.Handler).GetOutbound().(*Handler)
 +}
 +
 +func dispatchThrough(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, target net.Destination, uplink ...[]byte) {
@@ -2532,6 +2538,166 @@ index 0000000..f83374b
 +		if refusedAsPrivate(err, "vmess") || dialer.count() == 0 {
 +			t.Errorf("vmess to %s: %v after %d dials, want the dial", target, err, dialer.count())
 +		}
++	}
++}
+diff --git a/proxy/freedom/private_target_round2_test.go b/proxy/freedom/private_target_round2_test.go
+new file mode 100644
+index 0000000..0e932ac
+--- /dev/null
++++ b/proxy/freedom/private_target_round2_test.go
+@@ -0,0 +1,154 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing/common/uot"
++	"github.com/xtls/xray-core/app/proxyman"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++func sendDatagramsThrough(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, to net.Destination, timeoutOnly bool, count int) {
++	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, inbound)
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: to, Tag: handler.Tag()}})
++	if timeoutOnly {
++		ctx = session.ContextWithTimeoutOnly(ctx, true)
++	}
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	for range count {
++		b := buf.New()
++		b.WriteString("datagram")
++		dest := to
++		b.UDP = &dest
++		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	}
++	go func() {
++		time.Sleep(time.Second)
++		uplinkWriter.Close()
++	}()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	handler.Dispatch(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter})
++}
++
++func datagramsReceived(conn gonet.PacketConn, within time.Duration) int {
++	packet := make([]byte, 64)
++	received := 0
++	for {
++		conn.SetReadDeadline(time.Now().Add(within))
++		if _, _, err := conn.ReadFrom(packet); err != nil {
++			return received
++		}
++		received++
++	}
++}
++
++func TestAnXUDPFlowKeepsThePrivateAllowOfItsDatagrams(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	allowed := net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port))
++	ctx, handler, freedom := realFreedomOutboundWith(t, "DIRECT", &Config{PrivateAllow: []*PrivateTargetRule{allowEntry("lan", hostCIDR(addr.IP))}}, &proxyman.SenderConfig{})
++	freedom.router = routerOf(t, routingRule("lan", "DIRECT", nil, hostCIDR(addr.IP)))
++	for _, timeoutOnly := range []bool{false, true} {
++		sendDatagramsThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, allowed, timeoutOnly, 3)
++		if received := datagramsReceived(target, 700*time.Millisecond); received != 3 {
++			t.Errorf("a UDP flow to %s, which rule lan sends to DIRECT and privateAllow lists, with TimeoutOnly %v (every XUDP flow of the mux server): %d of 3 datagrams delivered", allowed, timeoutOnly, received)
++		}
++	}
++}
++
++func TestAnXUDPFlowStillDropsDatagramsToARefusedPrivateAddress(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	refused := net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port))
++	ctx, handler, _ := realFreedomOutboundWith(t, "DIRECT", &Config{}, &proxyman.SenderConfig{})
++	for _, timeoutOnly := range []bool{false, true} {
++		sendDatagramsThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, refused, timeoutOnly, 3)
++		if received := datagramsReceived(target, 700*time.Millisecond); received != 0 {
++			t.Errorf("a UDP flow to the refused private address %s with TimeoutOnly %v delivered %d datagrams", refused, timeoutOnly, received)
++		}
++	}
++}
++
++func tcpOnly(rule *PrivateTargetRule) *PrivateTargetRule {
++	rule.Networks = []net.Network{net.Network_TCP}
++	return rule
++}
++
++func TestAUDPOverTCPDatagramIsJudgedAsUDPByFinalRules(t *testing.T) {
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere})
++	target, addr := listenUDPOnPrivateHost(t)
++	ctx, handler := realFreedomOutbound(t, "DIRECT", &Config{FinalRules: []*PrivateTargetRule{tcpOnly(cidrRule(false, hostCIDR(addr.IP)))}})
++	users := &session.Inbound{Name: "vless", Tag: "users"}
++	dispatchThrough(ctx, handler, users, net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), []byte("datagram"))
++	if receivedDatagram(target, 700*time.Millisecond) {
++		t.Fatalf("plain UDP to %s was delivered although the only finalRules allow is for tcp", addr)
++	}
++	dispatchThrough(ctx, handler, users, net.TCPDestination(net.DomainAddress(uot.MagicAddress), 0), uotConnectFrame(t, addr, []byte("datagram")))
++	if receivedDatagram(target, time.Second) {
++		t.Errorf("a UDP-over-TCP datagram reached %s through a finalRules allow for tcp only, which plain UDP to the same address does not pass", addr)
++	}
++}
++
++func TestAUDPOverTCPDatagramIsJudgedAsUDPByTheRoutersFirstMatch(t *testing.T) {
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere})
++	target, addr := listenUDPOnPrivateHost(t)
++	route := routingRule("lan-tcp", "DIRECT", nil, hostCIDR(addr.IP))
++	route.Networks = []net.Network{net.Network_TCP}
++	ctx, handler, freedom := realFreedomOutboundWith(t, "DIRECT", &Config{PrivateAllow: []*PrivateTargetRule{allowEntry("lan-tcp", hostCIDR(addr.IP))}}, &proxyman.SenderConfig{})
++	freedom.router = routerOf(t, route)
++	users := &session.Inbound{Name: "vless", Tag: "users"}
++	dispatchThrough(ctx, handler, users, net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), []byte("datagram"))
++	if receivedDatagram(target, 700*time.Millisecond) {
++		t.Fatalf("plain UDP to %s was delivered although rule lan-tcp covers tcp only", addr)
++	}
++	dispatchThrough(ctx, handler, users, net.TCPDestination(net.DomainAddress(uot.MagicAddress), 0), uotConnectFrame(t, addr, []byte("datagram")))
++	if receivedDatagram(target, time.Second) {
++		t.Errorf("a UDP-over-TCP datagram reached %s through a privateAllow whose routing rule covers tcp only", addr)
++	}
++}
++
++func TestAForceIPFreedomPicksOnlyAmongTheAnswersItWouldDial(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	refused := net.IP{192, 0, 2, 1}
++	internet.InitSystemDialer(&stubDNSClient{answers: map[string][]net.IP{"mixed.pgtest": {refused, refused, refused, listener.ip}}}, nil)
++	t.Cleanup(func() { internet.InitSystemDialer(nil, nil) })
++	h := newHandler(t, &Config{DomainStrategy: internet.DomainStrategy_FORCE_IP4, FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}})
++	refusals := 0
++	for range 10 {
++		if err := processPayload(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("mixed.pgtest"), listener.port), systemPath, []byte("payload")); refusedAsPrivate(err, "vless") {
++			refusals++
++		}
++	}
++	time.Sleep(200 * time.Millisecond)
++	if accepted := listener.accepted.Load(); accepted != 10 || refusals != 0 {
++		t.Errorf("a ForceIPv4 freedom resolving a name to %s three times and to the allowed %s once: %d of 10 connections reached the allowed address and %d were refused for the random pick, want 10 and 0", refused, listener.ip, accepted, refusals)
++	}
++}
++
++func TestARealFreedomOutboundBehindADialerProxyNeverHandsTheChainTheName(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: always(listener.ip)}, "chained-real.pgtest")
++	ctx, handler, _ := realFreedomOutboundWith(t, "DIRECT", &Config{}, &proxyman.SenderConfig{StreamSettings: &internet.StreamConfig{SocketSettings: &internet.SocketConfig{DialerProxy: "chain"}}})
++	chain := useChain(t, nil)
++	dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("chained-real.pgtest"), listener.port), []byte("payload"))
++	requireUntouched(t, "a private name through a real freedom outbound behind dialerProxy, the chain was handed "+chain.targets(), listener, nil)
++	if handed := chain.targets(); handed != "" {
++		t.Errorf("the chain behind a real freedom outbound was handed %s for a name of a private address", handed)
 +	}
 +}
 diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go

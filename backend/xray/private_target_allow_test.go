@@ -304,6 +304,51 @@ func TestAFreedomOutboundIsFoundWhateverTheLetterCaseOfItsKeys(t *testing.T) {
 	}
 }
 
+func TestAnOutboundThatMightBeAFreedomLosesThePanelsPrivateAllow(t *testing.T) {
+	panelAllow := []any{map[string]any{"ruleTag": "panel", "ip": []any{"169.254.0.0/16"}}}
+	for _, c := range []struct {
+		name     string
+		outbound map[string]any
+	}{
+		{"a repeated protocol key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "Protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}},
+		{"a protocol key repeated with another protocol", map[string]any{"tag": "ambiguous", "protocol": "vless", "PROTOCOL": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}},
+		{"a repeated tag key", map[string]any{"tag": "ambiguous", "TAG": "ambiguous", "protocol": "freedom", "settings": map[string]any{"PrivateAllow": panelAllow}}},
+		{"a repeated settings key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}, "Settings": map[string]any{"privateallow": panelAllow}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			shape := coreOneShape(privateGuardRule(map[string]any{"ruleTag": "panel", "ip": []any{"169.254.169.254/32"}, "outboundTag": "ambiguous"}))
+			shape["outbounds"] = append(shape["outbounds"].([]any), c.outbound)
+			raw, err := privateGuardConfig(t, shape).ToBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rendered struct {
+				Outbounds []map[string]any `json:"outbounds"`
+			}
+			if err := json.Unmarshal(raw, &rendered); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, outbound := range rendered.Outbounds {
+				if tag, _ := foldedKey(outbound, "tag").(string); tag != "ambiguous" {
+					continue
+				}
+				found = true
+				encoded, err := json.Marshal(outbound)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(strings.ToLower(string(encoded)), "privateallow") {
+					t.Errorf("the rendered outbound still carries the panel's privateAllow: %s", encoded)
+				}
+			}
+			if !found {
+				t.Fatal("the rendered config lost the ambiguous outbound")
+			}
+		})
+	}
+}
+
 func TestTheNodeOwnsPrivateAllow(t *testing.T) {
 	shape := coreOneShape()
 	outbounds := shape["outbounds"].([]any)
