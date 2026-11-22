@@ -159,8 +159,10 @@ jobs:
 
       - name: Run the private-target harness against the guarded and the base core
         run: |
-          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_STEP_SUMMARY python3 -I scripts/private_target_harness.py \
-            --guarded "$RUNNER_TEMP/xray-guarded" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/private-target-harness"
+          echo "the harness starts at $(date -u +%H:%M:%S)"
+          sudo -n env GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            timeout --kill-after=30 1200 python3 -u -I scripts/private_target_harness.py \
+            --guarded "$RUNNER_TEMP/xray-guarded" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/private-target-harness" </dev/null
 
   wireguard-integration:
     runs-on: ubuntu-latest
