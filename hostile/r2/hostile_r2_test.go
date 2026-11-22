@@ -10,12 +10,15 @@ import (
 	"github.com/sagernet/sing/common/uot"
 	"github.com/xtls/xray-core/app/proxyman"
 	proxyoutbound "github.com/xtls/xray-core/app/proxyman/outbound"
+	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
+	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/pipe"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -172,17 +175,6 @@ func TestHostileR2SocketOptionsAndFragmentKeepTheConnectCheck(t *testing.T) {
 	}
 }
 
-func TestHostileR2AFreedomWithMuxNeverDialsTheUserTarget(t *testing.T) {
-	listener := listenOnPrivateHost(t)
-	ctx, handler, _ := hostileFreedom(t, "DIRECT", &Config{}, &proxyman.SenderConfig{MultiplexSettings: &proxyman.MultiplexingConfig{Enabled: true, Concurrency: 8}})
-	for range 2 {
-		dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), []byte("payload"))
-	}
-	requireUntouched(t, "a private literal through a freedom with mux enabled", listener, nil)
-	handler.Close()
-	time.Sleep(500 * time.Millisecond)
-}
-
 func TestHostileR2ARebindingNameBehindADualStackAnswerIsCheckedOnEveryFamily(t *testing.T) {
 	listener := listenOnPrivateHost(t)
 	dns := &scriptedDNS{decide: always(documentationIPv6, listener.ip)}
@@ -194,3 +186,78 @@ func TestHostileR2ARebindingNameBehindADualStackAnswerIsCheckedOnEveryFamily(t *
 	requireUntouched(t, "a dual-stack name whose IPv4 answer is the private listener", listener, nil)
 }
 
+func dispatchDatagrams(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, first net.Destination, timeoutOnly bool, to net.Destination, count int) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ctx = session.ContextWithInbound(ctx, inbound)
+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: first, Tag: handler.Tag()}})
+	if timeoutOnly {
+		ctx = session.ContextWithTimeoutOnly(ctx, true)
+	}
+	uplinkReader, uplinkWriter := pipe.New()
+	downlinkReader, downlinkWriter := pipe.New()
+	for range count {
+		b := buf.New()
+		b.WriteString("datagram")
+		dest := to
+		b.UDP = &dest
+		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
+	}
+	go func() {
+		time.Sleep(time.Second)
+		uplinkWriter.Close()
+	}()
+	go func() {
+		for {
+			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
+				return
+			}
+		}
+	}()
+	handler.Dispatch(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter})
+}
+
+func countDatagrams(conn gonet.PacketConn, within time.Duration) int {
+	deadline := time.Now().Add(within)
+	packet := make([]byte, 64)
+	got := 0
+	for {
+		conn.SetReadDeadline(deadline)
+		if _, _, err := conn.ReadFrom(packet); err != nil {
+			return got
+		}
+		got++
+	}
+}
+
+func TestHostileR2AnXUDPFlowLosesThePrivateAllowOfItsDatagrams(t *testing.T) {
+	inbound := &session.Inbound{Name: "vless", Tag: "users"}
+	target, addr := listenUDPOnPrivateHost(t)
+	allowed := net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port))
+	r := routerOf(t, routingRule("lan", "DIRECT", nil, hostCIDR(addr.IP)))
+	ctx, handler, freedom := hostileFreedom(t, "DIRECT", &Config{PrivateAllow: []*PrivateTargetRule{allowEntry("lan", hostCIDR(addr.IP))}}, nil)
+	freedom.router = r
+	results := map[bool]int{}
+	for _, timeoutOnly := range []bool{false, true} {
+		dispatchDatagrams(ctx, handler, inbound, allowed, timeoutOnly, allowed, 3)
+		results[timeoutOnly] = countDatagrams(target, 700*time.Millisecond)
+		t.Logf("a UDP flow to %s that routing rule lan sends to DIRECT and privateAllow lists, TimeoutOnly=%v (true for every XUDP flow the mux server opens): %d of 3 datagrams delivered", allowed, timeoutOnly, results[timeoutOnly])
+	}
+	if results[false] == 0 {
+		t.Fatalf("the allowed private UDP destination %s received nothing even without TimeoutOnly", allowed)
+	}
+	if results[true] == 0 {
+		t.Errorf("with the TimeoutOnly context of an XUDP flow, every datagram to the allowed private destination %s is dropped: freedom swaps ctx for a fresh background context before the per-packet check reads the session outbounds", allowed)
+	}
+}
+
+func TestHostileR2AFreedomWithMuxNeverDialsTheUserTarget(t *testing.T) {
+	listener := listenOnPrivateHost(t)
+	ctx, handler, _ := hostileFreedom(t, "DIRECT", &Config{}, &proxyman.SenderConfig{MultiplexSettings: &proxyman.MultiplexingConfig{Enabled: true, Concurrency: 8}})
+	for range 2 {
+		dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, listener.destination(), []byte("payload"))
+	}
+	requireUntouched(t, "a private literal through a freedom with mux enabled", listener, nil)
+	handler.Close()
+	time.Sleep(4 * time.Second)
+}

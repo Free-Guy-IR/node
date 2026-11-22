@@ -589,7 +589,7 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, counters):
         time.sleep(1.0)
         flow.close()
         got = udp_cgnat.count() - before
-        expect_served(check, got > 0, "CGNAT sink %d datagrams" % got)
+        expect_served(check, got > 0, "CGNAT sink %d datagrams" % got, finding=True)
 
         for inbound in ("users", "lan", "direct", "wg"):
             check = "P%s: a public name through the %s inbound" % (inbound[0], inbound)
@@ -667,6 +667,8 @@ def udp_rate_phase(results, builds, out, udp_cgnat, udp_public):
                        "node_cpu_seconds": round(cpu, 3), "node_cpu_us_per_delivered": round(cpu * 1e6 / delivered, 2) if delivered else None}
                 table.append(row)
                 say("UDPRATE", json.dumps(row))
+                results.record(label, "UDP rate: XUDP datagrams to %s from an ordinary user" % target, "delivered %d of 20000" % delivered,
+                               delivered >= 18000, "node CPU %.3f s" % cpu, finding=True)
     return table
 
 
@@ -749,6 +751,7 @@ def main():
     parser.add_argument("--base", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--quic-hex", required=True)
+    parser.add_argument("--fix")
     args = parser.parse_args()
     with open(args.quic_hex) as handle:
         QUIC_INITIAL = bytes.fromhex(handle.read().strip())
@@ -763,6 +766,8 @@ def main():
                  UDPSink(PRIVATE, 5353), UDPSink(CGNAT, 5353), UDPSink(PUBLIC, 5353), UDPSink(PRIVATE, 443))
         counters = (TunCounter("tcp"), TunCounter("udp"))
         builds = [("base", args.base, False), ("guard", args.guard, True)]
+        if args.fix:
+            builds.append(("fix", args.fix, True))
         for label, binary, guarded in builds:
             security_phase(results, label, binary, guarded, args.out, dns, sinks, counters)
         step("time to first byte")

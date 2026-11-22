@@ -1,0 +1,21 @@
+diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
+index bf3af31..e738ceb 100644
+--- a/proxy/freedom/freedom.go
++++ b/proxy/freedom/freedom.go
+@@ -117,6 +117,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	ob.CanSpliceCopy = 1
+ 	inbound := session.InboundFromContext(ctx)
+ 	refuseLocalHost := refusesLocalHost(inbound)
++	sessionCtx := ctx
+ 
+ 	destination := ob.Target
+ 	origTargetAddr := ob.OriginalTarget.Address
+@@ -275,7 +276,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			writer = NewPacketWriter(conn, h, UDPOverride, destination)
+ 			if pw, ok := writer.(*PacketWriter); ok {
+ 				pw.RefuseLocalHost = refuseLocalHost
+-				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }
++				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(sessionCtx, inbound, dest) }
+ 			}
+ 			if h.config.Noises != nil {
+ 				errors.LogDebug(ctx, "NOISE", h.config.Noises)

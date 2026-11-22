@@ -48,21 +48,31 @@ jobs:
           if grep -rq --include='*.go' AppliesConnectCheck "$src"; then echo "the base carries the guard"; exit 1; fi
           grep -rq --include='*.go' AppliesConnectCheck "$RUNNER_TEMP/xray-guard-src"
 
-      - name: Hostile Go tests on the guarded source, Linux
+      - name: Build the guarded Xray with the round-2 fix candidate on top
         run: |
-          cp hostile/r2/hostile_r2_test.go "$RUNNER_TEMP/xray-guard-src/proxy/freedom/"
-          cd "$RUNNER_TEMP/xray-guard-src"
+          cp -a "$RUNNER_TEMP/xray-guard-src" "$RUNNER_TEMP/xray-fix-src"
+          git -C "$RUNNER_TEMP/xray-fix-src" apply --verbose "$PWD/hostile/r2/fix-sessionctx.patch"
+          (cd "$RUNNER_TEMP/xray-fix-src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-fix" ./main)
+          "$RUNNER_TEMP/xray-fix" version
+
+      - name: Hostile Go tests on the guarded source and on the fix candidate, Linux
+        run: |
           set +e
-          GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -v -run 'TestHostileR2' ./proxy/freedom/ > "$RUNNER_TEMP/hr2-go.log" 2>&1
-          status=$?
-          grep -E '^(=== RUN|--- |    hostile_r2|PASS|FAIL|ok|WARNING: DATA RACE)' "$RUNNER_TEMP/hr2-go.log"
-          echo "go test exit status $status"
+          for tree in xray-guard-src xray-fix-src; do
+            cp hostile/r2/hostile_r2_test.go "$RUNNER_TEMP/$tree/proxy/freedom/"
+            (cd "$RUNNER_TEMP/$tree" && GOTOOLCHAIN=local CGO_ENABLED=1 go test -race -count=1 -v -run 'TestHostileR2' ./proxy/freedom/ > "$RUNNER_TEMP/hr2-go-$tree.log" 2>&1)
+            status=$?
+            echo "==== $tree"
+            grep -E '^(=== RUN|--- |    hostile_r2|PASS|FAIL|ok)' "$RUNNER_TEMP/hr2-go-$tree.log"
+            awk '/^WARNING: DATA RACE/{p=1} p{print} p&&/^==================$/{p=0}' "$RUNNER_TEMP/hr2-go-$tree.log" | head -n 120
+            echo "go test exit status $status on $tree"
+          done
 
       - name: Real-binary harness, base and guard
         run: |
           command -v iptables
           uname -a
-          sudo -n env GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" timeout --kill-after=30 2500 python3 -u -I hostile/r2/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/hr2" --quic-hex hostile/r2/quic_initial_www_google_com.hex </dev/null
+          sudo -n env GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" timeout --kill-after=30 2500 python3 -u -I hostile/r2/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --fix "$RUNNER_TEMP/xray-fix" --out "$RUNNER_TEMP/hr2" --quic-hex hostile/r2/quic_initial_www_google_com.hex </dev/null
 
       - name: Show the xray logs
         if: always()
