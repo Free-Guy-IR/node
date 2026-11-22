@@ -1,0 +1,248 @@
+XHTTP server: a Push that waits for room in the upload queue no longer holds the lock Close needs
+
+Upstream: f496437b84d4f05e07243da11fe380b302a82145
+
+At the pin, uploadQueue.Push holds writeCloseMutex while it sends on pushedPackets, whose capacity is
+scMaxBufferedPosts (30 by default), and Close takes the same mutex. A packet-up POST to a new session
+id creates the session before any VLESS authentication and nothing reads its queue until a GET
+arrives, so the 31st POST blocks inside Push, the session reaper's Close blocks behind it 30 seconds
+later, and the session, its goroutines and its buffered payloads are never freed. Upstream #6372
+(first in v26.6.27) drops the mutex: Push selects between the send and the queue's done.Instance,
+Close closes that instance, the stream-up reader is published with an atomic compare-and-swap, and
+Read selects on the same instance. The change in transport/internet/splithttp/upload_queue.go is
+upstream's, without its comment; the file is identical at the pin and at the upstream commit's
+parent. transport/internet/splithttp/upload_queue_close_test.go is fork code: it fills a queue of
+30, starts a 31st Push and checks that Close returns and the waiting Push fails, and that packets
+pushed out of order before any read still come out in sequence order.
+
+diff --git a/transport/internet/splithttp/upload_queue.go b/transport/internet/splithttp/upload_queue.go
+index 69b9a97..dd7a4a9 100644
+--- a/transport/internet/splithttp/upload_queue.go
++++ b/transport/internet/splithttp/upload_queue.go
+@@ -6,27 +6,25 @@ package splithttp
+ import (
+ 	"container/heap"
+ 	"io"
+-	"runtime"
+-	"sync"
++	"sync/atomic"
+ 
+ 	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/common/signal/done"
+ )
+ 
+ type Packet struct {
+-	Reader  io.ReadCloser
++	Reader  *httpServerConn
+ 	Payload []byte
+ 	Seq     uint64
+ }
+ 
+ type uploadQueue struct {
+-	reader          io.ReadCloser
+-	nomore          bool
+-	pushedPackets   chan Packet
+-	writeCloseMutex sync.Mutex
+-	heap            uploadHeap
+-	nextSeq         uint64
+-	closed          bool
+-	maxPackets      int
++	reader        atomic.Pointer[httpServerConn]
++	pushedPackets chan Packet
++	heap          uploadHeap
++	nextSeq       uint64
++	maxPackets    int
++	closed        *done.Instance
+ }
+ 
+ func NewUploadQueue(maxPackets int) *uploadQueue {
+@@ -34,73 +32,53 @@ func NewUploadQueue(maxPackets int) *uploadQueue {
+ 		pushedPackets: make(chan Packet, maxPackets),
+ 		heap:          uploadHeap{},
+ 		nextSeq:       0,
+-		closed:        false,
++		closed:        done.New(),
+ 		maxPackets:    maxPackets,
+ 	}
+ }
+ 
+ func (h *uploadQueue) Push(p Packet) error {
+-	h.writeCloseMutex.Lock()
+-	defer h.writeCloseMutex.Unlock()
+-
+-	if h.closed {
+-		return errors.New("packet queue closed")
+-	}
+-	if h.nomore {
++	if h.reader.Load() != nil || (p.Reader != nil && !h.reader.CompareAndSwap(nil, p.Reader)) {
+ 		return errors.New("h.reader already exists")
+ 	}
+-	if p.Reader != nil {
+-		h.nomore = true
++	select {
++	case h.pushedPackets <- p:
++		if h.closed.Done() {
++			return errors.New("packet queue closed")
++		}
++		return nil
++	case <-h.closed.Wait():
++		return errors.New("packet queue closed")
+ 	}
+-	h.pushedPackets <- p
+-	return nil
+ }
+ 
+ func (h *uploadQueue) Close() error {
+-	h.writeCloseMutex.Lock()
+-	defer h.writeCloseMutex.Unlock()
+-
+-	if !h.closed {
+-		h.closed = true
+-		runtime.Gosched() // hope Read() gets the packet
+-	f:
+-		for {
+-			select {
+-			case p := <-h.pushedPackets:
+-				if p.Reader != nil {
+-					h.reader = p.Reader
+-				}
+-			default:
+-				break f
+-			}
+-		}
+-		close(h.pushedPackets)
+-	}
+-	if h.reader != nil {
+-		return h.reader.Close()
++	h.closed.Close()
++	if reader := h.reader.Load(); reader != nil {
++		return reader.Close()
+ 	}
+ 	return nil
+ }
+ 
+ func (h *uploadQueue) Read(b []byte) (int, error) {
+-	if h.reader != nil {
+-		return h.reader.Read(b)
++	if reader := h.reader.Load(); reader != nil {
++		return reader.Read(b)
+ 	}
+ 
+-	if h.closed {
++	if h.closed.Done() {
+ 		return 0, io.EOF
+ 	}
+ 
+ 	if len(h.heap) == 0 {
+-		packet, more := <-h.pushedPackets
+-		if !more {
++		select {
++		case p := <-h.pushedPackets:
++			if p.Reader != nil {
++				return p.Reader.Read(b)
++			}
++			heap.Push(&h.heap, p)
++		case <-h.closed.Wait():
+ 			return 0, io.EOF
+ 		}
+-		if packet.Reader != nil {
+-			h.reader = packet.Reader
+-			return h.reader.Read(b)
+-		}
+-		heap.Push(&h.heap, packet)
+ 	}
+ 
+ 	for len(h.heap) > 0 {
+@@ -131,11 +109,12 @@ func (h *uploadQueue) Read(b []byte) (int, error) {
+ 				return 0, errors.New("packet queue is too large")
+ 			}
+ 			heap.Push(&h.heap, packet)
+-			packet2, more := <-h.pushedPackets
+-			if !more {
++			select {
++			case p := <-h.pushedPackets:
++				heap.Push(&h.heap, p)
++			case <-h.closed.Wait():
+ 				return 0, io.EOF
+ 			}
+-			heap.Push(&h.heap, packet2)
+ 		}
+ 	}
+ 
+diff --git a/transport/internet/splithttp/upload_queue_close_test.go b/transport/internet/splithttp/upload_queue_close_test.go
+new file mode 100644
+index 0000000..e8a082f
+--- /dev/null
++++ b/transport/internet/splithttp/upload_queue_close_test.go
+@@ -0,0 +1,71 @@
++package splithttp_test
++
++import (
++	"testing"
++	"time"
++
++	. "github.com/xtls/xray-core/transport/internet/splithttp"
++)
++
++func TestCloseReleasesAPushBlockedOnAFullQueue(t *testing.T) {
++	const maxBufferedPosts = 30
++	q := NewUploadQueue(maxBufferedPosts)
++	for i := 0; i < maxBufferedPosts; i++ {
++		if err := q.Push(Packet{Payload: []byte("x"), Seq: uint64(i)}); err != nil {
++			t.Fatalf("push %d: %v", i+1, err)
++		}
++	}
++	pushed := make(chan error, 1)
++	go func() {
++		pushed <- q.Push(Packet{Payload: []byte("x"), Seq: maxBufferedPosts})
++	}()
++	select {
++	case err := <-pushed:
++		t.Fatalf("push %d into a full queue with no reader returned %v instead of waiting", maxBufferedPosts+1, err)
++	case <-time.After(200 * time.Millisecond):
++	}
++	closed := make(chan error, 1)
++	go func() {
++		closed <- q.Close()
++	}()
++	select {
++	case <-closed:
++	case <-time.After(3 * time.Second):
++		t.Fatalf("Close is still blocked behind push %d after 3s", maxBufferedPosts+1)
++	}
++	select {
++	case err := <-pushed:
++		if err == nil {
++			t.Fatalf("push %d succeeded after Close", maxBufferedPosts+1)
++		}
++	case <-time.After(3 * time.Second):
++		t.Fatalf("push %d is still blocked 3s after Close returned", maxBufferedPosts+1)
++	}
++}
++
++func TestPacketsPushedBeforeAReaderArrivesAreReadInSequenceOrder(t *testing.T) {
++	q := NewUploadQueue(30)
++	for _, seq := range []uint64{2, 0, 1} {
++		if err := q.Push(Packet{Payload: []byte{byte('a' + seq)}, Seq: seq}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	got := make([]byte, 0, 3)
++	b := make([]byte, 8)
++	for len(got) < 3 {
++		n, err := q.Read(b)
++		if err != nil {
++			t.Fatal(err)
++		}
++		got = append(got, b[:n]...)
++	}
++	if string(got) != "abc" {
++		t.Fatalf("read %q, want abc", got)
++	}
++	if err := q.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if n, err := q.Read(b); n != 0 || err == nil {
++		t.Fatalf("read after Close: %d, %v, want 0 and an error", n, err)
++	}
++}

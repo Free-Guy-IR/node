@@ -93,6 +93,7 @@ COPY patches/xray-wireguard-tun-close.patch /patches/xray-wireguard-tun-close.pa
 COPY patches/xray-x-net-0.60.0.patch /patches/xray-x-net-0.60.0.patch
 COPY patches/xray-xff-trusted-header.patch /patches/xray-xff-trusted-header.patch
 COPY patches/xray-xhttp-client-race.patch /patches/xray-xhttp-client-race.patch
+COPY patches/xray-xhttp-upload-queue.patch /patches/xray-xhttp-upload-queue.patch
 COPY patches/xray-udp-conn-cancel-race.patch /patches/xray-udp-conn-cancel-race.patch
 COPY patches/xray-udp-dispatcher-closed-race.patch /patches/xray-udp-dispatcher-closed-race.patch
 COPY patches/xray-zstd-brotli-cert-decompression.patch /patches/xray-zstd-brotli-cert-decompression.patch
@@ -242,6 +243,11 @@ RUN git init -q . \
  && grep -A1 -F "n := int(buff.Len())" transport/internet/splithttp/dialer.go | grep -qF "err := w.WriteMultiBuffer(buf.MultiBuffer{buff})" \
  && grep -qF "writed += n" transport/internet/splithttp/dialer.go \
  && ! grep -qF "writed += int(buff.Len())" transport/internet/splithttp/dialer.go \
+ && git apply --verbose /patches/xray-xhttp-upload-queue.patch \
+ && grep -qF "case <-h.closed.Wait():" transport/internet/splithttp/upload_queue.go \
+ && grep -qF "h.reader.CompareAndSwap(nil, p.Reader)" transport/internet/splithttp/upload_queue.go \
+ && ! grep -qF "writeCloseMutex" transport/internet/splithttp/upload_queue.go \
+ && grep -qF "func TestCloseReleasesAPushBlockedOnAFullQueue" transport/internet/splithttp/upload_queue_close_test.go \
  && git apply --verbose /patches/xray-udp-conn-cancel-race.patch \
  && grep -qF "w.publishCancel(conn, cancel)" app/proxyman/inbound/worker.go \
  && grep -qF "func (w *udpWorker) publishCancel(conn *udpConn, cancel context.CancelFunc) {" app/proxyman/inbound/worker.go \
