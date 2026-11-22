@@ -16,7 +16,9 @@ refused. The local host stays refused whatever an allow says. finalRules decide 
 destinations and the dokodemo-door, socks and http inbounds behave as before, and a stock v26.3.27 loads the same
 config without guarding it.
 
-Where freedom checks: a literal or freedom-resolved address before the dial. When the outbound reaches the default
+Where freedom checks: a literal or freedom-resolved address before the dial; a name freedom resolves itself
+(domainStrategy) takes its random answer among those it would dial, so a private answer next to a public one is
+never picked, for the connection and for each datagram alike. When the outbound reaches the default
 system dialer directly (no proxySettings, no dialerProxy, the raw TCP transport for TCP, no alternative system
 dialer: app/proxyman/outbound's AppliesConnectCheck), freedom does no lookup of its own and puts a connect check in
 the dial context instead: DefaultSystemDialer runs it first in net.Dialer.Control before every connect attempt,
@@ -29,10 +31,13 @@ On every other path (proxySettings, dialerProxy, another TCP transport, an alter
 freedom cannot classify) freedom resolves a name once with the system resolver, refuses when any answer is the
 local host or a refused private address, refuses without dialing when the lookup fails or is empty, and dials only
 the checked addresses, so nothing resolves the name again. app/proxyman/outbound's UDP-over-TCP server (the sing
-uot magic names) writes its datagrams through the same check, which drops a refused one. Freedom also checks the
-remote address of the dialed connection, except the unspecified address that dialerProxy and proxySettings
-connections report, and each UDP datagram after per-packet resolution, which is dropped. A refused connection is
-logged at warning with "it is the private address" (or "local host", "unparsable"). privateAllow is node-owned: the
+uot magic names) writes its datagrams through the same check, which judges each one as UDP and drops a refused one.
+Freedom also checks the remote address of the dialed connection, except the unspecified address that dialerProxy
+and proxySettings connections report, and each UDP datagram after per-packet resolution, which is dropped; that
+check keeps the routing context the connection started with, so the datagrams of an XUDP flow, whose context the
+mux server marks timeout-only and freedom then swaps for a background one, keep their allows. A refused connection
+is logged at warning with the inbound's protocol and tag and "it is the private address" (or "local host",
+"unparsable"). privateAllow is node-owned: the
 PasarGuard node tags the routing rules that send explicit private addresses to a freedom outbound and lists them
 there. app/router/private_target_match.go, app/proxyman/outbound/connect_check.go,
 transport/internet/connect_check.go, infra/conf/freedom_private_target.go, proxy/freedom/private_target.go and
@@ -776,9 +781,25 @@ index fd0547d..fbb6567 100644
 +  repeated PrivateTargetRule private_allow = 101;
  }
 diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
-index 3179cc7..bf3af31 100644
+index 3179cc7..3cc9919 100644
 --- a/proxy/freedom/freedom.go
 +++ b/proxy/freedom/freedom.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"crypto/rand"
+ 	"io"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -11,7 +12,6 @@ import (
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/common/crypto"
+-	"github.com/xtls/xray-core/common/dice"
+ 	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/common/net"
+ 	"github.com/xtls/xray-core/common/platform"
 @@ -34,9 +34,7 @@ var useSplice bool
  func init() {
  	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
@@ -808,7 +829,15 @@ index 3179cc7..bf3af31 100644
  }
  
  func (h *Handler) policy() policy.Session {
-@@ -142,6 +143,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -116,6 +117,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 	ob.CanSpliceCopy = 1
+ 	inbound := session.InboundFromContext(ctx)
+ 	refuseLocalHost := refusesLocalHost(inbound)
++	refusesPacketTarget := h.packetTargetCheck(ctx, inbound)
+ 
+ 	destination := ob.Target
+ 	origTargetAddr := ob.OriginalTarget.Address
+@@ -142,6 +144,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  
  	var conn stat.Connection
  	var refused *net.Destination
@@ -816,7 +845,16 @@ index 3179cc7..bf3af31 100644
  	err := retry.ExponentialBackoff(5, 100).On(func() error {
  		dialDest := destination
  		if h.config.DomainStrategy.HasStrategy() && dialDest.Address.Family().IsDomain() {
-@@ -170,8 +172,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -158,7 +161,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 			} else {
+ 				dialDest = net.Destination{
+ 					Network: dialDest.Network,
+-					Address: net.IPAddress(ips[dice.Roll(len(ips))]),
++					Address: pickAnswer(ips, h.answerRefusal(ctx, inbound, dialDest)),
+ 					Port:    dialDest.Port,
+ 				}
+ 				errors.LogInfo(ctx, "dialing to ", dialDest)
+@@ -170,8 +173,34 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
@@ -829,7 +867,7 @@ index 3179cc7..bf3af31 100644
 +		dialCtx, candidates, connect := ctx, []net.Destination{dialDest}, &connectRefusal{}
 +		if refuseLocalHost {
 +			if appliesConnectCheck(dialer, dialDest) {
-+				dialCtx = internet.ContextWithConnectCheck(ctx, h.connectCheck(ctx, inbound, dialDest.Network, connect))
++				dialCtx = internet.ContextWithConnectCheck(ctx, h.connectCheck(ctx, inbound, connect))
 +			} else if dialDest.Address.Family().IsDomain() {
 +				resolved, target, kind, err := h.resolveOnce(ctx, inbound, dialDest)
 +				if target != nil {
@@ -852,7 +890,7 @@ index 3179cc7..bf3af31 100644
  			return err
  		}
  
-@@ -182,6 +210,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -182,6 +211,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			return nil
  		}
  
@@ -865,26 +903,26 @@ index 3179cc7..bf3af31 100644
  		if h.config.ProxyProtocol > 0 && h.config.ProxyProtocol <= 2 {
  			version := byte(h.config.ProxyProtocol)
  			srcAddr := inbound.Source.RawNetAddr()
-@@ -200,7 +234,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -200,7 +235,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  		return errors.New("failed to open connection to ", destination).Base(err)
  	}
  	if refused != nil {
 -		return errors.New("refused ", destination, " from the ", inbound.Name, " inbound: it is the local host address ", *refused).AtWarning()
-+		refusal := []interface{}{"refused ", destination, " from the ", inbound.Name, " inbound: it is the ", refusedKind, " address ", *refused}
++		refusal := []interface{}{"refused ", destination, " from the ", inbound.Name, " inbound ", strconv.Quote(inbound.Tag), ": it is the ", refusedKind, " address ", *refused}
 +		errors.LogWarning(ctx, refusal...)
 +		return errors.New(refusal...).AtWarning()
  	}
  	defer conn.Close()
  	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
-@@ -239,6 +275,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+@@ -239,6 +276,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
  			writer = NewPacketWriter(conn, h, UDPOverride, destination)
  			if pw, ok := writer.(*PacketWriter); ok {
  				pw.RefuseLocalHost = refuseLocalHost
-+				pw.RefusesTarget = func(dest net.Destination) bool { return h.refusesPrivateTarget(ctx, inbound, dest) }
++				pw.RefusesTarget = refusesPacketTarget
  			}
  			if h.config.Noises != nil {
  				errors.LogDebug(ctx, "NOISE", h.config.Noises)
-@@ -400,6 +437,7 @@ type PacketWriter struct {
+@@ -400,6 +438,7 @@ type PacketWriter struct {
  	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
  	LocalAddr       net.Address
  	RefuseLocalHost bool
@@ -892,7 +930,16 @@ index 3179cc7..bf3af31 100644
  }
  
  func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-@@ -454,6 +492,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+@@ -432,7 +471,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+ 								continue
+ 							}
+ 						} else {
+-							ip = net.IPAddress(ips[dice.Roll(len(ips))])
++							ip = pickAnswer(ips, w.answerRefusal(b.UDP.Port))
+ 							ShouldUseSystemResolver = false
+ 						}
+ 					}
+@@ -454,6 +493,10 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
  				b.Release()
  				continue
  			}
@@ -905,19 +952,21 @@ index 3179cc7..bf3af31 100644
  				b.Release()
 diff --git a/proxy/freedom/private_target.go b/proxy/freedom/private_target.go
 new file mode 100644
-index 0000000..cb19d54
+index 0000000..a4779db
 --- /dev/null
 +++ b/proxy/freedom/private_target.go
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,324 @@
 +package freedom
 +
 +import (
 +	"context"
 +	"net/netip"
 +	"slices"
++	"strings"
 +	"sync"
 +
 +	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/dice"
 +	"github.com/xtls/xray-core/common/errors"
 +	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/common/session"
@@ -1118,6 +1167,16 @@ index 0000000..cb19d54
 +	return r.target, r.kind
 +}
 +
++func connectNetwork(name string) (net.Network, bool) {
++	switch {
++	case strings.HasPrefix(name, "tcp"):
++		return net.Network_TCP, true
++	case strings.HasPrefix(name, "udp"):
++		return net.Network_UDP, true
++	}
++	return net.Network_Unknown, false
++}
++
 +func connectTarget(network net.Network, address string) (net.Destination, netip.Addr, bool) {
 +	parsed, err := netip.ParseAddrPort(address)
 +	if err != nil {
@@ -1137,11 +1196,12 @@ index 0000000..cb19d54
 +	return ""
 +}
 +
-+func (h *Handler) connectCheck(ctx context.Context, inbound *session.Inbound, network net.Network, refusal *connectRefusal) internet.ConnectCheck {
-+	return func(_, address string) error {
++func (h *Handler) connectCheck(ctx context.Context, inbound *session.Inbound, refusal *connectRefusal) internet.ConnectCheck {
++	return func(networkName, address string) error {
++		network, known := connectNetwork(networkName)
 +		target, ip, ok := connectTarget(network, address)
-+		if !ok {
-+			return refusal.refuse(net.Destination{Network: network, Address: net.DomainAddress(address)}, "unparsable")
++		if !known || !ok {
++			return refusal.refuse(net.Destination{Network: network, Address: net.DomainAddress(networkName + " " + address)}, "unparsable")
 +		}
 +		if kind := h.refusedKind(ctx, inbound, target, ip); kind != "" {
 +			return refusal.refuse(target, kind)
@@ -1175,6 +1235,41 @@ index 0000000..cb19d54
 +	return checked, nil, "", nil
 +}
 +
++func (h *Handler) packetTargetCheck(ctx context.Context, inbound *session.Inbound) func(net.Destination) bool {
++	return func(dest net.Destination) bool {
++		return h.refusesPrivateTarget(ctx, inbound, dest)
++	}
++}
++
++func (h *Handler) answerRefusal(ctx context.Context, inbound *session.Inbound, dest net.Destination) func(net.Address) bool {
++	if !refusesLocalHost(inbound) {
++		return nil
++	}
++	return func(addr net.Address) bool {
++		answer := net.Destination{Network: dest.Network, Address: addr, Port: dest.Port}
++		return isLocalHostAddress(addr) || h.refusesPrivateTarget(ctx, inbound, answer)
++	}
++}
++
++func (w *PacketWriter) answerRefusal(port net.Port) func(net.Address) bool {
++	return func(addr net.Address) bool {
++		return w.RefuseLocalHost && isLocalHostAddress(addr) || w.RefusesTarget != nil && w.RefusesTarget(net.UDPDestination(addr, port))
++	}
++}
++
++func pickAnswer(ips []net.IP, refused func(net.Address) bool) net.Address {
++	dialable := make([]net.Address, 0, len(ips))
++	for _, ip := range ips {
++		if addr := net.IPAddress(ip); addr != nil && (refused == nil || !refused(addr)) {
++			dialable = append(dialable, addr)
++		}
++	}
++	if len(dialable) == 0 {
++		return net.IPAddress(ips[dice.Roll(len(ips))])
++	}
++	return dialable[dice.Roll(len(dialable))]
++}
++
 +func dialFirst(ctx context.Context, dialer internet.Dialer, candidates []net.Destination) (stat.Connection, error) {
 +	var err error
 +	for _, candidate := range candidates {
@@ -1187,10 +1282,10 @@ index 0000000..cb19d54
 +}
 diff --git a/proxy/freedom/private_target_connect_test.go b/proxy/freedom/private_target_connect_test.go
 new file mode 100644
-index 0000000..657f2d3
+index 0000000..e477b4c
 --- /dev/null
 +++ b/proxy/freedom/private_target_connect_test.go
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,63 @@
 +package freedom
 +
 +import (
@@ -1224,14 +1319,30 @@ index 0000000..657f2d3
 +		"":                      "unparsable",
 +	} {
 +		refusal := &connectRefusal{}
-+		err := h.connectCheck(ctx, users, net.Network_TCP, refusal)("tcp", address)
++		err := h.connectCheck(ctx, users, refusal)("tcp", address)
 +		target, kind := refusal.result()
 +		if kind != want || (err != nil) != (want != "") || (target != nil) != (want != "") {
 +			t.Errorf("the connect check on %q: %v, recorded %v %q; want %q", address, err, target, kind, want)
 +		}
 +	}
++	for network, want := range map[string]net.Network{"tcp4": net.Network_TCP, "tcp6": net.Network_TCP, "udp": net.Network_UDP, "udp4": net.Network_UDP, "udp6": net.Network_UDP} {
++		refusal := &connectRefusal{}
++		h.connectCheck(ctx, users, refusal)(network, "10.0.0.1:53")
++		if target, kind := refusal.result(); target == nil || target.Network != want || kind != "private" {
++			t.Errorf("the connect check on a %s connect recorded %v %q, want a refused %v destination", network, target, kind, want)
++		}
++	}
++	for _, network := range []string{"", "unix", "ip4"} {
++		refusal := &connectRefusal{}
++		if err := h.connectCheck(ctx, users, refusal)(network, "100.64.0.1:53"); err == nil {
++			t.Errorf("the connect check allowed a %q connect, whose kind it cannot judge", network)
++		}
++		if _, kind := refusal.result(); kind != "unparsable" {
++			t.Errorf("the connect check on a %q connect recorded %q, want unparsable", network, kind)
++		}
++	}
 +	refusal := &connectRefusal{}
-+	check := h.connectCheck(ctx, users, net.Network_TCP, refusal)
++	check := h.connectCheck(ctx, users, refusal)
 +	check("tcp", "10.0.0.1:80")
 +	check("tcp", "127.0.0.1:80")
 +	if target, kind := refusal.result(); kind != "private" || target.Address.String() != "10.0.0.1" {
@@ -1373,7 +1484,7 @@ index 0000000..3ed6086
 +}
 diff --git a/proxy/freedom/private_target_paths_test.go b/proxy/freedom/private_target_paths_test.go
 new file mode 100644
-index 0000000..2cec5c5
+index 0000000..e104413
 --- /dev/null
 +++ b/proxy/freedom/private_target_paths_test.go
 @@ -0,0 +1,389 @@
@@ -1762,7 +1873,7 @@ index 0000000..2cec5c5
 +	if !refusedAsPrivate(err, "shadowsocks") {
 +		t.Fatalf("shadowsocks to %s: %v, want a refusal", listener.destination(), err)
 +	}
-+	if found := recorder.atLeast(log.Severity_Warning, "from the shadowsocks inbound: it is the private address"); len(found) != 1 {
++	if found := recorder.atLeast(log.Severity_Warning, `from the shadowsocks inbound "users": it is the private address`); len(found) != 1 {
 +		t.Errorf("the refusal of %s was logged at warning or above %d times (%v), want once", listener.destination(), len(found), found)
 +	}
 +}
@@ -2542,10 +2653,10 @@ index 0000000..f83374b
 +}
 diff --git a/proxy/freedom/private_target_round2_test.go b/proxy/freedom/private_target_round2_test.go
 new file mode 100644
-index 0000000..0e932ac
+index 0000000..814285d
 --- /dev/null
 +++ b/proxy/freedom/private_target_round2_test.go
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,176 @@
 +package freedom
 +
 +import (
@@ -2566,10 +2677,14 @@ index 0000000..0e932ac
 +)
 +
 +func sendDatagramsThrough(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, to net.Destination, timeoutOnly bool, count int) {
++	sendDatagramsOnAFlowTo(ctx, handler, inbound, to, to, timeoutOnly, count)
++}
++
++func sendDatagramsOnAFlowTo(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, flow, to net.Destination, timeoutOnly bool, count int) {
 +	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 +	defer cancel()
 +	ctx = session.ContextWithInbound(ctx, inbound)
-+	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: to, Tag: handler.Tag()}})
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: flow, Tag: handler.Tag()}})
 +	if timeoutOnly {
 +		ctx = session.ContextWithTimeoutOnly(ctx, true)
 +	}
@@ -2698,6 +2813,24 @@ index 0000000..0e932ac
 +	requireUntouched(t, "a private name through a real freedom outbound behind dialerProxy, the chain was handed "+chain.targets(), listener, nil)
 +	if handed := chain.targets(); handed != "" {
 +		t.Errorf("the chain behind a real freedom outbound was handed %s for a name of a private address", handed)
++	}
++}
++
++func TestAForceIPFreedomResolvesADatagramsNameOnlyToAnAddressItWouldSendTo(t *testing.T) {
++	target, addr := listenUDPOnPrivateHost(t)
++	refused := net.IP{192, 0, 2, 1}
++	ctx, handler, _ := realFreedomOutboundWith(t, "DIRECT", &Config{DomainStrategy: internet.DomainStrategy_USE_IP4, FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(addr.IP))}}, &proxyman.SenderConfig{})
++	internet.InitSystemDialer(&stubDNSClient{answers: map[string][]net.IP{"mixed-udp.pgtest": {refused, refused, refused, addr.IP}}}, nil)
++	t.Cleanup(func() { internet.InitSystemDialer(nil, nil) })
++	listener := net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port))
++	byName := net.UDPDestination(net.DomainAddress("mixed-udp.pgtest"), net.Port(addr.Port))
++	delivered := 0
++	for range 6 {
++		sendDatagramsOnAFlowTo(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, listener, byName, false, 1)
++		delivered += datagramsReceived(target, 300*time.Millisecond)
++	}
++	if delivered != 6 {
++		t.Errorf("six UDP flows sent a datagram to a name a UseIPv4 freedom resolves to %s three times and to the allowed %s once: %d delivered, want 6", refused, addr.IP, delivered)
 +	}
 +}
 diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go

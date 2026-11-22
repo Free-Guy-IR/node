@@ -255,6 +255,39 @@ func (c *Config) taggedAllowingRules(freedomTags map[string]struct{}) (*conf.Rou
 	return &routed, allows
 }
 
+func withoutPrivateAllow(settings map[string]any) (map[string]any, bool) {
+	kept := make(map[string]any, len(settings)+1)
+	removed := false
+	for key, value := range settings {
+		if strings.EqualFold(key, privateAllowKey) {
+			removed = true
+			continue
+		}
+		kept[key] = value
+	}
+	return kept, removed
+}
+
+func withoutPanelPrivateAllow(outbound map[string]any) map[string]any {
+	var copied map[string]any
+	for key, value := range outbound {
+		settings, isMap := value.(map[string]any)
+		if !isMap || !strings.EqualFold(key, "settings") {
+			continue
+		}
+		if kept, removed := withoutPrivateAllow(settings); removed {
+			if copied == nil {
+				copied = maps.Clone(outbound)
+			}
+			copied[key] = kept
+		}
+	}
+	if copied == nil {
+		return outbound
+	}
+	return copied
+}
+
 func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
 	settingsKey := "settings"
 	var settings map[string]any
@@ -266,32 +299,32 @@ func withPrivateAllow(outbound map[string]any, entries []any) map[string]any {
 			settings, _ = value.(map[string]any)
 		}
 	}
-	stale := false
-	for key := range settings {
-		if strings.EqualFold(key, privateAllowKey) {
-			stale = true
-		}
-	}
-	if !stale && len(entries) == 0 {
-		return outbound
-	}
 	if settingsKeys > 1 || (settings == nil && outbound[settingsKey] != nil) {
-		tag, _ := foldedField(outbound, "tag")
-		log.Printf("xray config: the freedom outbound %v has settings the node cannot edit, so it gets no privateAllow", tag)
-		return outbound
-	}
-	next := make(map[string]any, len(settings)+1)
-	for key, value := range settings {
-		if !strings.EqualFold(key, privateAllowKey) {
-			next[key] = value
+		if len(entries) > 0 {
+			tag, _ := foldedField(outbound, "tag")
+			log.Printf("xray config: the freedom outbound %v has settings the node cannot edit, so it gets no privateAllow", tag)
 		}
+		return withoutPanelPrivateAllow(outbound)
+	}
+	kept, removed := withoutPrivateAllow(settings)
+	if !removed && len(entries) == 0 {
+		return outbound
 	}
 	if len(entries) > 0 {
-		next[privateAllowKey] = entries
+		kept[privateAllowKey] = entries
 	}
 	copied := maps.Clone(outbound)
-	copied[settingsKey] = next
+	copied[settingsKey] = kept
 	return copied
+}
+
+func mightBeFreedom(outbound map[string]any) bool {
+	for key, value := range outbound {
+		if strings.EqualFold(key, "protocol") && isFreedomProtocol(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func foldedField(object map[string]any, name string) (any, int) {
@@ -330,23 +363,28 @@ func (c *Config) privateTargetRendering() (*conf.RouterConfig, any) {
 		return c.RouterConfig, c.OutboundConfigs
 	}
 	freedomTags := make(map[string]struct{})
+	freedomLike := false
 	for _, outbound := range outbounds {
+		if obj, isMap := outbound.(map[string]any); isMap && mightBeFreedom(obj) {
+			freedomLike = true
+		}
 		if _, tag, freedom := freedomOutbound(outbound); freedom {
 			freedomTags[tag] = struct{}{}
 		}
 	}
-	if len(freedomTags) == 0 {
+	if !freedomLike {
 		return c.RouterConfig, c.OutboundConfigs
 	}
 	routerConfig, allows := c.taggedAllowingRules(freedomTags)
 	rendered := make([]any, 0, len(outbounds))
 	for _, outbound := range outbounds {
-		obj, tag, freedom := freedomOutbound(outbound)
-		if !freedom {
+		if obj, tag, freedom := freedomOutbound(outbound); freedom {
+			rendered = append(rendered, withPrivateAllow(obj, allows[tag]))
+		} else if obj, isMap := outbound.(map[string]any); isMap && mightBeFreedom(obj) {
+			rendered = append(rendered, withoutPanelPrivateAllow(obj))
+		} else {
 			rendered = append(rendered, outbound)
-			continue
 		}
-		rendered = append(rendered, withPrivateAllow(obj, allows[tag]))
 	}
 	return routerConfig, rendered
 }

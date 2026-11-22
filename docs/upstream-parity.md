@@ -1601,8 +1601,11 @@ shipped.
   one resolution; a refusal there ends the dial without retries. Off that path (`proxySettings`, `dialerProxy`,
   another TCP transport, an alternative system dialer) it resolves a name once, refuses on any refused answer or a
   failed lookup, and dials only the checked addresses. It checks the remote end of the dialed connection (except the
-  unspecified address chained dials report), drops UDP datagrams per packet, and the outbound handler's
-  UDP-over-TCP socket drops refused datagrams through the same check. A refusal is logged at warning. The node owns
+  unspecified address chained dials report), drops UDP datagrams per packet with the routing context the connection
+  started with (an XUDP flow runs on a background context), and the outbound handler's UDP-over-TCP socket drops
+  refused datagrams through the same check, judged as UDP. A name freedom resolves itself takes its random answer
+  among the dialable ones. A refusal is logged at warning with the inbound's protocol and tag. The node strips a
+  panel-written `privateAllow` from every outbound whose protocol key, in any letter case, names freedom. The node owns
   `privateAllow`: `backend/xray/private_target_allow.go` tags each routing rule that sends literal private addresses
   to a freedom outbound (its own `ruleTag`, or `PG_NODE_PRIVATE_ALLOW_<n>` in the rendered routing) and lists
   `{ruleTag, ip}` on that outbound, minus the ranges the node's sibling guard keeps user inbounds off; the core 1
@@ -1626,7 +1629,14 @@ shipped.
   found that UDP-over-TCP reached any address. The 22 new freedom tests fail on `6597d6e1` where it was exposed (15)
   and pass on the fix; 26 mutants of the new code are caught; the CI harness job compares the guarded core with the
   same core built without the guard on Linux (rebinding, a dummy tunnel, the zoned Host, UDP-over-TCP, latency).
-- **Residual:** NAT64, 6to4 and Teredo prefixes are not refused; a chained freedom, another TCP transport or an
+  Hostile round 2 on `d6da520b` (BLOCK, no bypass) found that every XUDP datagram an allow covers was dropped,
+  because freedom swaps an XUDP flow's context for a background one before the per-packet check read it; XUDP to
+  `100.64.0.0/10` through rule#2 and `DIRECT` delivered nothing until the check kept the session context. The harness
+  now sends XUDP flows (to the CGNAT listener, and a public then a private datagram) and a name with a public and a
+  private answer through `DIRECT`.
+- **Residual:** NAT64, 6to4, Teredo, IPv4-compatible `::a.b.c.d`, `fec0::/10` and the node's own public addresses
+  are not refused, and UDP replies from private sources on a full-cone flow are accepted; `finalRules` ignore
+  upstream's `delay` and `logLevel`; one warning line per refused connection; a chained freedom, another TCP transport or an
   alternative system dialer is handed a checked address instead of the name; on the system path a name with a public
   and a private answer may still connect to the public one; an allowing rule that also matches on a non-empty domain
   list never applies; rules added at run time through the RoutingService are not listed until the next render.

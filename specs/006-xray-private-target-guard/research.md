@@ -101,3 +101,18 @@
 - Rules added at run time through the RoutingService are not listed until the next render.
 - Datagrams that private hosts send back on a full-cone UDP flow are not filtered (upstream filters them); a guarded
   user cannot open such a flow to a private host in the first place.
+- `finalRules` decide private destinations only and ignore upstream's `delay` and `logLevel` fields (hostile round 2,
+  R2-L4, info).
+- Address classes the guard does not refuse (R2-L5, info): the node's own public addresses, IPv4-compatible
+  `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 and Teredo, the deprecated site-local `fec0::/10`; and UDP replies that come
+  from private sources on a full-cone flow (above). Round 2 found no build that reaches a private host through the
+  IPv4-compatible or NAT64 forms on a runner without a translator.
+- One warning line per refused connection (R2-L6, info): a user who probes private ranges fills the core log at that
+  rate; the line names the inbound's protocol and tag, never the user.
+- Go's dual-stack fallback can run the connect check from two goroutines at once (R2-L7, found by reading): both read
+  the session outbounds and copy the last one, nothing writes them during the dial, and the `-race` runs of the
+  dual-stack and rebinding tests report no race.
+- Off the system path the checked addresses are dialed one after another (accepted, round 1 low): only an alternative
+  system dialer or another transport waits there, for that path's own dial timeout per address, and in the resolver's
+  RFC 6724 order, which puts the address most likely to work first; no production freedom outbound takes that path,
+  and dialerProxy and proxySettings chains return at once.

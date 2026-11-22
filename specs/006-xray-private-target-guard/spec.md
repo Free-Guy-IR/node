@@ -99,6 +99,17 @@ private block at all. Production runs node v0.8.22 on the same Xray line, so the
   letter case, so the node finds `protocol`, `tag` and `settings` in any letter case too, and leaves an outbound that
   repeats one of them without `privateAllow`. A rule's `domain` or `domains` key is a condition only when its list is
   not empty, as in Xray, so `"domain": []` still gives its addresses an allow.
+- Q: What did hostile review round 2 on `d6da520b` find? (BLOCK, 2026-11-22) → A: no bypass, one breakage (R2-M1,
+  medium): the mux server marks every XUDP flow's context timeout-only, and freedom then swaps its context for a
+  background one before it copies the datagrams, so the per-packet check, which read that variable, lost the session
+  outbounds and refused every datagram an allow covers, silently: XUDP to `100.64.0.0/10` through rule#2 and `DIRECT`
+  on cores 1, 17, 19 and 21 delivered nothing. The per-packet check now keeps the context the connection started
+  with. Lows fixed in the same round: UDP-over-TCP datagrams are judged as UDP, not by the TCP name that opened the
+  stream (R2-L1); a freedom that resolves a name itself (`domainStrategy`, `DIRECT` is `ForceIPv4`) takes its random
+  answer among those it would dial, so a public answer is used instead of refusing a private pick (R2-L3), for the
+  connection and for each datagram; an outbound whose protocol key in any letter case names freedom loses every
+  panel-written `privateAllow`, also when it repeats `protocol`, `tag` or `settings` and therefore gets no derived
+  allow (R1-L5); the refusal line names the inbound's tag next to its protocol (R2-L6).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -181,7 +192,12 @@ behaviour on a stock v26.3.27 binary.
   unspecified address and is not checked again after the dial.
 - IPv4-mapped IPv6 destinations are checked as IPv4; an IPv6 zone is stripped before the check; an address the check
   cannot parse is refused.
-- UDP-over-TCP through freedom: each datagram's destination is checked; a refused one is dropped without a log line.
+- UDP-over-TCP through freedom: each datagram's destination is checked as UDP; a refused one is dropped without a log
+  line.
+- An XUDP flow: its datagrams are checked with the session's routing context, so an allow covers them as it covers
+  a plain UDP flow, although freedom runs the flow on a background context.
+- A name a freedom resolves itself (`domainStrategy`) with a public and a private answer: the random answer is taken
+  among the ones the guard would dial; only when every answer is refused is one of them taken, and refused.
 - A routing rule that also matches on a domain, targets a balancer or shares its `ruleTag` with another rule gives no
   allow; the node logs it. Other conditions (inbound tag, user, source, network, port, protocol, local address) are
   the router's to evaluate.
@@ -200,7 +216,8 @@ behaviour on a stock v26.3.27 binary.
 - **FR-002**: The check MUST apply to the address actually connected to: a literal address and a name freedom
   resolves before the dial; on the default system dialer path every connect attempt, in `net.Dialer.Control`, and a
   UDP destination after its resolution; off that path the answers of one system lookup, the only addresses dialed;
-  the remote address of the dialed connection; each UDP datagram; and each UDP-over-TCP datagram.
+  the remote address of the dialed connection; each UDP datagram, with the routing context the connection started
+  with; and each UDP-over-TCP datagram, judged as UDP.
 - **FR-003**: The local host MUST stay refused whatever an allow says.
 - **FR-004**: The only allows are the outbound's `finalRules` (first match decides, `allow` or `block`) and its
   `privateAllow` entries, each naming a routing rule and its explicit private addresses; an entry allows only when
@@ -208,7 +225,8 @@ behaviour on a stock v26.3.27 binary.
   outbound.
 - **FR-005**: The node MUST write `privateAllow` into every freedom outbound of every config it renders, derived from
   that config's routing rules as clarified above, tag the rules it names in the rendered routing, and MUST replace a
-  panel-supplied value.
+  panel-supplied value; every outbound whose protocol key, in any letter case, names freedom loses the panel's value,
+  and one that repeats `protocol`, `tag` or `settings` gets none of its own.
 - **FR-006**: SOCKS, HTTP and dokodemo-door inbounds, and connections without an inbound, MUST be unaffected.
 - **FR-007**: Interface-bound freedom outbounds MUST be guarded like any freedom outbound.
 - **FR-008**: A refused connection MUST be logged at warning with the inbound and the refused address, and no payload
@@ -220,6 +238,7 @@ behaviour on a stock v26.3.27 binary.
   and a failed or empty lookup MUST refuse without a dial.
 - **FR-012**: A refusal at connect time MUST end the dial without retries, so an open and a closed private port look
   the same to the user.
+- **FR-013**: A freedom that resolves a name itself MUST NOT pick a refused answer while another answer is dialable.
 
 ### Key Entities
 
@@ -273,8 +292,15 @@ MASQUE inbound, no freedom `finalRules`; VLESS and VMess outbounds are not under
   refused, since rule#2 sends that address to `DIRECT`.
 - Core 16 (`AsIs`, no private block, `india` to `india_wireguard`): every private destination of a user is refused,
   by literal or by name, and nothing is sent into the WireGuard tunnel for it. No allow is derived there.
-- Every core: UDP-over-TCP datagrams of users to private addresses and the local host are dropped; they were
-  delivered. Public destinations are dialed as before, with no extra DNS lookup on the default system dialer path,
-  which every production freedom outbound takes. Each refused connection writes one warning line to the core log.
+- XUDP: a user's datagrams to `100.64.0.0/10` through rule#2 and `DIRECT` keep flowing, like plain UDP; datagrams to
+  other private addresses inside a full-cone flow are dropped.
+- UDP-over-TCP: through the AsIs freedom outbounds (the `*_wireguard` outbounds of cores 1, 17, 19 and 21, and core
+  16) a user's datagrams to private addresses and the local host are dropped; they were delivered. Through `DIRECT`
+  UDP-over-TCP never worked: `DIRECT` is `ForceIPv4`, and the magic names do not resolve.
+- `DIRECT` (`ForceIPv4`) with a name that has a public and a private answer: the public answer is used every time;
+  before, the random pick sometimes reached the private address.
+- Public destinations are dialed as before, with no extra DNS lookup on the default system dialer path, which every
+  production freedom outbound takes. Each refused connection writes one warning line to the core log, naming the
+  inbound's protocol and tag.
 - Unchanged: the dokodemo-door, SOCKS and HTTP inbounds (the node's `API_INBOUND` among them), connections without
   an inbound, public destinations, and the sing-box, kernel WireGuard and L2TP backends.

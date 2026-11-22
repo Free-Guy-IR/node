@@ -81,17 +81,20 @@ loadable by stock v26.3.27.
   port, inbound tag, router GeoIP matcher), `initWithFeatures` (takes the router through `RequireFeatures`),
   `initTargetRules`, `refusesPrivateTarget` (guarded inbound, private address, `finalRules` first match, then a
   `privateAllow` entry whose rule the router's first match for the dialed address confirms on this outbound, else
-  refuse), `connectCheck` (parses the connect address with `netip.ParseAddrPort`, strips the zone, unmaps IPv4-mapped
-  addresses, refuses the local host, a refused private address or anything unparsable, and records the first refusal
-  of the dial), `resolveOnce` (one system lookup off the system path, every answer checked, a failed or empty lookup
+  refuse), `connectCheck` (judges a connect by the network its caller names, parses the connect address with
+  `netip.ParseAddrPort`, strips the zone, unmaps IPv4-mapped addresses, refuses the local host, a refused private
+  address, an unknown network or anything unparsable, and records the first refusal of the dial), `resolveOnce` (one system lookup off the system path, every answer checked, a failed or empty lookup
   refused) and `dialFirst` (dials the checked addresses in order).
 - `proxy/freedom/freedom.go`: `Handler` gets the two rule lists; `Init` ends with `return h.initTargetRules(config)`;
   `Process` refuses before the dial (literal or freedom-resolved address); when the dialer reports
   `AppliesConnectCheck` it puts `connectCheck` into the dial context and resolves nothing, otherwise a name goes
   through `resolveOnce`; a dial that failed after a connect refusal is refused without retries; after the dial the
-  remote address is checked (skipping the unspecified address chained dials report); a refusal is logged at warning;
-  `PacketWriter` gets a `RefusesTarget` callback checked after per-packet resolution. The local-host checks and their
-  messages stay first and unchanged, so the local host is refused whatever an allow says.
+  remote address is checked (skipping the unspecified address chained dials report); a refusal is logged at warning
+  with the inbound's protocol and tag; `PacketWriter` gets a `RefusesTarget` callback checked after per-packet
+  resolution, built when `Process` starts so that it keeps the session context through the TimeoutOnly swap of an
+  XUDP flow; a name freedom resolves itself takes its random answer among the dialable ones (`pickAnswer`), for the
+  connection and per datagram. The local-host checks and their messages stay first and unchanged, so the local host
+  is refused whatever an allow says.
 - `transport/internet/connect_check.go` (new): `ConnectCheck`, `ContextWithConnectCheck`, `ConnectCheckFromContext`,
   `SystemDialerAppliesConnectChecks` (the effective system dialer is the default one) and `CheckedPacketConn` (drops
   a datagram whose destination the check refuses). `system_dialer.go`: `DefaultSystemDialer` installs

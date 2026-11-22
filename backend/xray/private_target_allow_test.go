@@ -309,15 +309,21 @@ func TestAnOutboundThatMightBeAFreedomLosesThePanelsPrivateAllow(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		outbound map[string]any
+		only     bool
 	}{
-		{"a repeated protocol key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "Protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}},
-		{"a protocol key repeated with another protocol", map[string]any{"tag": "ambiguous", "protocol": "vless", "PROTOCOL": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}},
-		{"a repeated tag key", map[string]any{"tag": "ambiguous", "TAG": "ambiguous", "protocol": "freedom", "settings": map[string]any{"PrivateAllow": panelAllow}}},
-		{"a repeated settings key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}, "Settings": map[string]any{"privateallow": panelAllow}}},
+		{"a repeated protocol key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "Protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}, false},
+		{"the only freedom-like outbound repeats its protocol key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "Protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}, true},
+		{"a protocol key repeated with another protocol", map[string]any{"tag": "ambiguous", "protocol": "vless", "PROTOCOL": "freedom", "settings": map[string]any{"privateAllow": panelAllow}}, false},
+		{"a repeated tag key", map[string]any{"tag": "ambiguous", "TAG": "ambiguous", "protocol": "freedom", "settings": map[string]any{"PrivateAllow": panelAllow}}, false},
+		{"a repeated settings key", map[string]any{"tag": "ambiguous", "protocol": "freedom", "settings": map[string]any{"privateAllow": panelAllow}, "Settings": map[string]any{"privateallow": panelAllow}}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			shape := coreOneShape(privateGuardRule(map[string]any{"ruleTag": "panel", "ip": []any{"169.254.169.254/32"}, "outboundTag": "ambiguous"}))
-			shape["outbounds"] = append(shape["outbounds"].([]any), c.outbound)
+			if c.only {
+				shape["outbounds"] = []any{c.outbound, map[string]any{"tag": "BLOCK", "protocol": "blackhole", "settings": map[string]any{}}}
+			} else {
+				shape["outbounds"] = append(shape["outbounds"].([]any), c.outbound)
+			}
 			raw, err := privateGuardConfig(t, shape).ToBytes()
 			if err != nil {
 				t.Fatal(err)
