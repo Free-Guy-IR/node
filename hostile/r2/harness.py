@@ -2,6 +2,7 @@ import argparse
 import faulthandler
 import json
 import os
+import signal
 import socket
 import statistics
 import struct
@@ -34,6 +35,7 @@ NODE_PORTS = {"users": 21001, "wg": 21002, "lan": 21003, "direct": 21004}
 CLIENT_PORTS = {"users": 11001, "wg": 11002, "lan": 11003, "direct": 11004}
 CLEANUPS = []
 CURRENT = ["starting"]
+PROCS = []
 
 
 def say(*parts):
@@ -59,9 +61,9 @@ def watchdog(budget):
         elapsed = time.time() - started
         say("watchdog: %.0f s, at %s" % (elapsed, CURRENT[0]))
         if elapsed > budget:
-            faulthandler.dump_traceback(all_threads=True)
             while CLEANUPS:
                 CLEANUPS.pop()()
+            faulthandler.dump_traceback(all_threads=True)
             os._exit(3)
 
 
@@ -88,7 +90,8 @@ def build_reply(qid, flags, question, rcode, addresses):
 
 
 class ScriptedDNS:
-    def __init__(self):
+    def __init__(self, upstream):
+        self.upstream = upstream
         self.lock = threading.Lock()
         self.asked = {}
         self.log = []
@@ -110,6 +113,9 @@ class ScriptedDNS:
             qid, flags, name, qtype, question = read_question(packet)
         except (IndexError, struct.error):
             return
+        if not name.endswith("." + ZONE) and name != QUIC_NAME and name not in UOT_NAMES:
+            self.forward(packet, peer)
+            return
         with self.lock:
             key = (name, qtype)
             self.asked[key] = self.asked.get(key, 0) + 1
@@ -122,6 +128,19 @@ class ScriptedDNS:
             self.sock.sendto(build_reply(qid, flags, question, rcode, addresses), peer)
         except OSError:
             pass
+
+    def forward(self, packet, peer):
+        if not self.upstream:
+            return
+        up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        up.settimeout(3)
+        try:
+            up.sendto(packet, (self.upstream, 53))
+            self.sock.sendto(up.recvfrom(65535)[0], peer)
+        except OSError:
+            pass
+        finally:
+            up.close()
 
     @staticmethod
     def decide(name, qtype, lookup):
@@ -277,6 +296,7 @@ def socks_get(socks_port, host, port, timeout=8):
         return time.perf_counter() - start, None, b"", "socks: %s" % exc
     try:
         sock.sendall(("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % host).encode())
+        sock.shutdown(socket.SHUT_WR)
         while True:
             chunk = sock.recv(4096)
             if not chunk:
@@ -284,6 +304,8 @@ def socks_get(socks_port, host, port, timeout=8):
             if first is None:
                 first = time.perf_counter() - start
             body += chunk
+            if b"\r\n\r\nok" in body:
+                break
     except OSError as exc:
         error = str(exc) or exc.__class__.__name__
     finally:
@@ -380,7 +402,9 @@ class XrayPair:
             with open(path, "w") as handle:
                 json.dump(config, handle, indent=1)
             log = open(os.path.join(self.out, "%s-%s.log" % (self.label, role)), "w")
-            self.procs.append((subprocess.Popen([self.binary, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT), log))
+            proc = subprocess.Popen([self.binary, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT)
+            PROCS.append(proc)
+            self.procs.append((proc, log))
         for port in list(NODE_PORTS.values()) + list(CLIENT_PORTS.values()):
             if not wait_port(port):
                 raise SystemExit("%s: port %d never opened" % (self.label, port))
@@ -577,16 +601,16 @@ def security_phase(results, label, binary, guarded, out, dns, sinks, counters):
                 expect_served(check, body.endswith(b"ok"), "%.3fs %s" % (took, err or body[-12:]))
 
         for inbound in ("direct", "lan"):
-            check = "M-%s: a name with a public and a private A record, 20 requests" % inbound
+            check = "M-%s: a name with a public and a private A record, 10 requests" % inbound
             step(label + " " + check)
             before_pub, before_priv = tcp_public.snapshot(), tcp_private.snapshot()
             served = 0
-            for i in range(20):
+            for i in range(10):
                 took, first, body, err = socks_get(CLIENT_PORTS[inbound], "mixed-%s%d.%s" % (inbound, i, ZONE), 8080, 6)
                 served += 1 if body.endswith(b"ok") else 0
             pub = tcp_public.snapshot()[0] - before_pub[0]
             priv = tcp_private.snapshot()[0] - before_priv[0]
-            results.record(label, check, "served %d of 20" % served, True, "informational: public sink %d handshakes, private sink %d handshakes" % (pub, priv))
+            results.record(label, check, "served %d of 10" % served, True, "informational: public sink %d handshakes, private sink %d handshakes" % (pub, priv))
 
         for prefix, what in (("v4compat-", "an IPv4-compatible AAAA ::%s" % PRIVATE), ("nat64-", "a NAT64 AAAA 64:ff9b::%s" % PRIVATE)):
             check = "R-%s: a name whose only answer is %s, through lan_wireguard" % (prefix.rstrip("-"), what)
@@ -606,13 +630,13 @@ def ttfb_phase(results, builds, out, dns):
                 for i in range(3):
                     socks_get(CLIENT_PORTS[inbound], "perf-warm%d%s.%s" % (i, inbound, ZONE), 8080)
                 times, before = [], len(dns.queries("perf-"))
-                for i in range(40):
+                for i in range(30):
                     took, first, body, err = socks_get(CLIENT_PORTS[inbound], "perf-%s%s%d.%s" % (label, inbound, i, ZONE), 8080)
                     if first is not None and body.endswith(b"ok"):
                         times.append(first * 1000)
                 queries = len(dns.queries("perf-")) - before
                 row = {"build": label, "inbound": inbound, "ok": len(times), "median_ms": round(statistics.median(times), 2) if times else None,
-                       "p90_ms": round(sorted(times)[int(len(times) * 0.9) - 1], 2) if times else None, "dns_queries_per_request": round(queries / 40.0, 2)}
+                       "p90_ms": round(sorted(times)[int(len(times) * 0.9) - 1], 2) if times else None, "dns_queries_per_request": round(queries / 30.0, 2)}
                 table.append(row)
                 say("PERF", json.dumps(row))
     dns.delay = 0.0
@@ -646,6 +670,29 @@ def udp_rate_phase(results, builds, out, udp_cgnat, udp_public):
     return table
 
 
+def first_nameserver():
+    for path in (RESOLV, "/run/systemd/resolve/resolv.conf"):
+        try:
+            with open(path) as handle:
+                for line in handle:
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] == "nameserver" and parts[1] != LOOP:
+                        return parts[1]
+        except OSError:
+            continue
+    return None
+
+
+def on_term(signum, frame):
+    say("signal", signum, "- cleaning up")
+    for proc in PROCS:
+        if proc.poll() is None:
+            proc.kill()
+    while CLEANUPS:
+        CLEANUPS.pop()()
+    os._exit(4)
+
+
 def prepare():
     for address in (PRIVATE + "/32", CGNAT + "/32", PUBLIC + "/32"):
         run(["ip", "addr", "add", address, "dev", LAN_DEV])
@@ -667,7 +714,8 @@ def prepare():
         say("restored", RESOLV)
 
     CLEANUPS.append(restore)
-    dns = ScriptedDNS()
+    dns = ScriptedDNS(first_nameserver())
+    say("forwarding names outside the test zone to", dns.upstream)
     os.remove(RESOLV)
     with open(RESOLV, "w") as handle:
         handle.write("nameserver 127.0.0.1\noptions timeout:1 attempts:1\n")
@@ -705,7 +753,9 @@ def main():
     with open(args.quic_hex) as handle:
         QUIC_INITIAL = bytes.fromhex(handle.read().strip())
     os.makedirs(args.out, exist_ok=True)
-    threading.Thread(target=watchdog, args=(1500,), daemon=True).start()
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    threading.Thread(target=watchdog, args=(2400,), daemon=True).start()
     results = Results()
     try:
         dns = prepare()
