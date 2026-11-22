@@ -1,0 +1,64 @@
+name: Hostile review round 1 repro
+
+on:
+  push:
+    branches:
+      - "ci-v0826-hostile-r1-*"
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.4"
+          check-latest: true
+
+      - name: Build the guarded Xray from every patch, as the image does
+        run: |
+          make build_xray XRAY_SRC="$RUNNER_TEMP/xray-guard-src" XRAY_OUTPUT="$RUNNER_TEMP/xray-guard"
+          "$RUNNER_TEMP/xray-guard" version
+
+      - name: Build the base Xray from every patch except the private guard
+        run: |
+          commit="$(sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
+          src="$RUNNER_TEMP/xray-base-src"
+          git init -q "$src"
+          git -C "$src" remote add origin https://github.com/XTLS/Xray-core.git
+          git -C "$src" fetch -q --depth 1 origin "$commit"
+          git -C "$src" checkout -q FETCH_HEAD
+          for patch in patches/xray-*.patch; do
+            case "$patch" in
+              *xray-freedom-private-guard.patch) continue ;;
+            esac
+            git -C "$src" apply "$PWD/$patch"
+          done
+          (cd "$src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-base" ./main)
+          "$RUNNER_TEMP/xray-base" version
+          if git -C "$src" grep -q refusedResolvedTarget; then echo "the base carries the guard"; exit 1; fi
+          git -C "$RUNNER_TEMP/xray-guard-src" grep -q refusedResolvedTarget
+
+      - name: Tools
+        run: |
+          command -v tcpdump || sudo apt-get install -y tcpdump
+          uname -a
+          cat /etc/os-release | head -3
+
+      - name: Run the hostile harness against the real binaries
+        run: |
+          sudo python3 -I hostile/r1/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/hr1" 2>&1 | tee "$RUNNER_TEMP/hr1-harness.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Show the xray logs
+        if: always()
+        run: |
+          sudo sh -c 'for f in "$0"/*.log; do echo "==== $f"; tail -n 60 "$f"; done' "$RUNNER_TEMP/hr1" || true

@@ -2,7 +2,7 @@ name: Build and Push Docker Image (All Branches)
 
 on:
   push:
-    branches: ['*']
+    branches: ['*', '!ci-v0826-hostile-r1-*']
 
 permissions:
   contents: read
