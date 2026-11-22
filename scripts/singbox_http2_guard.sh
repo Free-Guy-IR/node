@@ -10,8 +10,10 @@ refuse() {
 
 host_os=$(go env GOHOSTOS)
 host_arch=$(go env GOHOSTARCH)
+native=$(unset GOOS GOARCH; go env GOOS)/$(unset GOOS GOARCH; go env GOARCH)
+[ "$native" = "$host_os/$host_arch" ] || refuse "go without GOOS and GOARCH targets $native, not the host $host_os/$host_arch, so the tests below would not run on this host"
 files=" $(go list -tags "$tags" -f '{{join .GoFiles " "}}' golang.org/x/net/http2) "
-host_files=" $(GOOS=$host_os GOARCH=$host_arch go list -tags "$tags" -f '{{join .GoFiles " "}}' golang.org/x/net/http2) "
+host_files=" $(unset GOOS GOARCH; go list -tags "$tags" -f '{{join .GoFiles " "}}' golang.org/x/net/http2) "
 module=$(go list -tags "$tags" -f '{{with .Module}}{{.Path}} {{.Version}}{{with .Replace}} => {{.Path}}{{end}}{{end}}' golang.org/x/net/http2)
 
 for file in server.go transport.go frame.go; do
@@ -27,7 +29,7 @@ for file in server_wrap.go transport_wrap.go; do
 done
 [ "$files" = "$host_files" ] || refuse "$module compiles other http2 files for the target than for $host_os/$host_arch, so the tests below would not run the target's code"
 
-if ! out=$(GOOS=$host_os GOARCH=$host_arch go test -count=1 -tags "$tags" -run '^(TestServerMaxHandlerGoroutines|TestServerContinuationFlood|TestServerContinuationAfterInvalidHeader)$' -v golang.org/x/net/http2 2>&1); then
+if ! out=$(unset GOOS GOARCH; go test -count=1 -tags "$tags" -run '^(TestServerMaxHandlerGoroutines|TestServerContinuationFlood|TestServerContinuationAfterInvalidHeader)$' -v golang.org/x/net/http2 2>&1); then
   printf '%s\n' "$out" >&2
   refuse "$module failed its early-reset and CONTINUATION tests under tags $tags"
 fi
