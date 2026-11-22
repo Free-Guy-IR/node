@@ -117,6 +117,51 @@ jobs:
       - name: Check Xray process status races
         run: go test -race ./backend/xray -run '^TestCoreStarted' -count=10 -timeout=120s
 
+  private-target-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.4"
+          check-latest: true
+
+      - name: Build the pinned and patched xray-core the image ships
+        run: |
+          make build_xray XRAY_SRC="$RUNNER_TEMP/xray-guarded-src" XRAY_OUTPUT="$RUNNER_TEMP/xray-guarded"
+          "$RUNNER_TEMP/xray-guarded" version
+
+      - name: Build the same core without the private-target guard as the base
+        run: |
+          src="$RUNNER_TEMP/xray-base-src"
+          git init -q "$src"
+          git -C "$src" remote add origin https://github.com/XTLS/Xray-core.git
+          git -C "$src" fetch -q --depth 1 origin "$(sed -n 's/^ARG XRAY_COMMIT=//p' Dockerfile)"
+          git -C "$src" checkout -q FETCH_HEAD
+          for patch in patches/xray-*.patch; do
+            if [ "$patch" != patches/xray-freedom-private-guard.patch ]; then
+              git -C "$src" apply "$PWD/$patch"
+            fi
+          done
+          if git -C "$src" grep -q privateAllow -- proxy/freedom; then
+            echo "::error title=The base carries the guard::proxy/freedom of the base build names privateAllow"
+            exit 1
+          fi
+          (cd "$src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-base" ./main)
+          "$RUNNER_TEMP/xray-base" version
+
+      - name: Run the private-target harness against the guarded and the base core
+        run: |
+          sudo --preserve-env=GITHUB_ACTIONS,GITHUB_STEP_SUMMARY python3 -I scripts/private_target_harness.py \
+            --guarded "$RUNNER_TEMP/xray-guarded" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/private-target-harness"
+
   wireguard-integration:
     runs-on: ubuntu-latest
     env:

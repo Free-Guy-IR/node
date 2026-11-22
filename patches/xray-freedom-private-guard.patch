@@ -929,6 +929,865 @@ index 0000000..e1d022c
 +	}
 +	return net.Destination{}, false
 +}
+diff --git a/proxy/freedom/private_target_handler_test.go b/proxy/freedom/private_target_handler_test.go
+new file mode 100644
+index 0000000..a3bf6b3
+--- /dev/null
++++ b/proxy/freedom/private_target_handler_test.go
+@@ -0,0 +1,121 @@
++package freedom
++
++import (
++	"context"
++	"encoding/binary"
++	gonet "net"
++	"testing"
++	"time"
++
++	M "github.com/sagernet/sing/common/metadata"
++	"github.com/sagernet/sing/common/uot"
++	"github.com/xtls/xray-core/app/proxyman"
++	proxyoutbound "github.com/xtls/xray-core/app/proxyman/outbound"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/transport"
++	_ "github.com/xtls/xray-core/transport/internet/tcp"
++	_ "github.com/xtls/xray-core/transport/internet/udp"
++	"github.com/xtls/xray-core/transport/pipe"
++)
++
++func realFreedomOutbound(t *testing.T, tag string, config *Config) (context.Context, outbound.Handler) {
++	t.Helper()
++	instance, err := core.New(&core.Config{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := instance.AddFeature((outbound.Manager)(new(proxyoutbound.Manager))); err != nil {
++		t.Fatal(err)
++	}
++	ctx := context.WithValue(context.Background(), core.XrayKey(1), instance)
++	handler, err := proxyoutbound.NewHandler(ctx, &core.OutboundHandlerConfig{Tag: tag, SenderSettings: serial.ToTypedMessage(&proxyman.SenderConfig{}), ProxySettings: serial.ToTypedMessage(config)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return ctx, handler
++}
++
++func dispatchThrough(ctx context.Context, handler outbound.Handler, inbound *session.Inbound, target net.Destination, uplink ...[]byte) {
++	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
++	defer cancel()
++	ctx = session.ContextWithInbound(ctx, inbound)
++	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: target, Tag: handler.Tag()}})
++	uplinkReader, uplinkWriter := pipe.New()
++	downlinkReader, downlinkWriter := pipe.New()
++	for _, chunk := range uplink {
++		b := buf.New()
++		b.Write(chunk)
++		uplinkWriter.WriteMultiBuffer(buf.MultiBuffer{b})
++	}
++	go func() {
++		time.Sleep(time.Second)
++		uplinkWriter.Close()
++	}()
++	go func() {
++		for {
++			if _, err := downlinkReader.ReadMultiBuffer(); err != nil {
++				return
++			}
++		}
++	}()
++	handler.Dispatch(ctx, &transport.Link{Reader: uplinkReader, Writer: downlinkWriter})
++}
++
++func TestARebindingNameThroughARealFreedomOutboundNeverReachesThePrivateListener(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++	serveScriptedDNS(t, dns, "rebind-real.pgtest")
++	ctx, handler := realFreedomOutbound(t, "DIRECT", &Config{})
++	dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("rebind-real.pgtest"), listener.port), []byte("payload"))
++	requireUntouched(t, "a rebinding name through a real freedom outbound (DNS "+dns.answers()+")", listener, nil)
++}
++
++func uotConnectFrame(t *testing.T, to *gonet.UDPAddr, payload []byte) []byte {
++	t.Helper()
++	request, err := uot.EncodeRequest(uot.Request{IsConnect: true, Destination: M.SocksaddrFromNet(to)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer request.Release()
++	frame := append([]byte(nil), request.Bytes()...)
++	frame = binary.BigEndian.AppendUint16(frame, uint16(len(payload)))
++	return append(frame, payload...)
++}
++
++func TestUDPOverTCPThroughARealFreedomOutboundNeverReachesAPrivateListener(t *testing.T) {
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere})
++	ctx, handler := realFreedomOutbound(t, "DIRECT", &Config{})
++	for _, magic := range []string{uot.MagicAddress, uot.LegacyMagicAddress} {
++		target, addr := listenUDPOnPrivateHost(t)
++		frame := uotConnectFrame(t, addr, []byte("datagram"))
++		if magic == uot.LegacyMagicAddress {
++			destination := M.SocksaddrFromNet(addr)
++			legacy := buf.New()
++			if err := uot.AddrParser.WriteAddrPort(legacy, destination); err != nil {
++				t.Fatal(err)
++			}
++			frame = binary.BigEndian.AppendUint16(append([]byte(nil), legacy.Bytes()...), uint16(len("datagram")))
++			frame = append(frame, "datagram"...)
++			legacy.Release()
++		}
++		dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress(magic), 0), frame)
++		if receivedDatagram(target, 500*time.Millisecond) {
++			t.Errorf("a vless UDP-over-TCP request to %s delivered a datagram to the private listener %s", magic, addr)
++		}
++	}
++}
++
++func TestUDPOverTCPToAnAllowedPrivateDestinationStillCarriesTheDatagram(t *testing.T) {
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere})
++	target, addr := listenUDPOnPrivateHost(t)
++	ctx, handler := realFreedomOutbound(t, "DIRECT", &Config{FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(addr.IP))}})
++	dispatchThrough(ctx, handler, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress(uot.MagicAddress), 0), uotConnectFrame(t, addr, []byte("datagram")))
++	if !receivedDatagram(target, time.Second) {
++		t.Errorf("a vless UDP-over-TCP request to %s allowed by finalRules delivered nothing", addr)
++	}
++}
+diff --git a/proxy/freedom/private_target_paths_test.go b/proxy/freedom/private_target_paths_test.go
+new file mode 100644
+index 0000000..2cec5c5
+--- /dev/null
++++ b/proxy/freedom/private_target_paths_test.go
+@@ -0,0 +1,389 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"slices"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common"
++	"github.com/xtls/xray-core/common/buf"
++	"github.com/xtls/xray-core/common/log"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/protocol"
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/transport"
++	"github.com/xtls/xray-core/transport/internet"
++)
++
++type linkLocalListener struct {
++	ip       gonet.IP
++	iface    gonet.Interface
++	port     net.Port
++	accepted atomic.Int32
++}
++
++func listenOnLinkLocal(t *testing.T) *linkLocalListener {
++	t.Helper()
++	ifaces, err := gonet.Interfaces()
++	if err != nil {
++		t.Fatal(err)
++	}
++	slices.SortStableFunc(ifaces, func(a, b gonet.Interface) int {
++		return int(b.Flags&gonet.FlagLoopback) - int(a.Flags&gonet.FlagLoopback)
++	})
++	for _, iface := range ifaces {
++		if iface.Flags&gonet.FlagUp == 0 {
++			continue
++		}
++		addrs, _ := iface.Addrs()
++		for _, addr := range addrs {
++			ipNet, ok := addr.(*gonet.IPNet)
++			if !ok || ipNet.IP.To4() != nil || !ipNet.IP.IsLinkLocalUnicast() {
++				continue
++			}
++			ln, err := gonet.Listen("tcp6", gonet.JoinHostPort(ipNet.IP.String()+"%"+iface.Name, "0"))
++			if err != nil {
++				continue
++			}
++			t.Cleanup(func() { ln.Close() })
++			l := &linkLocalListener{ip: ipNet.IP, iface: iface, port: net.Port(ln.Addr().(*gonet.TCPAddr).Port)}
++			go func() {
++				for {
++					conn, err := ln.Accept()
++					if err != nil {
++						return
++					}
++					l.accepted.Add(1)
++					conn.Close()
++				}
++			}()
++			return l
++		}
++	}
++	t.Skip("this host has no IPv6 link-local address to listen on")
++	return nil
++}
++
++func (l *linkLocalListener) zonedNames() []string {
++	byName := l.ip.String() + "%" + l.iface.Name
++	byIndex := l.ip.String() + "%" + itoa(l.iface.Index)
++	return []string{byName, byIndex, "[" + byName + "]", "[" + byIndex + "]"}
++}
++
++func redirectTo(address net.Address, port net.Port) *Config {
++	return &Config{DestinationOverride: &DestinationOverride{Server: &protocol.ServerEndpoint{Address: net.NewIPOrDomain(address), Port: uint32(port)}}}
++}
++
++var publicTarget = net.TCPDestination(net.IPAddress(documentationIPv6), 443)
++
++func TestAZonedLinkLocalNameNeverReachesTheLinkLocalListener(t *testing.T) {
++	listener := listenOnLinkLocal(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, "never.pgtest")
++	for _, path := range dialPaths {
++		for _, name := range listener.zonedNames() {
++			before := listener.accepted.Load()
++			err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress(name), listener.port), path.dialer, []byte("payload"))
++			time.Sleep(100 * time.Millisecond)
++			if listener.accepted.Load() != before {
++				t.Errorf("through %s the zoned name %q as the target reached [%s%%%s]:%d: %v", path.name, name, listener.ip, listener.iface.Name, listener.port, err)
++			}
++			before = listener.accepted.Load()
++			err = processPayload(newHandler(t, redirectTo(net.DomainAddress(name), listener.port)), &session.Inbound{Name: "vless", Tag: "india"}, publicTarget, path.dialer, []byte("payload"))
++			time.Sleep(100 * time.Millisecond)
++			if listener.accepted.Load() != before {
++				t.Errorf("through %s a freedom redirect to the zoned name %q reached [%s%%%s]:%d: %v", path.name, name, listener.ip, listener.iface.Name, listener.port, err)
++			}
++		}
++	}
++}
++
++func TestTheUserAddressParserNeverYieldsAZonedDomain(t *testing.T) {
++	parser := protocol.NewAddressParser(protocol.AddressFamilyByte(0x01, net.AddressFamilyIPv4), protocol.AddressFamilyByte(0x02, net.AddressFamilyDomain), protocol.AddressFamilyByte(0x03, net.AddressFamilyIPv6), protocol.PortThenAddress())
++	for _, name := range []string{"[fe80::1%lo0]", "fe80::1%lo0", "[fe80::1%25lo0]"} {
++		b := buf.New()
++		b.Write([]byte{0x00, 0x50, 0x02, byte(len(name))})
++		b.WriteString(name)
++		addr, _, err := parser.ReadAddressPort(nil, b)
++		b.Release()
++		if err == nil && addr.Family().IsDomain() {
++			t.Errorf("the address parser user protocols share accepted the zoned domain %q as %v", name, addr)
++		}
++	}
++}
++
++func TestANameTheSocketOptionsResolveNeverReachesThePrivateListener(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, "ds.pgtest", "race.pgtest")
++	for _, sockopt := range []struct {
++		name    string
++		domain  string
++		answers []net.IP
++		sockopt *internet.SocketConfig
++	}{
++		{"sockopt.domainStrategy", "ds.pgtest", []net.IP{listener.ip}, &internet.SocketConfig{DomainStrategy: internet.DomainStrategy_USE_IP4}},
++		{"sockopt.happyEyeballs racing two answers", "race.pgtest", []net.IP{listener.ip, listener.ip}, &internet.SocketConfig{DomainStrategy: internet.DomainStrategy_USE_IP4, HappyEyeballs: &internet.HappyEyeballsConfig{TryDelayMs: 50, MaxConcurrentTry: 4, Interleave: 1}}},
++	} {
++		internet.InitSystemDialer(&stubDNSClient{answers: map[string][]net.IP{sockopt.domain: sockopt.answers}}, nil)
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress(sockopt.domain), listener.port), pathDialer{sockopt: sockopt.sockopt, appliesConnectCheck: true}, []byte("payload"))
++		internet.InitSystemDialer(nil, nil)
++		requireUntouched(t, "a name resolved by "+sockopt.name, listener, err)
++	}
++}
++
++func TestAnAllowedNameTheSocketOptionsResolveStillCarriesThePayload(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, "ds-allowed.pgtest")
++	internet.InitSystemDialer(&stubDNSClient{answers: map[string][]net.IP{"ds-allowed.pgtest": {listener.ip}}}, nil)
++	t.Cleanup(func() { internet.InitSystemDialer(nil, nil) })
++	h := newHandler(t, &Config{FinalRules: []*PrivateTargetRule{cidrRule(false, hostCIDR(listener.ip))}})
++	err := processPayload(h, &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress("ds-allowed.pgtest"), listener.port), pathDialer{sockopt: &internet.SocketConfig{DomainStrategy: internet.DomainStrategy_USE_IP4}, appliesConnectCheck: true}, []byte("payload"))
++	if !listener.waitFor(int64(len("payload")), 2*time.Second) {
++		t.Errorf("a name only sockopt.domainStrategy resolves, allowed by finalRules: %v, the listener received %d bytes", err, listener.received.Load())
++	}
++}
++
++func TestAFreedomRedirectToARebindingNameNeverReachesThePrivateListener(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++		serveScriptedDNS(t, dns, "redirect.pgtest")
++		err := processPayload(newHandler(t, redirectTo(net.DomainAddress("redirect.pgtest"), listener.port)), &session.Inbound{Name: "vless", Tag: "india"}, publicTarget, path.dialer, []byte("payload"))
++		requireUntouched(t, "a freedom redirect to a rebinding name through "+path.name+" (DNS "+dns.answers()+")", listener, err)
++	}
++}
++
++func TestAFreedomRedirectToAPrivateLiteralIsRefusedBeforeTheDial(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		err := processPayload(newHandler(t, redirectTo(net.IPAddress(listener.ip), listener.port)), &session.Inbound{Name: "vless", Tag: "india"}, publicTarget, path.dialer, []byte("payload"))
++		if !refusedAsPrivate(err, "vless") {
++			t.Errorf("through %s a freedom redirect to the private literal %s: %v, want a refusal", path.name, listener.destination(), err)
++		}
++		requireUntouched(t, "a freedom redirect to a private literal through "+path.name, listener, err)
++	}
++}
++
++type chainHandler struct {
++	mu      sync.Mutex
++	tag     string
++	answers map[string]gonet.IP
++	handed  []string
++}
++
++func (c *chainHandler) Start() error                         { return nil }
++func (c *chainHandler) Close() error                         { return nil }
++func (c *chainHandler) Tag() string                          { return c.tag }
++func (c *chainHandler) SenderSettings() *serial.TypedMessage { return nil }
++func (c *chainHandler) ProxySettings() *serial.TypedMessage  { return nil }
++
++func (c *chainHandler) targets() string {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return strings.Join(c.handed, ", ")
++}
++
++func (c *chainHandler) Dispatch(ctx context.Context, link *transport.Link) {
++	outbounds := session.OutboundsFromContext(ctx)
++	target := outbounds[len(outbounds)-1].Target
++	c.mu.Lock()
++	c.handed = append(c.handed, target.String())
++	c.mu.Unlock()
++	address := target.NetAddr()
++	if target.Address.Family().IsDomain() {
++		if ip, ok := c.answers[target.Address.Domain()]; ok {
++			address = gonet.JoinHostPort(ip.String(), target.Port.String())
++		} else if addrs, err := gonet.DefaultResolver.LookupIPAddr(context.Background(), target.Address.Domain()); err == nil && len(addrs) > 0 {
++			address = gonet.JoinHostPort(addrs[0].String(), target.Port.String())
++		}
++	}
++	conn, err := gonet.DialTimeout("tcp", address, boundedDial)
++	if err != nil {
++		common.Interrupt(link.Writer)
++		common.Interrupt(link.Reader)
++		return
++	}
++	defer conn.Close()
++	go buf.Copy(buf.NewReader(conn), link.Writer)
++	buf.Copy(link.Reader, buf.NewWriter(conn))
++}
++
++type chainManager struct {
++	handler *chainHandler
++}
++
++func (m *chainManager) Type() interface{} { return outbound.ManagerType() }
++func (m *chainManager) Start() error      { return nil }
++func (m *chainManager) Close() error      { return nil }
++func (m *chainManager) GetHandler(tag string) outbound.Handler {
++	if tag == m.handler.tag {
++		return m.handler
++	}
++	return nil
++}
++func (m *chainManager) GetDefaultHandler() outbound.Handler                      { return m.handler }
++func (m *chainManager) AddHandler(ctx context.Context, h outbound.Handler) error { return nil }
++func (m *chainManager) RemoveHandler(ctx context.Context, tag string) error      { return nil }
++func (m *chainManager) ListHandlers(ctx context.Context) []outbound.Handler {
++	return []outbound.Handler{m.handler}
++}
++
++func useChain(t *testing.T, answers map[string]gonet.IP) *chainHandler {
++	t.Helper()
++	chain := &chainHandler{tag: "chain", answers: answers}
++	internet.InitSystemDialer(nil, &chainManager{handler: chain})
++	t.Cleanup(func() { internet.InitSystemDialer(nil, nil) })
++	return chain
++}
++
++var chained = pathDialer{sockopt: &internet.SocketConfig{DialerProxy: "chain"}}
++
++func TestADialerProxyChainThatResolvesTheNameItselfNeverReachesThePrivateListener(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, "chained.pgtest")
++	chain := useChain(t, map[string]gonet.IP{"chained.pgtest": listener.ip})
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress("chained.pgtest"), listener.port), chained, []byte("payload"))
++	requireUntouched(t, "a dialerProxy chain handed "+chain.targets(), listener, err)
++}
++
++func TestADialerProxyChainWithAPrivateSystemAnswerIsRefused(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: always(listener.ip)}, "chained-private.pgtest")
++	chain := useChain(t, map[string]gonet.IP{"chained-private.pgtest": listener.ip})
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress("chained-private.pgtest"), listener.port), chained, []byte("payload"))
++	if !refusedAsPrivate(err, "vless") {
++		t.Errorf("a name the system resolves to %s through a dialerProxy chain: %v, want a refusal", listener.ip, err)
++	}
++	requireUntouched(t, "a dialerProxy chain with a private system answer, handed "+chain.targets(), listener, err)
++}
++
++func TestARebindingNameThroughADialerProxyChainNeverReachesThePrivateListener(t *testing.T) {
++	for _, redirect := range []bool{false, true} {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++		serveScriptedDNS(t, dns, "rebind-chain.pgtest")
++		chain := useChain(t, nil)
++		config, target := &Config{}, net.TCPDestination(net.DomainAddress("rebind-chain.pgtest"), listener.port)
++		if redirect {
++			config, target = redirectTo(target.Address, target.Port), publicTarget
++		}
++		err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "india"}, target, chained, []byte("payload"))
++		requireUntouched(t, "a rebinding name through a dialerProxy chain (redirect "+map[bool]string{false: "no", true: "yes"}[redirect]+", DNS "+dns.answers()+", chain handed "+chain.targets()+")", listener, err)
++	}
++}
++
++func TestAZonedNameThroughADialerProxyChainFailsClosed(t *testing.T) {
++	listener := listenOnLinkLocal(t)
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, "never.pgtest")
++	chain := useChain(t, nil)
++	for _, name := range listener.zonedNames() {
++		before := listener.accepted.Load()
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress(name), listener.port), chained, []byte("payload"))
++		time.Sleep(100 * time.Millisecond)
++		if listener.accepted.Load() != before {
++			t.Errorf("the zoned name %q through a dialerProxy chain reached the link-local listener: %v (chain handed %s)", name, err, chain.targets())
++		}
++	}
++}
++
++type resolvingSystemDialer struct{}
++
++func (resolvingSystemDialer) Dial(ctx context.Context, src net.Address, dest net.Destination, sockopt *internet.SocketConfig) (gonet.Conn, error) {
++	d := gonet.Dialer{Timeout: boundedDial}
++	return d.DialContext(ctx, dest.Network.SystemString(), dest.NetAddr())
++}
++
++func (resolvingSystemDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func TestARebindingNameThroughAnAlternativeSystemDialerNeverReachesThePrivateListener(t *testing.T) {
++	internet.UseAlternativeSystemDialer(resolvingSystemDialer{})
++	t.Cleanup(func() { internet.UseAlternativeSystemDialer(nil) })
++	for _, redirect := range []bool{false, true} {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++		serveScriptedDNS(t, dns, "rebind-alternative.pgtest")
++		config, target := &Config{}, net.TCPDestination(net.DomainAddress("rebind-alternative.pgtest"), listener.port)
++		if redirect {
++			config, target = redirectTo(target.Address, target.Port), publicTarget
++		}
++		err := processPayload(newHandler(t, config), &session.Inbound{Name: "vless", Tag: "india"}, target, pathDialer{}, []byte("payload"))
++		requireUntouched(t, "a rebinding name through an alternative system dialer (redirect "+map[bool]string{false: "no", true: "yes"}[redirect]+", DNS "+dns.answers()+")", listener, err)
++	}
++}
++
++func hex2(b byte) string {
++	const digits = "0123456789abcdef"
++	return string([]byte{digits[b>>4], digits[b&0xf]})
++}
++
++func TestEveryLiteralSpellingOfAPrivateAddressIsRefused(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	v4 := listener.ip.To4()
++	decimal := int(v4[0])<<24 | int(v4[1])<<16 | int(v4[2])<<8 | int(v4[3])
++	dotted := itoa(int(v4[0])) + "." + itoa(int(v4[1])) + "." + itoa(int(v4[2])) + "." + itoa(int(v4[3]))
++	spellings := []string{itoa(decimal), "0x" + hex2(v4[0]) + hex2(v4[1]) + hex2(v4[2]) + hex2(v4[3]), "0" + dotted, dotted + ".", "::ffff:" + dotted, "[::ffff:" + dotted + "]"}
++	serveScriptedDNS(t, &scriptedDNS{decide: nowhere}, spellings...)
++	for _, path := range dialPaths {
++		for _, spelling := range spellings {
++			before := listener.accepted.Load()
++			err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.ParseAddress(spelling), listener.port), path.dialer, []byte("payload"))
++			time.Sleep(100 * time.Millisecond)
++			if listener.accepted.Load() != before {
++				t.Errorf("through %s the spelling %q (parsed as %v) reached the private listener: %v", path.name, spelling, net.ParseAddress(spelling), err)
++			}
++		}
++		mapped := net.IPAddress(append(make([]byte, 10), 0xff, 0xff, v4[0], v4[1], v4[2], v4[3]))
++		before := listener.accepted.Load()
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(mapped, listener.port), path.dialer, []byte("payload"))
++		if listener.accepted.Load() != before || !refusedAsPrivate(err, "vless") {
++			t.Errorf("through %s the 16-byte IPv4-mapped literal %v: %v, want a refusal before the dial", path.name, mapped, err)
++		}
++	}
++}
++
++type recordedLog struct {
++	mu       sync.Mutex
++	messages []*log.GeneralMessage
++}
++
++func (r *recordedLog) Handle(msg log.Message) {
++	if general, ok := msg.(*log.GeneralMessage); ok {
++		r.mu.Lock()
++		r.messages = append(r.messages, general)
++		r.mu.Unlock()
++	}
++}
++
++func (r *recordedLog) atLeast(severity log.Severity, text string) []string {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	var found []string
++	for _, msg := range r.messages {
++		if msg.Severity <= severity && strings.Contains(msg.String(), text) {
++			found = append(found, msg.String())
++		}
++	}
++	return found
++}
++
++func TestARefusalIsLoggedAtWarning(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	recorder := &recordedLog{}
++	log.RegisterHandler(recorder)
++	t.Cleanup(func() { log.RegisterHandler(log.NewLogger(log.CreateStdoutLogWriter())) })
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "shadowsocks", Tag: "users"}, listener.destination(), systemPath, []byte("payload"))
++	if !refusedAsPrivate(err, "shadowsocks") {
++		t.Fatalf("shadowsocks to %s: %v, want a refusal", listener.destination(), err)
++	}
++	if found := recorder.atLeast(log.Severity_Warning, "from the shadowsocks inbound: it is the private address"); len(found) != 1 {
++		t.Errorf("the refusal of %s was logged at warning or above %d times (%v), want once", listener.destination(), len(found), found)
++	}
++}
+diff --git a/proxy/freedom/private_target_rebind_test.go b/proxy/freedom/private_target_rebind_test.go
+new file mode 100644
+index 0000000..db8163f
+--- /dev/null
++++ b/proxy/freedom/private_target_rebind_test.go
+@@ -0,0 +1,331 @@
++package freedom
++
++import (
++	"context"
++	gonet "net"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/session"
++	"github.com/xtls/xray-core/transport/internet"
++	"github.com/xtls/xray-core/transport/internet/stat"
++	"golang.org/x/net/dns/dnsmessage"
++)
++
++type scriptedAnswer struct {
++	rcode dnsmessage.RCode
++	ips   []gonet.IP
++}
++
++type scriptedDNS struct {
++	mu      sync.Mutex
++	asked   map[dnsmessage.Type]int
++	queries atomic.Int32
++	decide  func(lookup int) scriptedAnswer
++	log     []string
++}
++
++func (s *scriptedDNS) answer(qtype dnsmessage.Type) ([]dnsmessage.Resource, dnsmessage.RCode) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.asked == nil {
++		s.asked = map[dnsmessage.Type]int{}
++	}
++	s.asked[qtype]++
++	answer := s.decide(s.asked[qtype])
++	var records []dnsmessage.Resource
++	var given []string
++	for _, ip := range answer.ips {
++		switch v4 := ip.To4(); {
++		case qtype == dnsmessage.TypeA && v4 != nil:
++			records = append(records, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}, Body: &dnsmessage.AResource{A: [4]byte(v4)}})
++			given = append(given, ip.String())
++		case qtype == dnsmessage.TypeAAAA && v4 == nil:
++			records = append(records, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Type: dnsmessage.TypeAAAA, Class: dnsmessage.ClassINET}, Body: &dnsmessage.AAAAResource{AAAA: [16]byte(ip.To16())}})
++			given = append(given, ip.String())
++		}
++	}
++	s.log = append(s.log, qtype.String()+"#"+itoa(s.asked[qtype])+" "+answer.rcode.String()+" "+strings.Join(given, ","))
++	return records, answer.rcode
++}
++
++func (s *scriptedDNS) answers() string {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return strings.Join(s.log, "; ")
++}
++
++func itoa(n int) string {
++	if n == 0 {
++		return "0"
++	}
++	var digits []byte
++	for ; n > 0; n /= 10 {
++		digits = append([]byte{byte('0' + n%10)}, digits...)
++	}
++	return string(digits)
++}
++
++func serveScriptedDNS(t *testing.T, s *scriptedDNS, names ...string) {
++	t.Helper()
++	conn, err := gonet.ListenPacket("udp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { conn.Close() })
++	scripted := map[string]bool{}
++	for _, name := range names {
++		scripted[strings.ToLower(name)+"."] = true
++	}
++	go func() {
++		packet := make([]byte, 1500)
++		for {
++			n, from, err := conn.ReadFrom(packet)
++			if err != nil {
++				return
++			}
++			var parser dnsmessage.Parser
++			header, err := parser.Start(packet[:n])
++			if err != nil {
++				continue
++			}
++			question, err := parser.Question()
++			if err != nil {
++				continue
++			}
++			rcode, records := dnsmessage.RCodeNameError, []dnsmessage.Resource(nil)
++			if scripted[strings.ToLower(question.Name.String())] {
++				s.queries.Add(1)
++				records, rcode = s.answer(question.Type)
++			}
++			builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: header.ID, Response: true, Authoritative: true, RCode: rcode})
++			builder.StartQuestions()
++			builder.Question(question)
++			builder.StartAnswers()
++			for _, record := range records {
++				record.Header.Name = question.Name
++				switch body := record.Body.(type) {
++				case *dnsmessage.AResource:
++					builder.AResource(record.Header, *body)
++				case *dnsmessage.AAAAResource:
++					builder.AAAAResource(record.Header, *body)
++				}
++			}
++			reply, err := builder.Finish()
++			if err != nil {
++				continue
++			}
++			conn.WriteTo(reply, from)
++		}
++	}()
++	useStubSystemResolver(t, conn.LocalAddr().String())
++}
++
++var documentationIPv6 = gonet.IP{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
++
++func publicThenPrivate(private gonet.IP) func(int) scriptedAnswer {
++	return func(lookup int) scriptedAnswer {
++		if lookup%2 == 1 {
++			return scriptedAnswer{rcode: dnsmessage.RCodeSuccess, ips: []gonet.IP{documentationIPv6}}
++		}
++		return scriptedAnswer{rcode: dnsmessage.RCodeSuccess, ips: []gonet.IP{private}}
++	}
++}
++
++func failsFirstThen(private gonet.IP) func(int) scriptedAnswer {
++	return func(lookup int) scriptedAnswer {
++		if lookup == 1 {
++			return scriptedAnswer{rcode: dnsmessage.RCodeNameError}
++		}
++		return scriptedAnswer{rcode: dnsmessage.RCodeSuccess, ips: []gonet.IP{private}}
++	}
++}
++
++func always(ips ...gonet.IP) func(int) scriptedAnswer {
++	return func(int) scriptedAnswer {
++		return scriptedAnswer{rcode: dnsmessage.RCodeSuccess, ips: ips}
++	}
++}
++
++func nowhere(int) scriptedAnswer {
++	return scriptedAnswer{rcode: dnsmessage.RCodeNameError}
++}
++
++const boundedDial = 150 * time.Millisecond
++
++type pathDialer struct {
++	sockopt             *internet.SocketConfig
++	appliesConnectCheck bool
++}
++
++func (d pathDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++	ctx, cancel := context.WithTimeout(ctx, boundedDial)
++	defer cancel()
++	return internet.DialSystem(ctx, dest, d.sockopt)
++}
++
++func (pathDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func (pathDialer) SetOutboundGateway(ctx context.Context, ob *session.Outbound) {}
++
++func (d pathDialer) AppliesConnectCheck(net.Destination) bool {
++	return d.appliesConnectCheck
++}
++
++type unclassifiedDialer struct{}
++
++func (unclassifiedDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
++	ctx, cancel := context.WithTimeout(ctx, boundedDial)
++	defer cancel()
++	return internet.DialSystem(ctx, dest, nil)
++}
++
++func (unclassifiedDialer) DestIpAddress() net.IP {
++	return nil
++}
++
++func (unclassifiedDialer) SetOutboundGateway(ctx context.Context, ob *session.Outbound) {}
++
++var systemPath = pathDialer{appliesConnectCheck: true}
++
++var dialPaths = []struct {
++	name   string
++	dialer internet.Dialer
++}{
++	{"the system path", systemPath},
++	{"a dialer freedom cannot classify", unclassifiedDialer{}},
++}
++
++func requireUntouched(t *testing.T, what string, listener *privateListener, err error) {
++	t.Helper()
++	time.Sleep(300 * time.Millisecond)
++	if listener.accepted.Load() != 0 || listener.received.Load() != 0 {
++		t.Errorf("%s: %v; the private listener %s accepted %d connections and received %d bytes", what, err, listener.destination(), listener.accepted.Load(), listener.received.Load())
++	}
++}
++
++func TestARebindingNameNeverReachesThePrivateListener(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++		serveScriptedDNS(t, dns, "rebind.pgtest")
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("rebind.pgtest"), listener.port), path.dialer, []byte("payload"))
++		requireUntouched(t, "a rebinding name through "+path.name+" (DNS "+dns.answers()+")", listener, err)
++	}
++}
++
++func TestANameWhoseFirstLookupFailsNeverReachesThePrivateListener(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: failsFirstThen(listener.ip)}
++		serveScriptedDNS(t, dns, "failfirst.pgtest")
++		err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "trojan", Tag: "users"}, net.TCPDestination(net.DomainAddress("failfirst.pgtest"), listener.port), path.dialer, []byte("payload"))
++		requireUntouched(t, "a name whose first lookup fails, through "+path.name+" (DNS "+dns.answers()+")", listener, err)
++	}
++}
++
++func closedPortOn(t *testing.T, ip gonet.IP) net.Port {
++	t.Helper()
++	ln, err := gonet.Listen("tcp4", gonet.JoinHostPort(ip.String(), "0"))
++	if err != nil {
++		t.Skipf("cannot listen on %s: %v", ip, err)
++	}
++	port := net.Port(ln.Addr().(*gonet.TCPAddr).Port)
++	ln.Close()
++	return port
++}
++
++func TestAnOpenAndAClosedPrivatePortLookTheSameToAUser(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		closed := closedPortOn(t, listener.ip)
++		probe := func(name string, port net.Port) (time.Duration, error) {
++			serveScriptedDNS(t, &scriptedDNS{decide: publicThenPrivate(listener.ip)}, name)
++			start := time.Now()
++			err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress(name), port), path.dialer, []byte("x"))
++			return time.Since(start), err
++		}
++		openTook, openErr := probe("open.pgtest", listener.port)
++		closedTook, closedErr := probe("closed.pgtest", closed)
++		if closedTook-openTook > 500*time.Millisecond {
++			t.Errorf("through %s an open private port answers in %v (%v) and a closed one in %v (%v), so a user can map the private network", path.name, openTook, openErr, closedTook, closedErr)
++		}
++		requireUntouched(t, "the open private port probed through "+path.name, listener, openErr)
++	}
++}
++
++func socketOptionsReaching(t *testing.T, ip gonet.IP) *internet.SocketConfig {
++	t.Helper()
++	ifaces, err := gonet.Interfaces()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, iface := range ifaces {
++		addrs, _ := iface.Addrs()
++		for _, addr := range addrs {
++			if ipNet, ok := addr.(*gonet.IPNet); ok && ipNet.IP.Equal(ip) {
++				return &internet.SocketConfig{Interface: iface.Name}
++			}
++		}
++	}
++	t.Skipf("no interface holds %s", ip)
++	return nil
++}
++
++func TestARebindingNameThroughAFreedomBoundToAnInterfaceNeverReachesThePrivateListener(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	sockopt := socketOptionsReaching(t, listener.ip)
++	probe, err := internet.DialSystem(context.Background(), listener.destination(), sockopt)
++	if err != nil {
++		t.Skipf("a socket bound to %s cannot reach %s on this host: %v", sockopt.Interface, listener.destination(), err)
++	}
++	probe.Close()
++	for deadline := time.Now().Add(2 * time.Second); listener.accepted.Load() == 0 && time.Now().Before(deadline); {
++		time.Sleep(10 * time.Millisecond)
++	}
++	if listener.accepted.Load() != 1 {
++		t.Skipf("the bound probe to %s was not accepted", listener.destination())
++	}
++	listener.accepted.Store(0)
++	dns := &scriptedDNS{decide: publicThenPrivate(listener.ip)}
++	serveScriptedDNS(t, dns, "rebind-bound.pgtest")
++	err = processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "vless", Tag: "india"}, net.TCPDestination(net.DomainAddress("rebind-bound.pgtest"), listener.port), pathDialer{sockopt: sockopt, appliesConnectCheck: true}, []byte("payload"))
++	requireUntouched(t, "a rebinding name through a freedom bound to "+sockopt.Interface+" (DNS "+dns.answers()+")", listener, err)
++}
++
++func TestAnAllowedNameIsLookedUpOncePerConnection(t *testing.T) {
++	for _, path := range dialPaths {
++		listener := listenOnPrivateHost(t)
++		dns := &scriptedDNS{decide: always(listener.ip)}
++		serveScriptedDNS(t, dns, "once.pgtest")
++		h := handlerRoutedBy(t, routerOf(t, routingRule("lan", "DIRECT", nil, hostCIDR(listener.ip))), allowEntry("lan", hostCIDR(listener.ip)))
++		err := processPayloadThrough(h, &session.Inbound{Name: "vless", Tag: "users"}, net.TCPDestination(net.DomainAddress("once.pgtest"), listener.port), "DIRECT", path.dialer, []byte("payload"))
++		if !listener.waitFor(int64(len("payload")), 2*time.Second) {
++			t.Errorf("through %s an allowed private name did not carry the payload: %v (DNS %s)", path.name, err, dns.answers())
++			continue
++		}
++		if n := dns.queries.Load(); n != 2 {
++			t.Errorf("through %s one connection to an allowed name sent %d DNS queries (%s), want one lookup: an A and an AAAA query", path.name, n, dns.answers())
++		}
++	}
++}
++
++func TestAPrivateNameOnTheSystemPathIsRefusedOnceWithoutRetries(t *testing.T) {
++	listener := listenOnPrivateHost(t)
++	dns := &scriptedDNS{decide: always(listener.ip)}
++	serveScriptedDNS(t, dns, "private-once.pgtest")
++	err := processPayload(newHandler(t, &Config{}), &session.Inbound{Name: "hysteria", Tag: "users"}, net.TCPDestination(net.DomainAddress("private-once.pgtest"), listener.port), systemPath, []byte("payload"))
++	if !refusedAsPrivate(err, "hysteria") {
++		t.Errorf("hysteria to a name of %s: %v, want a refusal of the private address", listener.ip, err)
++	}
++	if n := dns.queries.Load(); n != 2 {
++		t.Errorf("a refused private name sent %d DNS queries (%s), want one lookup and no retry", n, dns.answers())
++	}
++	requireUntouched(t, "a private name on the system path", listener, err)
++}
 diff --git a/proxy/freedom/private_target_refusal_test.go b/proxy/freedom/private_target_refusal_test.go
 new file mode 100644
 index 0000000..f83374b
@@ -1368,7 +2227,7 @@ index 0000000..f83374b
 +}
 diff --git a/proxy/freedom/private_target_rules_test.go b/proxy/freedom/private_target_rules_test.go
 new file mode 100644
-index 0000000..5fda55d
+index 0000000..aef4042
 --- /dev/null
 +++ b/proxy/freedom/private_target_rules_test.go
 @@ -0,0 +1,384 @@
@@ -1746,7 +2605,7 @@ index 0000000..5fda55d
 +		}
 +		return &reportedRemote{Conn: conn, remote: &gonet.TCPAddr{IP: gonet.IPv4(10, 0, 0, 7), Port: 9000}}, nil
 +	}
-+	err = processPayloadThrough(h, users, net.TCPDestination(net.DomainAddress("cgnat-or-not.pgtest"), 9000), "DIRECT", dialer, []byte("rebound"))
++	err = processPayloadThrough(h, users, net.TCPDestination(net.IPAddress(gonet.IPv4(100, 64, 0, 8).To4()), 9000), "DIRECT", dialer, []byte("rebound"))
 +	if !refusedAsPrivate(err, "vless") {
 +		t.Errorf("a connection whose remote end is outside the CGNAT allow was kept: %v", err)
 +	}

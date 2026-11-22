@@ -466,6 +466,33 @@ func TestLiveAnInboundRestrictedPrivateRouteOpensItsAddressForItsInboundOnly(t *
 	})
 }
 
+func TestLiveTheCGNATAllowSurvivesTheLetterCaseOfOutboundKeysAndAnEmptyDomainList(t *testing.T) {
+	forEachXrayBinaryWithItsGuard(t, func(t *testing.T, binary string, guarded bool) {
+		host := cgnatHostOrSkip(t)
+		for _, variant := range []struct {
+			name  string
+			shape func(ports [3]int, egress string) map[string]any
+		}{
+			{"a DIRECT outbound written with Tag, Protocol and Settings", func(ports [3]int, egress string) map[string]any {
+				shape := coreOneLive(ports, egress, map[string]any{})
+				shape["outbounds"].([]any)[0] = map[string]any{"Tag": "DIRECT", "Protocol": "freedom", "Settings": map[string]any{"domainStrategy": "UseIPv4"}}
+				return shape
+			}},
+			{"a CGNAT rule with an empty domain list", func(ports [3]int, egress string) map[string]any {
+				return coreOneLiveWith(ports, egress, map[string]any{}, []any{map[string]any{"type": "field", "domain": []any{}, "ip": []any{"100.64.0.0/10"}, "outboundTag": "DIRECT"}}, nil)
+			}},
+		} {
+			t.Run(variant.name, func(t *testing.T) {
+				ports := [3]int{netutil.FindFreePort(), netutil.FindFreePort(), netutil.FindFreePort()}
+				id := uuid.New()
+				startPrivateGuardBackend(t, binary, variant.shape(ports, interfaceOwning(t, privateTargetHost(t))), privateGuardUser(id, "VLESS TCP SESSION", "egress-in", "direct-in"))
+				source := startCountingSource(t, host)
+				requireDataArrives(t, vlessTo(t, ports[0], id, source.addr), "an ordinary user to "+source.addr.String()+" through the CGNAT rule, guarded "+strconv.FormatBool(guarded))
+			})
+		}
+	})
+}
+
 func dialSocksStream(t *testing.T, port int, target *net.TCPAddr) net.Conn {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 3*time.Second)

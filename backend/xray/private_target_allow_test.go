@@ -190,6 +190,10 @@ func TestOnlyExplicitPrivateRoutesToAFreedomOutboundBecomeAllows(t *testing.T) {
 		{"a ruleTag other rules share", []map[string]any{{"ruleTag": "shared", "port": "1", "outboundTag": "BLOCK"}, {"ruleTag": "shared", "ip": []any{"10.14.0.0/16"}, "outboundTag": "egress_wireguard"}}, ``},
 		{"a domain condition", []map[string]any{{"domain": []any{"full:intranet.example.com"}, "ip": []any{"10.15.0.0/16"}, "outboundTag": "egress_wireguard"}}, ``},
 		{"a capitalised domain condition", []map[string]any{{"Domain": []any{"full:intranet.example.com"}, "ip": []any{"10.15.0.0/16"}, "outboundTag": "egress_wireguard"}}, ``},
+		{"an empty domain list, which is no condition", []map[string]any{{"domain": []any{}, "ip": []any{"10.19.0.0/16"}, "outboundTag": "egress_wireguard"}},
+			`[{"ruleTag": "PG_NODE_PRIVATE_ALLOW_2", "ip": ["10.19.0.0/16"]}]`},
+		{"a null domains list, which is no condition", []map[string]any{{"Domains": nil, "ip": []any{"10.20.0.0/16"}, "outboundTag": "egress_wireguard"}},
+			`[{"ruleTag": "PG_NODE_PRIVATE_ALLOW_2", "ip": ["10.20.0.0/16"]}]`},
 		{"a catch-all", []map[string]any{{"ip": []any{"0.0.0.0/0", "::/0"}, "outboundTag": "egress_wireguard"}}, ``},
 		{"a range wider than a private prefix", []map[string]any{{"ip": []any{"100.64.0.0/9", "fc00::/6"}, "outboundTag": "egress_wireguard"}}, ``},
 		{"a negation", []map[string]any{{"ip": []any{"!10.0.0.0/8"}, "outboundTag": "egress_wireguard"}}, ``},
@@ -249,6 +253,54 @@ func TestARoutedGeoIPPrivateBecomesTheNodesPrivateListWithoutTheGuardedRanges(t 
 	want := []string{"10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "fc00::/7"}
 	if strings.Join(ips, " ") != strings.Join(want, " ") || entry["ruleTag"] != "PG_NODE_PRIVATE_ALLOW_2" {
 		t.Fatalf("a routed geoip:private renders %v under %v, want %v under PG_NODE_PRIVATE_ALLOW_2", ips, entry["ruleTag"], want)
+	}
+}
+
+func foldedKey(object map[string]any, name string) any {
+	for key, value := range object {
+		if strings.EqualFold(key, name) {
+			return value
+		}
+	}
+	return nil
+}
+
+func renderedOutboundsByFoldedTag(t *testing.T, cfg *Config) map[string]map[string]any {
+	t.Helper()
+	raw, err := cfg.ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal(raw, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	byTag := make(map[string]map[string]any, len(rendered.Outbounds))
+	for _, outbound := range rendered.Outbounds {
+		tag, _ := foldedKey(outbound, "tag").(string)
+		byTag[tag] = outbound
+	}
+	return byTag
+}
+
+func TestAFreedomOutboundIsFoundWhateverTheLetterCaseOfItsKeys(t *testing.T) {
+	shape := coreOneShape(privateGuardRule(map[string]any{"ip": []any{"10.21.0.0/16"}, "outboundTag": "egress_wireguard"}))
+	outbounds := shape["outbounds"].([]any)
+	outbounds[0] = map[string]any{"Tag": "DIRECT", "PROTOCOL": "Freedom", "Settings": map[string]any{"domainStrategy": "UseIPv4"}}
+	outbounds[1] = map[string]any{"tag": "egress_wireguard", "TAG": "egress_wireguard", "protocol": "freedom", "settings": map[string]any{}}
+	rendered := renderedOutboundsByFoldedTag(t, privateGuardConfig(t, shape))
+	settings, _ := foldedKey(rendered["DIRECT"], "settings").(map[string]any)
+	if got, want := settings["privateAllow"], jsonValue(t, `[{"ruleTag": "PG_NODE_PRIVATE_ALLOW_1", "ip": ["100.64.0.0/10"]}]`); !reflect.DeepEqual(got, want) {
+		t.Errorf("a DIRECT written with Tag, PROTOCOL and Settings renders privateAllow %v, want %v (%v)", got, want, rendered["DIRECT"])
+	}
+	if settings["domainStrategy"] != "UseIPv4" || foldedKey(rendered["DIRECT"], "settings") == nil || rendered["DIRECT"]["Settings"] == nil {
+		t.Errorf("DIRECT lost its own Settings key or values: %v", rendered["DIRECT"])
+	}
+	egress, _ := foldedKey(rendered["egress_wireguard"], "settings").(map[string]any)
+	if got := egress["privateAllow"]; got != nil {
+		t.Errorf("an outbound that repeats its tag key renders privateAllow %v, want none", got)
 	}
 }
 
