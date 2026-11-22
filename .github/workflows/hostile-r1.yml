@@ -47,6 +47,13 @@ jobs:
           if git -C "$src" grep -q refusedResolvedTarget; then echo "the base carries the guard"; exit 1; fi
           git -C "$RUNNER_TEMP/xray-guard-src" grep -q refusedResolvedTarget
 
+      - name: Build the hostile fix candidate v2 (connect-time check) on top of every patch
+        run: |
+          cp -a "$RUNNER_TEMP/xray-guard-src" "$RUNNER_TEMP/xray-fixv2-src"
+          git -C "$RUNNER_TEMP/xray-fixv2-src" apply "$PWD/hostile/r1/fixv2.patch"
+          (cd "$RUNNER_TEMP/xray-fixv2-src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-fixv2" ./main)
+          "$RUNNER_TEMP/xray-fixv2" version
+
       - name: Tools
         run: |
           command -v tcpdump || sudo apt-get install -y tcpdump
@@ -55,7 +62,7 @@ jobs:
 
       - name: Run the hostile harness against the real binaries
         run: |
-          sudo python3 -I hostile/r1/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --out "$RUNNER_TEMP/hr1" 2>&1 | tee "$RUNNER_TEMP/hr1-harness.log"
+          sudo python3 -I hostile/r1/harness.py --guard "$RUNNER_TEMP/xray-guard" --base "$RUNNER_TEMP/xray-base" --fix "$RUNNER_TEMP/xray-fixv2" --out "$RUNNER_TEMP/hr1" 2>&1 | tee "$RUNNER_TEMP/hr1-harness.log"
           exit "${PIPESTATUS[0]}"
 
       - name: Show the xray logs

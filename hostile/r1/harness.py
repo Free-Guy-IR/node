@@ -651,6 +651,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--guard", required=True)
     parser.add_argument("--base", required=True)
+    parser.add_argument("--fix", default="")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -686,14 +687,18 @@ def main():
     run(["getent", "hosts", "public-check.pgtest"], check=False)
     run(["getent", "hosts", "github.com"], check=False)
 
-    for label, binary in (("guard", args.guard), ("base", args.base)):
+    for binary in [args.guard, args.base] + ([args.fix] if args.fix else []):
         run([binary, "version"])
-    for label, binary, guarded in (("guard", args.guard, True), ("base", args.base, False)):
+    phases = [("guard", args.guard, True), ("base", args.base, False)]
+    if args.fix:
+        phases.append(("fixv2", args.fix, True))
+    for label, binary, guarded in phases:
         say("######## security phase, non-caching system resolver, %s" % label)
         security_phase(label, binary, args.out, sinks, direct_dns, guarded)
 
     say("######## performance phase, non-caching system resolver")
-    perf_phase("direct", (("base", args.base), ("guard", args.guard)), args.out, direct_dns, (0, 20), ((1, 40), (32, 256)))
+    perf_binaries = [("base", args.base), ("guard", args.guard)] + ([("fixv2", args.fix)] if args.fix else [])
+    perf_phase("direct", perf_binaries, args.out, direct_dns, (0, 20), ((1, 40), (32, 256)))
 
     say("######## systemd-resolved caching stub as the system resolver")
     sd_dns = DNSServer(5354, uplink_ns, 53, 60)
@@ -712,17 +717,25 @@ def main():
     else:
         say("######## security phase through systemd-resolved, guard")
         security_phase("guard-resolved", args.guard, args.out, sinks, sd_dns, True)
+        if args.fix:
+            security_phase("fixv2-resolved", args.fix, args.out, sinks, sd_dns, True)
         say("######## performance phase through systemd-resolved (perf names TTL 60)")
-        perf_phase("resolved", (("base", args.base), ("guard", args.guard)), args.out, sd_dns, (20,), ((1, 40), (32, 256)))
+        perf_phase("resolved", perf_binaries, args.out, sd_dns, (20,), ((1, 40), (32, 256)))
 
     say("######## SUMMARY")
     say(json.dumps(RESULTS, indent=1))
     with open(os.path.join(args.out, "summary.json"), "w") as handle:
         json.dump(RESULTS, handle, indent=1)
+    by_build = {}
+    for line in RESULTS["red"]:
+        by_build.setdefault(line.split(" ", 1)[0], []).append(line)
+    for build in sorted(by_build):
+        say("RED on %s: %d" % (build, len(by_build[build])))
+    if args.fix and not any(b.startswith("fixv2") for b in by_build):
+        say("GREEN on fixv2: no security assertion failed")
     if RESULTS["red"]:
-        say("RED: %d security assertions failed on the guarded build" % len(RESULTS["red"]))
         sys.exit(1)
-    say("GREEN: no security assertion failed on the guarded build")
+    say("GREEN: no security assertion failed")
 
 
 if __name__ == "__main__":
