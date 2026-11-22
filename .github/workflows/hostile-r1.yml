@@ -44,8 +44,8 @@ jobs:
           done
           (cd "$src" && GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o "$RUNNER_TEMP/xray-base" ./main)
           "$RUNNER_TEMP/xray-base" version
-          if git -C "$src" grep -q AppliesConnectCheck; then echo "the base carries the guard"; exit 1; fi
-          git -C "$RUNNER_TEMP/xray-guard-src" grep -q AppliesConnectCheck
+          if grep -rq --include='*.go' AppliesConnectCheck "$src"; then echo "the base carries the guard"; exit 1; fi
+          grep -rq --include='*.go' AppliesConnectCheck "$RUNNER_TEMP/xray-guard-src"
 
       - name: Tools
         run: |
